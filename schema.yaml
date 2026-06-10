@@ -1,0 +1,39 @@
+# generally follow this layout: https://docs.podman.io/en/latest/markdown/podman-systemd.unit.5.html
+# follows systemd unit files for layout in sections, but yaml syntax
+
+container:
+  # define an image name and tag here. 
+  # if host is not defined, docker.io is assumed. if tag is not defined, :latest is assumed.
+  image: ghcr.io/terrapkg/builder:frawhide
+  
+  # capabilities follow scheme of NAME: toggleable/static
+  # define whether the capability should be toggleable by user (toggleable or static)
+  capabilities: 
+    CAP_SYS_ADMIN: toggleable
+    CAP_MKNOD: static
+
+  # devices follow the scheme of Description: example path
+  # example path is shown in user entry box and is automatically assumed if the user doesn't override it
+  devices: 
+    USB Serial Interface: /dev/ttyUSB0
+    CD Drive: /dev/sr0
+
+  # hosts follow scheme of hostname:ip
+  hosts:
+    local.fyralabs.com: 10.0.0.2
+
+  # annotation for the container. single-line definitions with only values.
+  annotation:
+    - io.podman.annotations.cpuset
+
+  # arch defaults to the host's architecture. only use this if necessary.
+  # defining arch as user allows the user to toggle between the image's available architectures
+  # define available architectures below
+  arch: x86_64
+
+  # if arch is set to user, this lists which architectures are available
+  available_architectures:
+    - x86_64
+    - aarch64
+    - riscv64
+  
