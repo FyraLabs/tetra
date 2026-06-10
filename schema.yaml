@@ -39,7 +39,7 @@ container:
     - f43
     - f42
 
-  # arch defaults to the host's architecture. only define a single architecture if necessary.
+  # arch defaults to the host's architecture (host). only define a single architecture if necessary.
   # defining arch as user allows the user to toggle between the image's available architectures
   # define available architectures below
   arch: user
@@ -49,3 +49,58 @@ container:
     - x86_64
     - aarch64
     - riscv64
+
+  # tells podman whether the container will be auto-updated
+  # options are registry or local
+  # see https://docs.podman.io/en/latest/markdown/podman-systemd.unit.5.html#autoupdate
+  autoupdate: registry
+
+  # equivalent with podman's --module; not user-editable by default
+  module: /etc/nvd.conf
+
+  # similar to group_add, but by id instead of name
+  group: 1000
+
+  # necessary when the host uses a proxy but the container doesn't. generally not needed.
+  http_proxy: false
+
+  # allows the container itself to tell systemd when it's started. defaults to false.
+  notify: true
+
+  # limit on how many PIDs a container can create. default 2048.
+  pids_limit: 2048
+
+  # defines a pod that the container is part of. useful if you're using multiple containers for a recipe.
+  pod: terra_builders
+
+  # defines a command to run in the container when restarting the service
+  # mutually exclusive with reload_signal
+  reload_cmd: /usr/bin/restart
+
+  # defines a signal to send to the container when restarting the service
+  # mutually exclusive with reload_cmd
+  reload_signal: SIGHUP
+
+  # how many times to retry pulling images between local storage and the registry. default 3
+  retry: 3
+
+  # how long to wait between retries for pulling or pushing images between local storage and the registry. default 2s then exponentially back off.
+  retry_delay: 20s
+
+  # start the container after the associated pod is started. default true.
+  # only has effecty if pod is defined
+  start_with_pod: true
+
+  # see https://docs.podman.io/en/latest/markdown/podman-container.unit.5.html#subgidmap-name
+  sub_gid_map: gtest
+
+  # see https://docs.podman.io/en/latest/markdown/podman-container.unit.5.html#subuidmap-name
+  sub_uid_map: utest
+
+  # defines timezone for the container. defaults to local.
+  # see /usr/share/zoneinfo for valid timezones, though area-based, GMT, and local are all valid.
+  # local defines timezone as the host's timezone
+  timezone: local
+
+  # see https://docs.podman.io/en/latest/markdown/podman-container.unit.5.html#uidmap-flags-container-uid-from-uid-amount
+  uid_map: 0:10000:10

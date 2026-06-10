@@ -52,6 +52,7 @@ this is a list of what keys you are able to define for services, whether they ar
 - uts (PodmanArgs --uts)
 
 ## not present in compose, present in tetra
+
 - AutoUpdate
 - ContainersConfModule
 - ExposeHostPort
