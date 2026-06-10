@@ -1,39 +1,51 @@
 # generally follow this layout: https://docs.podman.io/en/latest/markdown/podman-systemd.unit.5.html
 # follows systemd unit files for layout in sections, but yaml syntax
 
+# this top-level element defines differences with the compose specification for services.
+# otherwise, see https://github.com/compose-spec/compose-spec/blob/main/05-services.md
+#
+# see documentation to see what is and isn't user-editable.
+#
+# if an element is normally editable and you do not want it to be editable, create another section named static-{element}
+# if an element is normally non-editable and you want it to be editable, name it dynamic-{element}
+#
+# if you want some of the aspects of that element to be editable and some to be non-editable:
+# define both static and dynamic elements for that element.
+# define the non-editable keys in the static element and editable keys in the dynamic element.
+#
+# for anything defined as editable, the value becomes a default. if a user does not override it, that default is pulled in.
+# if you want a user to be forced to define a value, create a section titled required-{element}.
+# anything in that element will block the recipe from building unless it is user-defined.
+# make sure you still set a value as it will be shown as a placeholder.
 container:
-  # define an image name and tag here. 
+  # default name for container. always user-editable.
+  container_name: terra-builder
+
+  # define an image name and tag here.
   # if host is not defined, docker.io is assumed. if tag is not defined, :latest is assumed.
+  # typically, the tag is user-editable. if you would like to define it as static or have a predefined list, see below.
   image: ghcr.io/terrapkg/builder:frawhide
-  
-  # capabilities follow scheme of NAME: toggleable/static
-  # define whether the capability should be toggleable by user (toggleable or static)
-  capabilities: 
-    CAP_SYS_ADMIN: toggleable
-    CAP_MKNOD: static
 
-  # devices follow the scheme of Description: example path
-  # example path is shown in user entry box and is automatically assumed if the user doesn't override it
-  devices: 
-    USB Serial Interface: /dev/ttyUSB0
-    CD Drive: /dev/sr0
+  # allows users to edit the tag on the image
+  # defaults to true. justification is required to set this to false.
+  image_tag_editable: true
 
-  # hosts follow scheme of hostname:ip
-  hosts:
-    local.fyralabs.com: 10.0.0.2
+  # list of tags for users to choose from.
+  # if image_tag_editable is true, users will be able to define a custom tag
+  # if image_tag_editable is false, users will only be able to choose from this list (or the default)
+  image_tag_options:
+    - frawhide
+    - f44
+    - f43
+    - f42
 
-  # annotation for the container. single-line definitions with only values.
-  annotation:
-    - io.podman.annotations.cpuset
-
-  # arch defaults to the host's architecture. only use this if necessary.
+  # arch defaults to the host's architecture. only define a single architecture if necessary.
   # defining arch as user allows the user to toggle between the image's available architectures
   # define available architectures below
-  arch: x86_64
+  arch: user
 
   # if arch is set to user, this lists which architectures are available
   available_architectures:
     - x86_64
     - aarch64
     - riscv64
-  
