@@ -1,6 +1,6 @@
 # elements
 
-this is a list of what keys you are able to define for services, whether they are user-editable, and their quadlet equivalent
+this is a list of what keys you are able to define for services, whether they are user-editable, their quadlet equivalent, and value type.
 
 ## editable
 
