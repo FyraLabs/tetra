@@ -6,11 +6,26 @@
 #define TETRA_DATATYPES_H
 #include <string>
 
-struct keyvalue_pair {
+struct recipeKeyValuePair {
     std::string key;
     std::string value;
     bool editable;
     bool required;
+};
+
+struct recipeValueOnly {
+    std::string value;
+    bool editable;
+    bool required;
+};
+
+struct userKeyValuePair {
+    std::string key;
+    std::string value;
+};
+
+struct userValueOnly {
+    std::string value;
 };
 
 #endif // TETRA_DATATYPES_H
