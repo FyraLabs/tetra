@@ -48,3 +48,17 @@ config_inc = include_directories('.')
 
 subdir('src')
 subdir('tests')
+
+# Generate compile_commands.json in the build directory and make the build produce it by default.
+# This uses Ninja's compdb tool, so it requires the Ninja backend. When the build runs, the custom
+# target will invoke ninja -t compdb and write the JSON to the build dir.
+# We also provide a helper script to create a root symlink.
+if not meson.is_cross_build()
+  compdb = custom_target('compile_commands',
+    output : 'compile_commands.json',
+    command : ['bash', '-lc', 'ninja -t compdb cxx cc > compile_commands.json || ninja -t compdb > compile_commands.json'],
+    build_by_default : true,
+  )
+else
+  message('Skipping compile_commands target during cross builds')
+endif

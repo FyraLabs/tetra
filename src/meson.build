@@ -1,5 +1,6 @@
 sources = files(
   'main.cpp',
+  'userspace.cpp',
 )
 
 tetra_exe = executable(
