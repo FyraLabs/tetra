@@ -1,4 +1,0 @@
-#pragma once
-
-#define VERSION @VERSION@
-#define PROJECT_NAME @PROJECT_NAME@
