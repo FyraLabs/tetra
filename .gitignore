@@ -12,4 +12,3 @@
 build/
 Build/
 build-*/
-compile_commands*.json
