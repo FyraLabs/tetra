@@ -1,0 +1,12 @@
+[Unit]
+Description={{ name }} Redis cache
+Requires={{ recipe_id }}-app.service
+After={{ recipe_id }}-app.service
+
+[Container]
+ContainerName={{ recipe_id }}-redis
+Image=docker.io/library/redis:7-alpine
+Network={{ recipe_id }}-net.network
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,15 @@
+[Unit]
+Description={{ name }} database
+
+[Container]
+ContainerName={{ recipe_id }}-db
+Image=docker.io/library/mariadb:11
+Network={{ recipe_id }}-net.network
+Volume={{ recipe_id }}-db.volume:/var/lib/mysql
+Environment=MARIADB_DATABASE=nextcloud
+Environment=MARIADB_USER=nextcloud
+Environment=MARIADB_PASSWORD={{ db_password }}
+Environment=MARIADB_ROOT_PASSWORD={{ db_password }}
+
+[Install]
+WantedBy=default.target

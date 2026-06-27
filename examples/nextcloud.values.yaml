@@ -1,0 +1,2 @@
+domain: cloud.example.com
+enable_redis: true

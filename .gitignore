@@ -1,12 +1,29 @@
+# Rust build output
 /target/
 
 # Editor / OS noise
-**.DS_STORE
+.DS_Store
+Thumbs.db
 .cache/
 *.tmp
 *.log
 *.bak
 *.swp
+*.swo
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+*.local.yaml
+*.local.yml
+*.secret.yaml
+*.secret.yml
+*.secrets.yaml
+*.secrets.yml
+
+# Generated Quadlet output from examples/docs
+/quadlets/
 
 # Legacy/native build dirs if present locally
 build/

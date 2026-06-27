@@ -1,106 +1,71 @@
-# generally follow this layout: https://docs.podman.io/en/latest/markdown/podman-systemd.unit.5.html
-# follows systemd unit files for layout in sections, but yaml syntax
+recipe_id: nextcloud
+name: Nextcloud
+description: Self-hosted file sharing and collaboration
+category: productivity
+icon: nextcloud.svg
+version: 1.0.0
 
-# this top-level element defines differences with the compose specification for services.
-# otherwise, see https://github.com/compose-spec/compose-spec/blob/main/05-services.md
-#
-# see documentation to see what is and isn't user-editable.
-#
-# if an element is normally editable and you do not want it to be editable, create another section named static-{element}
-# if an element is normally non-editable and you want it to be editable, name it dynamic-{element}
-#
-# if you want some of the aspects of that element to be editable and some to be non-editable:
-# define both static and dynamic elements for that element.
-# define the non-editable keys in the static element and editable keys in the dynamic element.
-#
-# for anything defined as editable, the value becomes a default. if a user does not override it, that default is pulled in.
-# if you want a user to be forced to define a value, create a section titled required-{element}.
-# anything in that element will block the recipe from building unless it is user-defined.
-# make sure you still set a value as it will be shown as a placeholder.
-container:
-  # default name for container. always user-editable.
-  container_name: terra-builder
+requires:
+  - "podman>=4.4"
+  - cgroups_v2
 
-  # define an image name and tag here.
-  # if host is not defined, docker.io is assumed. if tag is not defined, :latest is assumed.
-  # typically, the tag is user-editable. if you would like to define it as static or have a predefined list, see below.
-  image: ghcr.io/terrapkg/builder:frawhide
+parameters:
+  - key: domain
+    label: Domain name
+    type: string
+    required: true
+    placeholder: cloud.example.com
 
-  # allows users to edit the tag on the image
-  # defaults to true. justification is required to set this to false.
-  image_tag_editable: true
+  - key: admin_password
+    label: Admin password
+    type: secret
+    required: true
+    generate: random_32
 
-  # list of tags for users to choose from.
-  # if image_tag_editable is true, users will be able to define a custom tag
-  # if image_tag_editable is false, users will only be able to choose from this list (or the default)
-  image_tag_options:
-    - frawhide
-    - f44
-    - f43
-    - f42
+  - key: db_password
+    label: Database password
+    type: secret
+    required: true
+    generate: random_32
 
-  # arch defaults to the host's architecture (host). only define a single architecture if necessary.
-  # defining arch as user allows the user to toggle between the image's available architectures
-  # define available architectures below
-  arch: user
+  - key: data_volume_size
+    label: Data volume size (GB)
+    type: integer
+    default: 10
+    min: 1
+    max: 1000
 
-  # if arch is set to user, this lists which architectures are available
-  available_architectures:
-    - x86_64
-    - aarch64
-    - riscv64
+  - key: enable_redis
+    label: Enable Redis caching
+    type: boolean
+    default: true
 
-  # tells podman whether the container will be auto-updated
-  # options are registry or local
-  # see https://docs.podman.io/en/latest/markdown/podman-systemd.unit.5.html#autoupdate
-  autoupdate: registry
+resources:
+  - type: network
+    filename: "{{ recipe_id }}-net.network"
+    template: networks/bridge.network.tera
 
-  # equivalent with podman's --module; not user-editable by default
-  module: /etc/nvd.conf
+  - type: volume
+    filename: "{{ recipe_id }}-db.volume"
+    template: volumes/named.volume.tera
 
-  # similar to group_add, but by id instead of name
-  group: 1000
+  - type: volume
+    filename: "{{ recipe_id }}-data.volume"
+    template: volumes/named.volume.tera
 
-  # necessary when the host uses a proxy but the container doesn't. generally not needed.
-  http_proxy: false
+  - type: container
+    filename: "{{ recipe_id }}-db.container"
+    template: containers/mariadb.container.tera
 
-  # allows the container itself to tell systemd when it's started. defaults to false.
-  notify: true
+  - type: container
+    filename: "{{ recipe_id }}-app.container"
+    template: containers/nextcloud.container.tera
+    depends_on:
+      - "{{ recipe_id }}-db.container"
 
-  # limit on how many PIDs a container can create. default 2048.
-  pids_limit: 2048
-
-  # defines a pod that the container is part of. useful if you're using multiple containers for a recipe.
-  pod: terra_builders
-
-  # defines a command to run in the container when restarting the service
-  # mutually exclusive with reload_signal
-  reload_cmd: /usr/bin/restart
-
-  # defines a signal to send to the container when restarting the service
-  # mutually exclusive with reload_cmd
-  reload_signal: SIGHUP
-
-  # how many times to retry pulling images between local storage and the registry. default 3
-  retry: 3
-
-  # how long to wait between retries for pulling or pushing images between local storage and the registry. default 2s then exponentially back off.
-  retry_delay: 20s
-
-  # start the container after the associated pod is started. default true.
-  # only has effecty if pod is defined
-  start_with_pod: true
-
-  # see https://docs.podman.io/en/latest/markdown/podman-container.unit.5.html#subgidmap-name
-  sub_gid_map: gtest
-
-  # see https://docs.podman.io/en/latest/markdown/podman-container.unit.5.html#subuidmap-name
-  sub_uid_map: utest
-
-  # defines timezone for the container. defaults to local.
-  # see /usr/share/zoneinfo for valid timezones, though area-based, GMT, and local are all valid.
-  # local defines timezone as the host's timezone
-  timezone: local
-
-  # see https://docs.podman.io/en/latest/markdown/podman-container.unit.5.html#uidmap-flags-container-uid-from-uid-amount
-  uid_map: 0:10000:10
+  - type: container
+    filename: "{{ recipe_id }}-redis.container"
+    template: containers/redis.container.tera
+    condition: "enable_redis == true"
+    depends_on:
+      - "{{ recipe_id }}-net.network"

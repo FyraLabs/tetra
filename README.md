@@ -1,23 +1,63 @@
 # Tetra
 
-Tetra is a recipe/user-configuration layer for generating Podman Quadlets.
+Tetra is becoming a host agent for a web control plane. The agent is organized
+around one dispatcher with independent modules for settings, services, files,
+and recipes. The intended production transport is an outbound WSS connection
+with mTLS and signed command envelopes.
 
-Instead of implementing Quadlet serialization itself, Tetra converts the merged recipe into a
-`podlet podman run ...` invocation and delegates Quadlet generation to
-[containers/podlet](https://github.com/containers/podlet).
+Recipes stay in YAML, but Quadlet generation now uses Tera templates. A recipe
+declares metadata, UI parameters, requirements, and a list of resources to
+render.
 
-## Usage
-
-Install `podlet` first, then run:
-
-```sh
-cargo run -- recipe.yaml userconf.yaml --install --output-dir ./quadlets
-```
-
-To see the exact Podlet command without executing it:
+## Render Quadlets
 
 ```sh
-cargo run -- recipe.yaml userconf.yaml --dry-run
+cargo run -- render schema.yaml --templates-dir ./templates --output-dir ./quadlets
 ```
 
-The user config YAML is recursively merged over the recipe YAML before generating the Podlet command.
+To preview rendered files without writing them:
+
+```sh
+cargo run -- render schema.yaml --templates-dir ./templates --dry-run
+```
+
+Parameter values can be supplied as a simple YAML map:
+
+```yaml
+domain: cloud.example.com
+enable_redis: true
+```
+
+Then pass it with:
+
+```sh
+cargo run -- render schema.yaml --values values.yaml --templates-dir ./templates --output-dir ./quadlets
+```
+
+## Agent Commands
+
+The local dispatcher accepts the same command envelope shape that the transport
+will receive from the web UI:
+
+```json
+{
+  "id": "cmd-1",
+  "module": "settings",
+  "action": "get_system",
+  "payload": {}
+}
+```
+
+Run it locally with:
+
+```sh
+cargo run -- agent-dispatch command.json
+```
+
+## Legacy Podlet Mode
+
+The original single-container Podlet adapter is still available:
+
+```sh
+cargo run -- podlet recipe.yaml userconf.yaml --install --output-dir ./quadlets
+```

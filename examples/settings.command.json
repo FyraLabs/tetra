@@ -1,0 +1,6 @@
+{
+  "id": "cmd-1",
+  "module": "settings",
+  "action": "get_system",
+  "payload": {}
+}

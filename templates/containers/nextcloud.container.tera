@@ -1,0 +1,21 @@
+[Unit]
+Description={{ name }} application
+Requires={{ recipe_id }}-db.service
+After={{ recipe_id }}-db.service
+
+[Container]
+ContainerName={{ recipe_id }}-app
+Image=docker.io/library/nextcloud:latest
+Network={{ recipe_id }}-net.network
+Volume={{ recipe_id }}-data.volume:/var/www/html
+Environment=NEXTCLOUD_TRUSTED_DOMAINS={{ domain }}
+Environment=MYSQL_HOST={{ recipe_id }}-db
+Environment=MYSQL_DATABASE=nextcloud
+Environment=MYSQL_USER=nextcloud
+Environment=MYSQL_PASSWORD={{ db_password }}
+Environment=NEXTCLOUD_ADMIN_USER=admin
+Environment=NEXTCLOUD_ADMIN_PASSWORD={{ admin_password }}
+PublishPort=8080:80
+
+[Install]
+WantedBy=default.target
