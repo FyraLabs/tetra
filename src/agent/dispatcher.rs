@@ -1,12 +1,17 @@
 use std::collections::BTreeMap;
 
 use anyhow::{Result, bail};
-use serde_json::Value;
+use serde_json::{Value, json};
 
-use super::{AgentCommand, AgentResponse};
+use super::{AgentCommand, AgentResponse, module_support::ModuleInfo};
 
 pub trait AgentModule: Send + Sync {
-    fn name(&self) -> &'static str;
+    fn info(&self) -> ModuleInfo;
+
+    fn name(&self) -> &'static str {
+        self.info().name
+    }
+
     fn handle(&self, action: &str, payload: Value) -> Result<Value>;
 }
 
@@ -37,8 +42,16 @@ impl Dispatcher {
         }
     }
 
+    pub fn capabilities(&self) -> Vec<ModuleInfo> {
+        self.modules.values().map(|module| module.info()).collect()
+    }
+
     fn try_dispatch(&self, command: &AgentCommand) -> Result<Value> {
         verify_signature(command)?;
+        if command.module == "agent" && command.action == "capabilities" {
+            return Ok(json!({ "modules": self.capabilities() }));
+        }
+
         let Some(module) = self.modules.get(&command.module) else {
             bail!("unknown module `{}`", command.module);
         };
@@ -64,8 +77,14 @@ mod tests {
     struct Echo;
 
     impl AgentModule for Echo {
-        fn name(&self) -> &'static str {
-            "echo"
+        fn info(&self) -> ModuleInfo {
+            ModuleInfo {
+                name: "echo",
+                feature: "test",
+                description: "Test echo module",
+                status: super::super::module_support::ModuleStatus::Available,
+                actions: &["ping"],
+            }
         }
 
         fn handle(&self, action: &str, payload: Value) -> Result<Value> {

@@ -1,0 +1,279 @@
+use serde_json::{Value, json};
+use tempfile::tempdir;
+use tetra::agent::{AgentCommand, modules};
+
+fn dispatch(module: &str, action: &str, payload: Value) -> tetra::agent::AgentResponse {
+    modules::default_dispatcher().dispatch(AgentCommand {
+        id: format!("{module}-{action}"),
+        module: module.into(),
+        action: action.into(),
+        payload,
+        signature: None,
+    })
+}
+
+#[test]
+fn dispatcher_reports_enabled_modules() {
+    let response = dispatch("agent", "capabilities", json!({}));
+
+    assert!(response.ok, "{response:?}");
+    let modules = response.payload.unwrap()["modules"]
+        .as_array()
+        .unwrap()
+        .clone();
+    let names = modules
+        .iter()
+        .map(|module| module["name"].as_str().unwrap())
+        .collect::<Vec<_>>();
+
+    assert!(names.contains(&"settings"));
+    #[cfg(feature = "files")]
+    assert!(names.contains(&"files"));
+    #[cfg(feature = "recipes")]
+    assert!(names.contains(&"recipes"));
+    #[cfg(feature = "services")]
+    assert!(names.contains(&"services"));
+    #[cfg(feature = "selinux")]
+    assert!(names.contains(&"selinux"));
+    #[cfg(feature = "quadlets")]
+    assert!(names.contains(&"quadlets"));
+}
+
+#[test]
+fn dispatcher_rejects_unknown_modules_and_empty_signatures() {
+    let unknown = dispatch("missing", "capabilities", json!({}));
+    assert!(!unknown.ok);
+    assert!(unknown.error.as_deref().unwrap().contains("unknown module"));
+
+    let empty_signature = modules::default_dispatcher().dispatch(AgentCommand {
+        id: "empty-signature".into(),
+        module: "settings".into(),
+        action: "get_system".into(),
+        payload: json!({}),
+        signature: Some(String::new()),
+    });
+    assert!(!empty_signature.ok);
+    assert!(
+        empty_signature
+            .error
+            .as_deref()
+            .unwrap()
+            .contains("signature cannot be empty")
+    );
+}
+
+#[test]
+fn settings_module_returns_host_shape() {
+    let response = dispatch("settings", "get_system", json!({}));
+
+    assert!(response.ok, "{response:?}");
+    let payload = response.payload.unwrap();
+    assert!(payload["os"].is_string());
+    assert!(payload["arch"].is_string());
+    assert!(payload["family"].is_string());
+}
+
+#[cfg(feature = "files")]
+#[test]
+fn files_module_reads_and_writes_files() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("managed.conf");
+
+    let write = dispatch(
+        "files",
+        "write",
+        json!({ "path": path, "contents": "enabled=true\n" }),
+    );
+    assert!(write.ok, "{write:?}");
+
+    let read = dispatch("files", "read", json!({ "path": path }));
+    assert!(read.ok, "{read:?}");
+    assert_eq!(read.payload.unwrap()["contents"], "enabled=true\n");
+}
+
+#[cfg(feature = "quadlets")]
+#[test]
+fn quadlets_module_installs_lists_reads_and_deletes_files() {
+    let dir = tempdir().unwrap();
+    let base_dir = dir.path();
+
+    let install = dispatch(
+        "quadlets",
+        "install",
+        json!({
+            "base_dir": base_dir,
+            "resources": [
+                {
+                    "filename": "app.container",
+                    "contents": "[Container]\nImage=example/app:latest\n"
+                },
+                {
+                    "filename": "app.network",
+                    "contents": "[Network]\nDriver=bridge\n"
+                }
+            ]
+        }),
+    );
+    assert!(install.ok, "{install:?}");
+    assert_eq!(
+        install.payload.unwrap()["installed"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+
+    let list = dispatch("quadlets", "list", json!({ "base_dir": base_dir }));
+    assert!(list.ok, "{list:?}");
+    let files = list.payload.unwrap()["files"].as_array().unwrap().clone();
+    assert_eq!(files.len(), 2);
+    assert_eq!(files[0]["filename"], "app.container");
+    assert_eq!(files[1]["filename"], "app.network");
+
+    let read = dispatch(
+        "quadlets",
+        "read",
+        json!({ "base_dir": base_dir, "filename": "app.container" }),
+    );
+    assert!(read.ok, "{read:?}");
+    assert_eq!(
+        read.payload.unwrap()["contents"],
+        "[Container]\nImage=example/app:latest\n"
+    );
+
+    let delete = dispatch(
+        "quadlets",
+        "delete",
+        json!({ "base_dir": base_dir, "filename": "app.network" }),
+    );
+    assert!(delete.ok, "{delete:?}");
+}
+
+#[cfg(feature = "quadlets")]
+#[test]
+fn quadlets_module_rejects_invalid_or_unsafe_files() {
+    let dir = tempdir().unwrap();
+    let base_dir = dir.path();
+
+    let wrong_extension = dispatch(
+        "quadlets",
+        "validate",
+        json!({
+            "base_dir": base_dir,
+            "filename": "app.service",
+            "contents": "[Container]\nImage=example\n"
+        }),
+    );
+    assert!(!wrong_extension.ok);
+
+    let unsafe_path = dispatch(
+        "quadlets",
+        "write",
+        json!({
+            "base_dir": base_dir,
+            "filename": "../app.container",
+            "contents": "[Container]\nImage=example\n"
+        }),
+    );
+    assert!(!unsafe_path.ok);
+}
+
+#[cfg(feature = "quadlets")]
+#[test]
+fn quadlets_module_supports_dry_run_and_system_scope() {
+    let dir = tempdir().unwrap();
+    let base_dir = dir.path();
+
+    let dry_run = dispatch(
+        "quadlets",
+        "install",
+        json!({
+            "base_dir": base_dir,
+            "scope": "system",
+            "dry_run": true,
+            "resources": [
+                {
+                    "filename": "app.container",
+                    "contents": "[Container]\nImage=example/app:latest\n"
+                }
+            ]
+        }),
+    );
+    assert!(dry_run.ok, "{dry_run:?}");
+    let payload = dry_run.payload.unwrap();
+    assert_eq!(payload["dry_run"], true);
+    assert_eq!(payload["written"], false);
+    assert!(!base_dir.join("app.container").exists());
+
+    let system_scope = dispatch("quadlets", "list", json!({ "scope": "system" }));
+    assert!(system_scope.ok, "{system_scope:?}");
+    assert_eq!(
+        system_scope.payload.unwrap()["base_dir"],
+        "/etc/containers/systemd"
+    );
+}
+
+#[cfg(feature = "services")]
+#[test]
+fn services_mutations_support_dry_run() {
+    let response = dispatch(
+        "services",
+        "restart",
+        json!({ "service": "example.service", "dry_run": true }),
+    );
+
+    assert!(response.ok, "{response:?}");
+    let payload = response.payload.unwrap();
+    assert_eq!(payload["command"], "systemctl restart example.service");
+    assert_eq!(payload["dry_run"], true);
+    assert!(payload["status"].is_null());
+}
+
+#[cfg(feature = "selinux")]
+#[test]
+fn selinux_mutations_support_dry_run() {
+    let set_boolean = dispatch(
+        "selinux",
+        "set_boolean",
+        json!({ "name": "virt_use_nfs", "value": true, "dry_run": true }),
+    );
+
+    assert!(set_boolean.ok, "{set_boolean:?}");
+    let payload = set_boolean.payload.unwrap();
+    assert_eq!(payload["command"], "setsebool -P virt_use_nfs on");
+    assert_eq!(payload["dry_run"], true);
+    assert!(payload["status"].is_null());
+
+    let restore = dispatch(
+        "selinux",
+        "restore_context",
+        json!({ "path": "/srv/tetra", "recursive": true, "dry_run": true }),
+    );
+    assert!(restore.ok, "{restore:?}");
+    assert_eq!(
+        restore.payload.unwrap()["command"],
+        "restorecon -R -v /srv/tetra"
+    );
+}
+
+#[cfg(feature = "recipes")]
+#[test]
+fn recipes_module_builds_template_context() {
+    let response = dispatch(
+        "recipes",
+        "context",
+        json!({
+            "recipe_path": "schema.yaml",
+            "values": {
+                "domain": "cloud.example.test"
+            }
+        }),
+    );
+
+    assert!(response.ok, "{response:?}");
+    let context = &response.payload.unwrap()["context"];
+    assert_eq!(context["recipe_id"], "nextcloud");
+    assert_eq!(context["domain"], "cloud.example.test");
+    assert!(context["admin_password"].as_str().unwrap().len() == 32);
+    assert!(context["db_password"].as_str().unwrap().len() == 32);
+}
