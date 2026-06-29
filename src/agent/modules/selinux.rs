@@ -190,9 +190,7 @@ fn parse_getsebool(stdout: &str) -> Vec<Value> {
     stdout
         .lines()
         .filter_map(|line| {
-            let Some((name, value)) = line.split_once("-->") else {
-                return None;
-            };
+            let (name, value) = line.split_once("-->")?;
             Some(json!({
                 "name": name.trim(),
                 "enabled": matches!(value.trim(), "on" | "1" | "true"),
@@ -231,8 +229,7 @@ fn extract_context_type(context: &str) -> Option<&str> {
 fn normalize_key(key: &str) -> String {
     key.trim()
         .to_lowercase()
-        .replace(' ', "_")
-        .replace('-', "_")
+        .replace([' ', '-'], "_")
 }
 
 #[cfg(test)]

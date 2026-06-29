@@ -94,16 +94,13 @@ struct QuadletFile {
 
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 enum QuadletScope {
+    #[default]
     User,
     System,
 }
 
-impl Default for QuadletScope {
-    fn default() -> Self {
-        Self::User
-    }
-}
 
 impl AgentModule for QuadletsModule {
     fn info(&self) -> ModuleInfo {
