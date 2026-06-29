@@ -101,7 +101,6 @@ enum QuadletScope {
     System,
 }
 
-
 impl AgentModule for QuadletsModule {
     fn info(&self) -> ModuleInfo {
         INFO

@@ -227,9 +227,7 @@ fn extract_context_type(context: &str) -> Option<&str> {
 }
 
 fn normalize_key(key: &str) -> String {
-    key.trim()
-        .to_lowercase()
-        .replace([' ', '-'], "_")
+    key.trim().to_lowercase().replace([' ', '-'], "_")
 }
 
 #[cfg(test)]

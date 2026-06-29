@@ -137,19 +137,20 @@ pub fn render_from_files(options: &RenderOptions) -> Result<Vec<RenderedResource
     let rendered = render_recipe(&recipe, &values, &options.templates_dir)?;
 
     if let Some(output_dir) = &options.output_dir
-        && !options.dry_run {
-            fs::create_dir_all(output_dir).with_context(|| {
-                format!(
-                    "failed to create output directory `{}`",
-                    output_dir.display()
-                )
-            })?;
-            for resource in &rendered {
-                let path = output_dir.join(&resource.filename);
-                fs::write(&path, &resource.contents)
-                    .with_context(|| format!("failed to write `{}`", path.display()))?;
-            }
+        && !options.dry_run
+    {
+        fs::create_dir_all(output_dir).with_context(|| {
+            format!(
+                "failed to create output directory `{}`",
+                output_dir.display()
+            )
+        })?;
+        for resource in &rendered {
+            let path = output_dir.join(&resource.filename);
+            fs::write(&path, &resource.contents)
+                .with_context(|| format!("failed to write `{}`", path.display()))?;
         }
+    }
 
     Ok(rendered)
 }
