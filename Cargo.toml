@@ -2,7 +2,7 @@
 name = "tetra"
 version = "0.1.0"
 edition = "2024"
-license = "LGPL-3.0-or-later"
+license = "LGPL-2.1-or-later"
 description = "A modular host agent and recipe layer for generating and managing Podman Quadlets"
 
 [features]
