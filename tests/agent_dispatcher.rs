@@ -1,6 +1,6 @@
 use serde_json::{Value, json};
 use tempfile::tempdir;
-use tetra::agent::{AgentCommand, modules};
+use tetra::agent::{AgentCommand, backend, modules};
 
 fn dispatch(module: &str, action: &str, payload: Value) -> tetra::agent::AgentResponse {
     modules::default_dispatcher().dispatch(AgentCommand {
@@ -37,6 +37,24 @@ fn dispatcher_reports_enabled_modules() {
     assert!(names.contains(&"selinux"));
     #[cfg(feature = "quadlets")]
     assert!(names.contains(&"quadlets"));
+}
+
+#[tokio::test]
+async fn kameo_backend_dispatches_commands() {
+    let response = backend::dispatch_with_default_backend(AgentCommand {
+        id: "backend-settings".into(),
+        module: "settings".into(),
+        action: "get_system".into(),
+        payload: json!({}),
+        signature: None,
+    })
+    .await
+    .unwrap();
+
+    assert!(response.ok, "{response:?}");
+    let payload = response.payload.unwrap();
+    assert!(payload["os"].is_string());
+    assert!(payload["arch"].is_string());
 }
 
 #[test]

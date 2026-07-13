@@ -7,7 +7,7 @@ use std::{
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use tetra::{
-    agent::{AgentCommand, modules},
+    agent::{AgentCommand, backend},
     catalog::{self, RenderOptions},
 };
 
@@ -59,12 +59,13 @@ struct AgentDispatchCli {
     command: Option<PathBuf>,
 }
 
-fn main() -> Result<()> {
+#[tokio::main]
+async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
         Commands::Render(cli) => render(cli),
-        Commands::AgentDispatch(cli) => agent_dispatch(cli),
+        Commands::AgentDispatch(cli) => agent_dispatch(cli).await,
     }
 }
 
@@ -90,7 +91,7 @@ fn render(cli: RenderCli) -> Result<()> {
     Ok(())
 }
 
-fn agent_dispatch(cli: AgentDispatchCli) -> Result<()> {
+async fn agent_dispatch(cli: AgentDispatchCli) -> Result<()> {
     let text = match cli.command {
         Some(path) => fs::read_to_string(&path)
             .with_context(|| format!("failed to read command `{}`", path.display()))?,
@@ -105,7 +106,7 @@ fn agent_dispatch(cli: AgentDispatchCli) -> Result<()> {
 
     let command: AgentCommand =
         serde_json::from_str(&text).context("failed to parse agent command JSON")?;
-    let response = modules::default_dispatcher().dispatch(command);
+    let response = backend::dispatch_with_default_backend(command).await?;
     println!("{}", serde_json::to_string_pretty(&response)?);
     Ok(())
 }
