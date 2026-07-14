@@ -1,6 +1,7 @@
 pub mod backend;
 pub mod command;
 pub mod dispatcher;
+pub mod http;
 pub mod messages;
 pub mod module_support;
 pub mod modules;

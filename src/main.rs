@@ -1,13 +1,17 @@
 use std::{
     fs,
     io::{self, Read},
+    net::SocketAddr,
     path::PathBuf,
 };
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use tetra::{
-    agent::{AgentCommand, backend},
+    agent::{
+        AgentCommand, backend,
+        http::{self, HttpAgentConfig},
+    },
     catalog::{self, RenderOptions},
 };
 
@@ -29,6 +33,9 @@ enum Commands {
 
     /// Dispatch one signed agent command envelope locally.
     AgentDispatch(AgentDispatchCli),
+
+    /// Serve the local agent backend over a small HTTP API.
+    AgentServe(AgentServeCli),
 }
 
 #[derive(Debug, Parser)]
@@ -59,6 +66,17 @@ struct AgentDispatchCli {
     command: Option<PathBuf>,
 }
 
+#[derive(Debug, Parser)]
+struct AgentServeCli {
+    /// Address for the test HTTP agent API to listen on.
+    #[arg(long, default_value = "127.0.0.1:7777")]
+    listen: SocketAddr,
+
+    /// Optional bearer token required by browser clients.
+    #[arg(long, env = "TETRA_AGENT_TOKEN")]
+    bearer_token: Option<String>,
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -66,6 +84,7 @@ async fn main() -> Result<()> {
     match cli.command {
         Commands::Render(cli) => render(cli),
         Commands::AgentDispatch(cli) => agent_dispatch(cli).await,
+        Commands::AgentServe(cli) => agent_serve(cli).await,
     }
 }
 
@@ -109,4 +128,19 @@ async fn agent_dispatch(cli: AgentDispatchCli) -> Result<()> {
     let response = backend::dispatch_with_default_backend(command).await?;
     println!("{}", serde_json::to_string_pretty(&response)?);
     Ok(())
+}
+
+async fn agent_serve(cli: AgentServeCli) -> Result<()> {
+    eprintln!("serving Tetra agent API on http://{}", cli.listen);
+    if cli.bearer_token.is_some() {
+        eprintln!("bearer token authentication is enabled");
+    } else {
+        eprintln!("bearer token authentication is disabled");
+    }
+
+    http::serve(HttpAgentConfig {
+        listen: cli.listen,
+        bearer_token: cli.bearer_token,
+    })
+    .await
 }
