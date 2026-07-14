@@ -220,6 +220,13 @@
       font-size: 12px;
     }
 
+    .hint {
+      margin: 8px 0 0;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.4;
+    }
+
     @media (max-width: 860px) {
       .bar,
       .layout {
@@ -274,6 +281,21 @@
         </section>
 
         <section style="margin-top: 14px;">
+          <h2>Demo Quadlet</h2>
+          <label for="demoScope">Scope</label>
+          <select id="demoScope">
+            <option value="system">System</option>
+            <option value="user">User</option>
+          </select>
+          <div class="actions">
+            <button id="deployDemoBtn" class="primary">Deploy & Start</button>
+            <button id="logsDemoBtn">Logs</button>
+            <button id="stopDemoBtn">Stop</button>
+          </div>
+          <p class="hint">Creates tetra-demo.container, reloads systemd, starts tetra-demo.service, and reads its journal output.</p>
+        </section>
+
+        <section style="margin-top: 14px;">
           <h2>Modules</h2>
           <div id="modules" class="modules"></div>
         </section>
@@ -303,6 +325,13 @@
     const statusEl = document.getElementById("status");
     const statusText = document.getElementById("statusText");
     const modulesEl = document.getElementById("modules");
+    const demoScopeInput = document.getElementById("demoScope");
+
+    const demoService = "tetra-demo.service";
+    const demoQuadlet = {
+      filename: "tetra-demo.container",
+      contents: "[Container]\nImage=quay.io/podman/hello\n"
+    };
 
     const presets = {
       settings: {
@@ -323,6 +352,7 @@
         action: "restart",
         payload: {
           service: "sshd.service",
+          scope: "system",
           dry_run: true
         }
       },
@@ -334,10 +364,7 @@
           base_dir: "/tmp/tetra-quadlets",
           dry_run: true,
           resources: [
-            {
-              filename: "demo.container",
-              contents: "[Container]\nImage=quay.io/podman/hello\n"
-            }
+            demoQuadlet
           ]
         }
       }
@@ -345,10 +372,12 @@
 
     endpointInput.value = localStorage.getItem("tetraEndpoint") || endpointInput.value;
     tokenInput.value = localStorage.getItem("tetraToken") || "";
+    demoScopeInput.value = localStorage.getItem("tetraDemoScope") || demoScopeInput.value;
     commandInput.value = JSON.stringify(presets.settings, null, 2);
 
     endpointInput.addEventListener("input", () => localStorage.setItem("tetraEndpoint", endpointInput.value));
     tokenInput.addEventListener("input", () => localStorage.setItem("tetraToken", tokenInput.value));
+    demoScopeInput.addEventListener("change", () => localStorage.setItem("tetraDemoScope", demoScopeInput.value));
 
     document.querySelectorAll("[data-preset]").forEach((button) => {
       button.addEventListener("click", () => {
@@ -387,28 +416,119 @@
       }
     });
 
+    document.getElementById("deployDemoBtn").addEventListener("click", deployDemoQuadlet);
+    document.getElementById("logsDemoBtn").addEventListener("click", showDemoLogs);
+    document.getElementById("stopDemoBtn").addEventListener("click", stopDemoQuadlet);
+
+    async function deployDemoQuadlet() {
+      const scope = demoScopeInput.value;
+      const steps = [
+        {
+          step: "install quadlet",
+          command: {
+            id: "ui-demo-install",
+            module: "quadlets",
+            action: "install",
+            payload: {
+              scope,
+              dry_run: false,
+              resources: [demoQuadlet]
+            }
+          }
+        },
+        {
+          step: "daemon reload",
+          command: {
+            id: "ui-demo-daemon-reload",
+            module: "services",
+            action: "daemon_reload",
+            payload: {
+              scope,
+              dry_run: false
+            }
+          }
+        },
+        {
+          step: "start service",
+          command: {
+            id: "ui-demo-start",
+            module: "services",
+            action: "start",
+            payload: {
+              scope,
+              service: demoService,
+              dry_run: false
+            }
+          }
+        },
+        {
+          step: "read logs",
+          command: logsCommand(scope)
+        }
+      ];
+
+      setBusy(true);
+      const results = [];
+      try {
+        for (const step of steps) {
+          const result = await requestAgent("POST", "/dispatch", step.command);
+          results.push({ step: step.step, result });
+          responseEl.textContent = JSON.stringify(results, null, 2);
+          if (!result || result.ok === false) {
+            setStatus("err", "Demo failed");
+            return;
+          }
+        }
+        const logs = results[results.length - 1].result;
+        if (logs && logs.payload && typeof logs.payload.stdout === "string") {
+          responseEl.textContent = logs.payload.stdout || JSON.stringify(results, null, 2);
+        }
+        setStatus("ok", "Demo complete");
+      } catch (error) {
+        showError(error);
+      } finally {
+        setBusy(false);
+      }
+    }
+
+    async function showDemoLogs() {
+      const result = await callAgent("POST", "/dispatch", logsCommand(demoScopeInput.value));
+      if (result && result.payload && typeof result.payload.stdout === "string") {
+        responseEl.textContent = result.payload.stdout || JSON.stringify(result, null, 2);
+      }
+    }
+
+    async function stopDemoQuadlet() {
+      await callAgent("POST", "/dispatch", {
+        id: "ui-demo-stop",
+        module: "services",
+        action: "stop",
+        payload: {
+          scope: demoScopeInput.value,
+          service: demoService,
+          dry_run: false
+        }
+      });
+    }
+
+    function logsCommand(scope) {
+      return {
+        id: "ui-demo-logs",
+        module: "services",
+        action: "logs",
+        payload: {
+          scope,
+          service: demoService,
+          lines: 120
+        }
+      };
+    }
+
     async function callAgent(method, path, body) {
       setBusy(true);
       try {
-        const headers = {};
-        if (body) headers["Content-Type"] = "application/json";
-        if (tokenInput.value) headers.Authorization = `Bearer ${tokenInput.value}`;
-
-        const response = await fetch(`${endpointInput.value.replace(/\/$/, "")}${path}`, {
-          method,
-          headers,
-          body: body ? JSON.stringify(body) : undefined
-        });
-        const text = await response.text();
-        let data;
-        try {
-          data = text ? JSON.parse(text) : null;
-        } catch {
-          data = text;
-        }
-
+        const data = await requestAgent(method, path, body);
         responseEl.textContent = typeof data === "string" ? data : JSON.stringify(data, null, 2);
-        setStatus(response.ok ? "ok" : "err", response.ok ? "Connected" : `HTTP ${response.status}`);
         return data;
       } catch (error) {
         showError(error);
@@ -416,6 +536,28 @@
       } finally {
         setBusy(false);
       }
+    }
+
+    async function requestAgent(method, path, body) {
+      const headers = {};
+      if (body) headers["Content-Type"] = "application/json";
+      if (tokenInput.value) headers.Authorization = `Bearer ${tokenInput.value}`;
+
+      const response = await fetch(`${endpointInput.value.replace(/\/$/, "")}${path}`, {
+        method,
+        headers,
+        body: body ? JSON.stringify(body) : undefined
+      });
+      const text = await response.text();
+      let data;
+      try {
+        data = text ? JSON.parse(text) : null;
+      } catch {
+        data = text;
+      }
+
+      setStatus(response.ok ? "ok" : "err", response.ok ? "Connected" : `HTTP ${response.status}`);
+      return data;
     }
 
     function renderModules(modules) {

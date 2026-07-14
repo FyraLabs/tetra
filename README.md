@@ -100,6 +100,12 @@ Use the server's Tailscale IP or MagicDNS name for `100.x.y.z`. Then open
 `http://100.x.y.z:7777`. The test UI can check health, load capabilities, and
 submit command envelopes to `/dispatch`.
 
+The test UI includes a Demo Quadlet panel that writes `tetra-demo.container`,
+runs `systemctl daemon-reload`, starts `tetra-demo.service`, and shows
+`journalctl` output for the unit. Use `System` scope with a root-run agent for
+`/etc/containers/systemd`, or `User` scope with an agent running as your login
+user for `~/.config/containers/systemd`.
+
 The HTTP API is a development harness around the same Kameo-backed agent
 backend. Keep it on Tailscale or localhost, use a bearer token, and prefer
 `"dry_run": true` before testing mutating host actions.
