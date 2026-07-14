@@ -1,4 +1,9 @@
-use std::{collections::BTreeMap, net::SocketAddr, sync::Arc};
+use std::{
+    collections::BTreeMap,
+    net::{IpAddr, SocketAddr},
+    sync::Arc,
+    time::Instant,
+};
 
 use anyhow::{Context as _, Result, anyhow, bail};
 use kameo::actor::ActorRef;
@@ -27,13 +32,17 @@ pub async fn serve(config: HttpAgentConfig) -> Result<()> {
     let config = Arc::new(config);
 
     loop {
-        let (stream, _) = listener.accept().await?;
+        let (stream, source) = listener.accept().await?;
         let backend = backend.clone();
         let config = Arc::clone(&config);
 
         tokio::spawn(async move {
-            if let Err(error) = handle_connection(stream, backend, config).await {
-                eprintln!("agent HTTP connection failed: {error:#}");
+            if let Err(error) = handle_connection(stream, source, backend, config).await {
+                println!(
+                    "source={} method=- path=- status=500 duration_ms=0 error={:?}",
+                    source.ip(),
+                    error.to_string()
+                );
             }
         });
     }
@@ -41,14 +50,26 @@ pub async fn serve(config: HttpAgentConfig) -> Result<()> {
 
 async fn handle_connection(
     mut stream: TcpStream,
+    source: SocketAddr,
     backend: ActorRef<AgentBackend>,
     config: Arc<HttpAgentConfig>,
 ) -> Result<()> {
+    let started = Instant::now();
     let request = read_request(&mut stream).await?;
+    let method = request.method.clone();
+    let path = request.path.clone();
     let response = route_request(request, backend, &config).await;
+    log_request(source.ip(), &method, &path, response.status, started);
     stream.write_all(response.to_bytes().as_slice()).await?;
     stream.shutdown().await?;
     Ok(())
+}
+
+fn log_request(source: IpAddr, method: &str, path: &str, status: u16, started: Instant) {
+    println!(
+        "source={source} method={method} path={path} status={status} duration_ms={}",
+        started.elapsed().as_millis()
+    );
 }
 
 async fn route_request(
