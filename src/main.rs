@@ -11,6 +11,7 @@ use tetra::{
     agent::{
         AgentCommand, backend,
         http::{self, HttpAgentConfig},
+        vsock::{self, VsockAgentConfig},
     },
     catalog::{self, RenderOptions},
 };
@@ -36,6 +37,9 @@ enum Commands {
 
     /// Serve the local agent backend over a small HTTP API.
     AgentServe(AgentServeCli),
+
+    /// Serve the local agent backend over a Linux virtio-vsock listener.
+    AgentVsockServe(AgentVsockServeCli),
 }
 
 #[derive(Debug, Parser)]
@@ -77,6 +81,17 @@ struct AgentServeCli {
     bearer_token: Option<String>,
 }
 
+#[derive(Debug, Parser)]
+struct AgentVsockServeCli {
+    /// Vsock port to listen on inside the VM guest.
+    #[arg(long, default_value_t = 2048)]
+    port: u32,
+
+    /// Maximum accepted command JSON body size in bytes.
+    #[arg(long, default_value_t = 1024 * 1024)]
+    max_command_bytes: usize,
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -85,6 +100,7 @@ async fn main() -> Result<()> {
         Commands::Render(cli) => render(cli),
         Commands::AgentDispatch(cli) => agent_dispatch(cli).await,
         Commands::AgentServe(cli) => agent_serve(cli).await,
+        Commands::AgentVsockServe(cli) => agent_vsock_serve(cli),
     }
 }
 
@@ -143,4 +159,11 @@ async fn agent_serve(cli: AgentServeCli) -> Result<()> {
         bearer_token: cli.bearer_token,
     })
     .await
+}
+
+fn agent_vsock_serve(cli: AgentVsockServeCli) -> Result<()> {
+    vsock::serve(VsockAgentConfig {
+        port: cli.port,
+        max_command_bytes: cli.max_command_bytes,
+    })
 }

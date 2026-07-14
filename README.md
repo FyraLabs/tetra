@@ -86,6 +86,28 @@ Run it locally with:
 cargo run -- agent-dispatch examples/settings.command.json
 ```
 
+## Vsock Agent Smoke Test
+
+For a VM guest with virtio-vsock enabled, run Tetra inside the guest as a small
+host-initiated test listener:
+
+```sh
+cargo run --all-features -- agent-vsock-serve --port 2048
+```
+
+From the VM host, connect to the guest CID and send one command JSON object. For
+libvirt guests, find the CID with `virsh dumpxml VM_NAME | grep -A4 -i vsock`.
+
+```sh
+printf '%s' '{"id":"cmd-1","module":"settings","action":"get_system","payload":{}}' \
+  | socat - VSOCK-CONNECT:GUEST_CID:2048
+```
+
+The listener reads one command per connection and writes one `AgentResponse`
+JSON object. This is a development smoke test for host-to-guest command
+dispatch over vsock; the production control-plane transport is still described
+in [docs/agent-protocol.md](docs/agent-protocol.md).
+
 For browser-based hardware testing on a private network, run the development
 HTTP agent API on the host:
 
