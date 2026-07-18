@@ -6,6 +6,12 @@ dashboard/controller and the Tetra host agent.
 The local CLI command `tetra agent-dispatch` accepts the same command envelope
 that the production transport is expected to carry over outbound WSS.
 
+For host-to-guest virtio-vsock smoke testing, `tetra agent-vsock-serve` runs a
+Linux-only guest listener that accepts one raw `AgentCommand` JSON object per
+connection and replies with one raw `AgentResponse` JSON object. This is a
+development harness for testing the VM vsock path from the host, not the final
+dashboard session protocol.
+
 ## Connection Negotiation
 
 The production connection model is agent-outbound: each host agent opens and
@@ -127,6 +133,25 @@ Response frame:
   }
 }
 ```
+
+### Host-to-Guest Vsock Smoke Test
+
+Inside the VM guest:
+
+```sh
+tetra agent-vsock-serve --port 2048
+```
+
+From the VM host, connect to the guest CID:
+
+```sh
+printf '%s' '{"id":"cmd-1","module":"settings","action":"get_system","payload":{}}' \
+  | socat - VSOCK-CONNECT:GUEST_CID:2048
+```
+
+The smoke-test listener accepts the command envelope directly, without the
+outer `{ "type": "command" }` transport frame, so it matches `agent-dispatch`
+and the `/dispatch` HTTP development endpoint.
 
 Heartbeat frame:
 
