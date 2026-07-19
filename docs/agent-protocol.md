@@ -20,9 +20,9 @@ WSS with mTLS. When the agent runs inside a VM, the same JSON frame protocol may
 be carried over a virtio-vsock stream to the VM host so the VM can be controlled
 from the same dashboard interface without exposing guest networking.
 
-The current repository defines the transport boundary and configuration shape,
-but does not yet implement the WSS client. The JSON command envelope documented
-below is the stable application payload that the transport carries.
+The repository includes an outbound WSS client via `tetra agent-connect`. The
+JSON command envelope documented below is the stable application payload that
+the transport carries.
 
 Transport configuration:
 
@@ -59,6 +59,12 @@ Fields:
 - `client_key_path`: Private key for the client certificate. Required for WSS.
 - `server_ca_path`: CA bundle used to verify the dashboard/control-plane server
   certificate. Required for WSS.
+
+Run the outbound agent:
+
+```sh
+tetra agent-connect --config /etc/tetra/agent-transport.json --host-id host-01
+```
 
 For `vsock://` endpoints, `CID` may be numeric or one of the aliases
 `hypervisor` (`0`), `local` (`1`), or `host` (`2`). VM guest agents usually use
@@ -947,6 +953,7 @@ Feature: `podman`
 Actions:
 
 - `containers`
+- `inspect`
 - `images`
 - `volumes`
 - `networks`
@@ -957,6 +964,14 @@ Actions:
 - `remove`
 
 List actions return raw command output plus parsed JSON in `data`.
+
+`inspect` returns `podman inspect NAME` output in `data`.
+
+`inspect` payload:
+
+```json
+{ "name": "app" }
+```
 
 `logs` payload:
 

@@ -21,6 +21,7 @@ const INFO: ModuleInfo = ModuleInfo {
         "capabilities",
         "plan",
         "containers",
+        "inspect",
         "images",
         "volumes",
         "networks",
@@ -51,6 +52,10 @@ impl AgentModule for PodmanModule {
 
         match action {
             "containers" => run_command_json("podman", ["ps", "--all", "--format", "json"]),
+            "inspect" => {
+                let payload: NamedPayload = parse_payload(payload)?;
+                run_command_json("podman", ["inspect", &payload.name])
+            }
             "images" => run_command_json("podman", ["images", "--format", "json"]),
             "volumes" => run_command_json("podman", ["volume", "ls", "--format", "json"]),
             "networks" => run_command_json("podman", ["network", "ls", "--format", "json"]),
@@ -94,5 +99,11 @@ mod tests {
         assert_eq!(response["command"], "podman rm app");
         assert_eq!(response["dry_run"], true);
         assert!(response["status"].is_null());
+    }
+
+    #[test]
+    fn inspect_requires_name_payload() {
+        let response = PodmanModule.handle("inspect", json!({})).unwrap_err();
+        assert!(response.to_string().contains("invalid command payload"));
     }
 }

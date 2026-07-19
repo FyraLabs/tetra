@@ -11,7 +11,9 @@ use tetra::{
     agent::{
         AgentCommand, backend,
         http::{self, HttpAgentConfig},
+        transport::TransportConfig,
         vsock::{self, VsockAgentConfig},
+        websocket::{self, WebSocketAgentConfig},
     },
     catalog::{self, RenderOptions},
 };
@@ -40,6 +42,9 @@ enum Commands {
 
     /// Serve the local agent backend over a Linux virtio-vsock listener.
     AgentVsockServe(AgentVsockServeCli),
+
+    /// Connect the local agent backend to an outbound WSS control plane.
+    AgentConnect(AgentConnectCli),
 }
 
 #[derive(Debug, Parser)]
@@ -92,6 +97,21 @@ struct AgentVsockServeCli {
     max_command_bytes: usize,
 }
 
+#[derive(Debug, Parser)]
+struct AgentConnectCli {
+    /// JSON transport config containing control_plane_url and optional TLS paths.
+    #[arg(short, long, value_name = "FILE")]
+    config: PathBuf,
+
+    /// Stable dashboard host id for this agent.
+    #[arg(long, env = "TETRA_HOST_ID")]
+    host_id: String,
+
+    /// Reconnect with exponential backoff when the control-plane session closes.
+    #[arg(long, default_value_t = true)]
+    reconnect: bool,
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -101,6 +121,7 @@ async fn main() -> Result<()> {
         Commands::AgentDispatch(cli) => agent_dispatch(cli).await,
         Commands::AgentServe(cli) => agent_serve(cli).await,
         Commands::AgentVsockServe(cli) => agent_vsock_serve(cli),
+        Commands::AgentConnect(cli) => agent_connect(cli).await,
     }
 }
 
@@ -166,4 +187,18 @@ fn agent_vsock_serve(cli: AgentVsockServeCli) -> Result<()> {
         port: cli.port,
         max_command_bytes: cli.max_command_bytes,
     })
+}
+
+async fn agent_connect(cli: AgentConnectCli) -> Result<()> {
+    let text = fs::read_to_string(&cli.config)
+        .with_context(|| format!("failed to read config `{}`", cli.config.display()))?;
+    let transport: TransportConfig =
+        serde_json::from_str(&text).context("failed to parse transport config JSON")?;
+
+    websocket::run(WebSocketAgentConfig {
+        transport,
+        host_id: cli.host_id,
+        reconnect: cli.reconnect,
+    })
+    .await
 }
