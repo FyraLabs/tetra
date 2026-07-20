@@ -334,3 +334,41 @@ fn recipes_module_builds_template_context() {
     assert!(context["admin_password"].as_str().unwrap().len() == 32);
     assert!(context["db_password"].as_str().unwrap().len() == 32);
 }
+
+#[cfg(feature = "recipes")]
+#[test]
+fn recipes_module_renders_inline_recipe_bundles() {
+    let response = dispatch(
+        "recipes",
+        "render_inline",
+        json!({
+            "recipe": r#"
+recipe_id: nginx-site
+name: Nginx static site
+version: 0.1.0
+parameters:
+  - key: app_id
+    label: App ID
+    type: string
+    default: demo-web
+resources:
+  - type: container
+    filename: "{{ app_id }}.container"
+    template: containers/nginx.container.tera
+"#,
+            "templates": {
+                "containers/nginx.container.tera": "[Container]\nContainerName={{ app_id }}\n"
+            }
+        }),
+    );
+
+    assert!(response.ok, "{response:?}");
+    let payload = response.payload.unwrap();
+    let resources = payload["resources"].as_array().unwrap();
+    assert_eq!(resources.len(), 1);
+    assert_eq!(resources[0]["filename"], "demo-web.container");
+    assert_eq!(
+        resources[0]["contents"],
+        "[Container]\nContainerName=demo-web\n"
+    );
+}

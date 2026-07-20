@@ -1,12 +1,13 @@
 [Unit]
 Description={{ name }} Redis cache
-Requires={{ recipe_id }}-app.service
-After={{ recipe_id }}-app.service
 
 [Container]
-ContainerName={{ recipe_id }}-redis
+ContainerName={{ app_id }}-redis
 Image=docker.io/library/redis:7-alpine
-Network={{ recipe_id }}-net.network
+Network={{ app_id }}-net.network
+
+[Service]
+Restart=always
 
 [Install]
 WantedBy=default.target

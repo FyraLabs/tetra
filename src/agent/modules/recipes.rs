@@ -20,7 +20,13 @@ const INFO: ModuleInfo = ModuleInfo {
     feature: "recipes",
     description: "Render app recipes into Quadlet resources and expose template context.",
     status: ModuleStatus::Available,
-    actions: &["capabilities", "render", "context"],
+    actions: &[
+        "capabilities",
+        "render",
+        "render_inline",
+        "context",
+        "context_inline",
+    ],
 };
 
 #[derive(Debug, Deserialize)]
@@ -34,8 +40,24 @@ struct RenderPayload {
 }
 
 #[derive(Debug, Deserialize)]
+struct InlineRenderPayload {
+    recipe: String,
+    #[serde(default)]
+    templates: BTreeMap<String, String>,
+    #[serde(default)]
+    values: BTreeMap<String, YamlValue>,
+}
+
+#[derive(Debug, Deserialize)]
 struct ContextPayload {
     recipe_path: PathBuf,
+    #[serde(default)]
+    values: BTreeMap<String, YamlValue>,
+}
+
+#[derive(Debug, Deserialize)]
+struct InlineContextPayload {
+    recipe: String,
     #[serde(default)]
     values: BTreeMap<String, YamlValue>,
 }
@@ -62,11 +84,27 @@ impl AgentModule for RecipeModule {
                 })?;
                 Ok(json!({ "resources": resources }))
             }
+            "render_inline" => {
+                let payload: InlineRenderPayload = serde_json::from_value(payload)?;
+                let recipe = catalog::load_recipe_from_str(&payload.recipe)?;
+                let resources = catalog::render_recipe_with_templates(
+                    &recipe,
+                    &payload.values,
+                    &payload.templates,
+                )?;
+                Ok(json!({ "recipe": recipe, "resources": resources }))
+            }
             "context" => {
                 let payload: ContextPayload = serde_json::from_value(payload)?;
                 let recipe = catalog::load_recipe(payload.recipe_path)?;
                 let context = catalog::context_for_agent(&recipe, &payload.values)?;
                 Ok(json!({ "context": context }))
+            }
+            "context_inline" => {
+                let payload: InlineContextPayload = serde_json::from_value(payload)?;
+                let recipe = catalog::load_recipe_from_str(&payload.recipe)?;
+                let context = catalog::context_for_agent(&recipe, &payload.values)?;
+                Ok(json!({ "recipe": recipe, "context": context }))
             }
             _ => unsupported_action(INFO.name, action),
         }

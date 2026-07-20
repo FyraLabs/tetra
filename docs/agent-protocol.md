@@ -488,7 +488,9 @@ Feature: `recipes`
 Actions:
 
 - `render`
+- `render_inline`
 - `context`
+- `context_inline`
 
 `render` payload:
 
@@ -511,10 +513,63 @@ Response payload:
       "kind": "Container",
       "filename": "nextcloud-app.container",
       "contents": "[Container]\n..."
+    },
+    {
+      "kind": "File",
+      "filename": "index.html",
+      "contents": "<h1>Hello</h1>\n"
     }
   ]
 }
 ```
+
+Recipe resource kinds include Quadlet resources (`container`, `network`,
+`volume`, `pod`, `kube`) and `file` companion resources. Companion file
+resources are intended to be installed through `quadlets.install.files`, under
+the mutable companion-file bundle directory.
+
+`render_inline` payload:
+
+```json
+{
+  "recipe": "recipe_id: nginx-site\nname: Nginx static site\nversion: 0.1.0\n...",
+  "templates": {
+    "containers/nginx-site.container.tera": "[Container]\nContainerName={{ app_id }}\n"
+  },
+  "values": {
+    "app_id": "demo-web"
+  }
+}
+```
+
+This action is intended for recipe bundles fetched from a remote catalog by a
+dashboard or control plane. Tetra does not need to be updated when new recipes
+are published, as long as the bundle uses a recipe schema the installed Tetra
+version understands.
+
+Recommended remote catalog shape:
+
+```json
+{
+  "version": 1,
+  "recipes": [
+    {
+      "id": "nginx-site",
+      "name": "Nginx static site",
+      "description": "Serve static files with nginx.",
+      "category": "web",
+      "recipe": "recipe_id: nginx-site\n...",
+      "templates": {
+        "containers/nginx-site.container.tera": "[Container]\n..."
+      }
+    }
+  ]
+}
+```
+
+`context_inline` accepts the same `recipe` and `values` fields as
+`render_inline`, and returns resolved parameter context without rendering
+templates.
 
 `context` payload:
 

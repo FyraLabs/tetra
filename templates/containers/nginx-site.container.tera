@@ -1,0 +1,15 @@
+[Unit]
+Description={{ site_title }} web site
+
+[Container]
+ContainerName={{ app_id }}
+Image=docker.io/library/nginx:alpine
+PublishPort={{ host_port }}:80
+Volume={{ bundle_dir }}:/usr/share/nginx/html:ro
+Volume={{ bundle_dir }}/default.conf:/etc/nginx/conf.d/default.conf:ro
+
+[Service]
+Restart=always
+
+[Install]
+WantedBy=default.target

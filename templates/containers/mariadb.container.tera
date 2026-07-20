@@ -2,14 +2,17 @@
 Description={{ name }} database
 
 [Container]
-ContainerName={{ recipe_id }}-db
+ContainerName={{ app_id }}-db
 Image=docker.io/library/mariadb:11
-Network={{ recipe_id }}-net.network
-Volume={{ recipe_id }}-db.volume:/var/lib/mysql
-Environment=MARIADB_DATABASE=nextcloud
-Environment=MARIADB_USER=nextcloud
+Network={{ app_id }}-net.network
+Volume={{ app_id }}-db.volume:/var/lib/mysql
+Environment=MARIADB_DATABASE={{ database_name }}
+Environment=MARIADB_USER={{ database_user }}
 Environment=MARIADB_PASSWORD={{ db_password }}
 Environment=MARIADB_ROOT_PASSWORD={{ db_password }}
+
+[Service]
+Restart=always
 
 [Install]
 WantedBy=default.target
