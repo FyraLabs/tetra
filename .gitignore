@@ -21,6 +21,7 @@ Thumbs.db
 *.secret.yml
 *.secrets.yaml
 *.secrets.yml
+*.local.md
 
 # Generated Quadlet output from examples/docs
 /quadlets/
