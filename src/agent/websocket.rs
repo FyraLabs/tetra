@@ -3,10 +3,10 @@ use std::{env, time::Duration};
 use anyhow::{Context as _, Result, bail};
 use futures_util::{SinkExt, StreamExt};
 use kameo::actor::ActorRef;
-#[cfg(test)]
-use serde_json::{Value, json};
 use rand::RngExt;
 use serde::{Deserialize, Serialize};
+#[cfg(test)]
+use serde_json::{Value, json};
 use tokio::time::sleep;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 

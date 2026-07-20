@@ -542,16 +542,27 @@ Actions:
 - `delete`
 - `validate`
 - `install`
+- `list_files`
 
 Shared payload fields:
 
 - `scope`: `"user"` or `"system"`. Defaults to `"user"`.
 - `base_dir`: Optional override. Useful for tests and custom deployments.
+- `files_base_dir`: Optional override for companion files.
 
-Default base directories:
+Default Quadlet unit directories:
 
 - User scope: `$HOME/.config/containers/systemd`
 - System scope: `/etc/containers/systemd`
+
+Default companion file directories:
+
+- User scope: `$XDG_DATA_HOME/tetra/quadlets` or `$HOME/.local/share/tetra/quadlets`
+- System scope: `/var/lib/tetra/quadlets`
+
+During `install`, companion files are written under a per-Quadlet bundle directory
+derived from the first Quadlet resource name. For example, `app.container` companion
+files default to `/var/lib/tetra/quadlets/app` in system scope.
 
 Supported Quadlet filename extensions:
 
@@ -593,12 +604,57 @@ Supported Quadlet filename extensions:
       "contents": "[Container]\nImage=example/app:latest\n"
     }
   ],
+  "files": [
+    {
+      "filename": "index.html",
+      "contents": "<h1>Hello</h1>\n"
+    },
+    {
+      "filename": "nginx/default.conf",
+      "contents": "server {}\n"
+    }
+  ],
   "selinux": {
     "context_type": "container_unit_file_t",
     "recursive": true
   }
 }
 ```
+
+`resources` are validated as Quadlet files and written to the Quadlet unit directory.
+`files` are companion files written under the mutable companion-file bundle directory,
+support nested relative paths, and are rejected if the path escapes the bundle directory.
+
+`list_files` payload:
+
+```json
+{ "scope": "user" }
+```
+
+`list_files` returns all regular files under the selected base directory, including
+companion files:
+
+```json
+{
+  "base_dir": "/home/example/.config/containers/systemd",
+  "files_base_dir": "/home/example/.local/share/tetra/quadlets",
+  "files": [
+    {
+      "filename": "app.container",
+      "path": "/home/example/.config/containers/systemd/app.container",
+      "quadlet": true
+    },
+    {
+      "filename": "app/index.html",
+      "path": "/home/example/.local/share/tetra/quadlets/app/index.html",
+      "quadlet": false
+    }
+  ]
+}
+```
+
+To read a companion file from the companion-file directory, include
+`"companion": true` in the `read` payload.
 
 `delete` payload:
 
