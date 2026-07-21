@@ -16,13 +16,13 @@ use serde_json::Value;
 /// non-empty value is accepted but not yet verified against a key.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AgentCommand {
-	pub id: String,
-	pub module: String,
-	pub action: String,
-	#[serde(default)]
-	pub payload: Value,
-	#[serde(default)]
-	pub signature: Option<String>,
+    pub id: String,
+    pub module: String,
+    pub action: String,
+    #[serde(default)]
+    pub payload: Value,
+    #[serde(default)]
+    pub signature: Option<String>,
 }
 
 /// The response to an [`AgentCommand`].
@@ -31,33 +31,33 @@ pub struct AgentCommand {
 /// `skip_serializing_if` attributes keep the wire format compact.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AgentResponse {
-	pub id: String,
-	pub ok: bool,
-	#[serde(skip_serializing_if = "Option::is_none")]
-	pub payload: Option<Value>,
-	#[serde(skip_serializing_if = "Option::is_none")]
-	pub error: Option<String>,
+    pub id: String,
+    pub ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub payload: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 impl AgentResponse {
-	/// Build a successful response carrying `payload`, echoing the command `id`.
-	pub fn ok(id: impl Into<String>, payload: Value) -> Self {
-		Self {
-			id: id.into(),
-			ok: true,
-			payload: Some(payload),
-			error: None,
-		}
-	}
+    /// Build a successful response carrying `payload`, echoing the command `id`.
+    pub fn ok(id: impl Into<String>, payload: Value) -> Self {
+        Self {
+            id: id.into(),
+            ok: true,
+            payload: Some(payload),
+            error: None,
+        }
+    }
 
-	/// Build an error response carrying a human-readable `error` message,
-	/// echoing the command `id`.
-	pub fn error(id: impl Into<String>, error: impl Into<String>) -> Self {
-		Self {
-			id: id.into(),
-			ok: false,
-			payload: None,
-			error: Some(error.into()),
-		}
-	}
+    /// Build an error response carrying a human-readable `error` message,
+    /// echoing the command `id`.
+    pub fn error(id: impl Into<String>, error: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            ok: false,
+            payload: None,
+            error: Some(error.into()),
+        }
+    }
 }
