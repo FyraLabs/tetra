@@ -19,6 +19,7 @@
 
 pub mod backend;
 pub mod command;
+pub mod crypto;
 pub mod dispatcher;
 pub mod http;
 pub mod messages;
