@@ -5,16 +5,42 @@ use serde_json::{Value, json};
 
 use super::{AgentCommand, AgentResponse, module_support::ModuleInfo};
 
+/// A single host-management surface exposed to the dashboard.
+///
+/// Each module owns one slice of host state (settings, files, services,
+/// quadlets, …). The [`Dispatcher`] looks up a module by name and hands the
+/// command's `action` and `payload` to its `handle` method.
+///
+/// Modules are stateless: `handle` takes `&self`, so the same module can be
+/// invoked concurrently from multiple transport tasks. State lives in the
+/// host (systemd, the filesystem, etc.), not in the module.
 pub trait AgentModule: Send + Sync {
+    /// Static metadata describing this module to the dashboard: name, feature
+    /// flag, description, status, and the actions it supports.
     fn info(&self) -> ModuleInfo;
 
+    /// Convenience defaulting `name` to the name in [`info`](Self::info).
+    /// Overridable in case a module wants to register under an alias without
+    /// changing its reported metadata.
     fn name(&self) -> &'static str {
         self.info().name
     }
 
+    /// Handle one action. `action` is the command's `action` field; `payload`
+    /// is the command's `payload` (already parsed from JSON by the transport).
+    /// Implementations conventionally start with
+    /// [`handle_metadata`](super::module_support::handle_metadata) to serve the
+    /// shared `capabilities`/`plan` meta-actions, then match on `action`.
     fn handle(&self, action: &str, payload: Value) -> Result<Value>;
 }
 
+/// Registry of modules that the dispatcher routes commands to.
+///
+/// Built via [`Dispatcher::new`] + [`Dispatcher::with_module`] (or
+/// [`modules::default_dispatcher`](super::modules::default_dispatcher) for the
+/// feature-gated default set). The `BTreeMap` keeps module iteration
+/// deterministic — `agent.capabilities` lists modules in name order, which
+/// makes dashboard diffs stable.
 #[derive(Default)]
 pub struct Dispatcher {
     modules: BTreeMap<String, Box<dyn AgentModule>>,
@@ -25,16 +51,23 @@ impl Dispatcher {
         Self::default()
     }
 
+    /// Builder-style registration: `Dispatcher::new().with_module(Foo).with_module(Bar)`.
     pub fn with_module(mut self, module: impl AgentModule + 'static) -> Self {
         self.register(module);
         self
     }
 
+    /// Register a module under its `name()`. A later registration with the
+    /// same name replaces the earlier one.
     pub fn register(&mut self, module: impl AgentModule + 'static) {
         self.modules
             .insert(module.name().to_string(), Box::new(module));
     }
 
+    /// Dispatch one command: route it to the matching module, or to the
+    /// built-in `agent.capabilities` action. Any error becomes an
+    /// `AgentResponse::error` with the same command `id` — the caller always
+    /// gets a well-formed response, never a panic.
     pub fn dispatch(&self, command: AgentCommand) -> AgentResponse {
         match self.try_dispatch(&command) {
             Ok(payload) => AgentResponse::ok(command.id, payload),
@@ -42,12 +75,17 @@ impl Dispatcher {
         }
     }
 
+    /// Snapshot of every module's [`ModuleInfo`]. Used to answer
+    /// `agent.capabilities`; also useful for diagnostics and tests.
     pub fn capabilities(&self) -> Vec<ModuleInfo> {
         self.modules.values().map(|module| module.info()).collect()
     }
 
     fn try_dispatch(&self, command: &AgentCommand) -> Result<Value> {
         verify_signature(command)?;
+        // `agent.capabilities` is reserved at the dispatcher level rather than
+        // living in a fake `agent` module, so it always reports the *actually
+        // registered* module set even if a custom dispatcher was built.
         if command.module == "agent" && command.action == "capabilities" {
             return Ok(json!({ "modules": self.capabilities() }));
         }
@@ -60,6 +98,12 @@ impl Dispatcher {
     }
 }
 
+/// Placeholder for future command-signature enforcement.
+///
+/// For now this only rejects empty signature strings, which would otherwise
+/// silently pass as "no signature provided". Real verification against a
+/// control-plane key will live here; the transport is expected to have
+/// already authenticated the connection (mTLS, bearer token, vsock peer).
 fn verify_signature(command: &AgentCommand) -> Result<()> {
     if command.signature.as_deref() == Some("") {
         bail!("command signature cannot be empty");

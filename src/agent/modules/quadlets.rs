@@ -1,3 +1,41 @@
+//! Quadlet file management for Podman-backed systemd services.
+//!
+//! Quadlets are systemd unit files (`.container`, `.volume`, `.network`,
+//! `.pod`, `.kube`) that Podman scans to generate corresponding `.service`
+//! units. This module owns their full lifecycle on behalf of the Ultramarine
+//! Server control plane: `list`, `read`, `write`, `delete`, `validate`,
+//! `install`, and `list_files`.
+//!
+//! Two distinct kinds of files are managed, and the distinction matters:
+//!
+//! - **Quadlet unit files** live in the directories Podman scans
+//!   (`~/.config/containers/systemd` for user scope, `/etc/containers/systemd`
+//!   for system scope). They must have a supported extension and contain a
+//!   matching Quadlet section header such as `[Container]`.
+//!
+//! - **Companion files** are arbitrary app content/config (an nginx site
+//!   config, an `index.html`, ...) referenced by a Quadlet. They are *not*
+//!   scanned by Podman and do not need a Quadlet extension. They live in a
+//!   separate mutable data root (`~/.local/share/tetra/quadlets` for user
+//!   scope, `/var/lib/tetra/quadlets` for system scope), under a per-app
+//!   bundle directory named after the primary Quadlet's stem — so
+//!   `app.container`'s companions live under `.../quadlets/app/`.
+//!
+//! The split exists because on bootc-style image systems the Quadlet scan
+//! directories may sit on an immutable image layer, while companion content
+//! is mutable app data and must live in a writable data root. Keeping the
+//! two roots separate also lets SELinux policy and config backups apply
+//! independently to each.
+//!
+//! Scope is selected per request via `scope: "user" | "system"` (default
+//! `user`). Every action also accepts optional `base_dir` / `files_base_dir`
+//! overrides, which is what makes the protocol testable without touching
+//! real system paths.
+//!
+//! This module only writes files. It deliberately does *not* run
+//! `systemctl daemon-reload`; the caller does that through the separate
+//! `services` module's `daemon_reload` action once writes are confirmed.
+
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -15,8 +53,14 @@ use crate::agent::{
     },
 };
 
+/// Agent module backing the `quadlets` feature. See the module-level docs
+/// for the unit-vs-companion distinction and the scope model.
 pub struct QuadletsModule;
 
+/// Static module descriptor advertised to the control plane via
+/// `capabilities`/`plan`. Marked `Available` because this module has no
+/// optional host dependencies — it only touches the filesystem and shells
+/// out for SELinux when explicitly requested.
 const INFO: ModuleInfo = ModuleInfo {
     name: "quadlets",
     feature: "quadlets",
@@ -35,8 +79,12 @@ const INFO: ModuleInfo = ModuleInfo {
     ],
 };
 
+/// File extensions Podman recognizes as Quadlet units. Used both to validate
+/// incoming filenames and to classify listed files as Quadlet vs companion.
 const QUADLET_EXTENSIONS: &[&str] = &["container", "kube", "network", "pod", "volume"];
 
+/// Payload shared by the listing actions (`list`, `list_files`): just the
+/// scope and optional path overrides, no filename.
 #[derive(Debug, Deserialize)]
 struct BasePayload {
     base_dir: Option<PathBuf>,
@@ -45,6 +93,11 @@ struct BasePayload {
     scope: QuadletScope,
 }
 
+/// Payload for single-file actions (`read`, `delete`) targeting one named
+/// file. `companion` selects which root the filename resolves against: the
+/// Quadlet scan directory when false, the companion-files data root when
+/// true. Companion reads use the full relative path (e.g. `site/index.html`)
+/// directly, so no bundle name is derived for them.
 #[derive(Debug, Deserialize)]
 struct FilePayload {
     base_dir: Option<PathBuf>,
@@ -58,6 +111,10 @@ struct FilePayload {
     dry_run: bool,
 }
 
+/// Payload for `write` and `validate`. Only Quadlet unit files can be
+/// written this way — companion content goes through `install`, which knows
+/// the bundle root — so there is intentionally no `companion` flag or
+/// `files_base_dir` override here.
 #[derive(Debug, Deserialize)]
 struct WritePayload {
     base_dir: Option<PathBuf>,
@@ -71,6 +128,10 @@ struct WritePayload {
     selinux: Option<SelinuxOptions>,
 }
 
+/// Payload for `install`, which writes a whole app bundle in one request:
+/// one or more Quadlet unit files (`resources`) plus zero or more companion
+/// files (`files`). The companion bundle directory is derived from the
+/// *first* resource's stem, so callers should put the primary unit first.
 #[derive(Debug, Deserialize)]
 struct InstallPayload {
     base_dir: Option<PathBuf>,
@@ -86,6 +147,11 @@ struct InstallPayload {
     selinux: Option<SelinuxOptions>,
 }
 
+/// A single file within an `install` payload. The same shape is reused for
+/// both Quadlet `resources` and companion `files`; the surrounding payload
+/// decides which directory each one is written into. Per-resource `selinux`
+/// lets one file be labeled differently from the rest, on top of any
+/// payload-level labeling applied to the Quadlet base directory.
 #[derive(Debug, Deserialize)]
 struct InstallResource {
     filename: String,
@@ -94,12 +160,17 @@ struct InstallResource {
     selinux: Option<SelinuxOptions>,
 }
 
+/// Response entry for a discovered Quadlet unit file. `path` is absolute so
+/// the control plane can address the file without reconstructing the base dir.
 #[derive(Debug, Serialize)]
 struct QuadletFile {
     filename: String,
     path: PathBuf,
 }
 
+/// Response entry for `list_files`, covering both Quadlet units and
+/// companion files. `quadlet` flags which entries are Quadlet units so the
+/// dashboard can route edits to the right surface without a second round-trip.
 #[derive(Debug, Serialize)]
 struct ManagedFile {
     filename: String,
@@ -107,6 +178,11 @@ struct ManagedFile {
     quadlet: bool,
 }
 
+/// Which Podman/systemd tree a request targets. `User` resolves to the
+/// invoking user's `~/.config/containers/systemd` and `~/.local/share/tetra`
+/// data root; `System` resolves to `/etc/containers/systemd` and
+/// `/var/lib/tetra/quadlets`. Defaults to `User` because the agent normally
+/// runs under the owner's account rather than as root.
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[derive(Default)]
@@ -116,6 +192,12 @@ enum QuadletScope {
     System,
 }
 
+/// Dispatches `quadlets` actions. `capabilities` and `plan` are answered
+/// generically by `handle_metadata` and return early; everything else is
+/// matched below. Mutating actions (`write`, `delete`, `install`) honor
+/// `dry_run`: they skip filesystem side effects but still report the path
+/// and the SELinux commands that *would* have run, so callers can preview a
+/// real apply.
 impl AgentModule for QuadletsModule {
     fn info(&self) -> ModuleInfo {
         INFO
@@ -139,6 +221,9 @@ impl AgentModule for QuadletsModule {
                     quadlet_files_base_dir(payload.files_base_dir, payload.scope, None)?;
                 let mut files = list_quadlet_files(&base_dir)?;
                 files.extend(list_companion_files(&files_base_dir)?);
+                // Quadlet entries first, then companions, each group sorted by
+                // filename. This pins a bundle's unit file to the top of its
+                // companion list in the dashboard.
                 files.sort_by(|left, right| {
                     left.quadlet
                         .cmp(&right.quadlet)
@@ -153,6 +238,9 @@ impl AgentModule for QuadletsModule {
             }
             "read" => {
                 let payload: FilePayload = parse_payload(payload)?;
+                // Companion files are addressed by their full relative path
+                // (e.g. `site/index.html`), so no bundle is derived. Quadlet
+                // reads resolve against the flat scan directory instead.
                 let bundle_name = if payload.companion {
                     None
                 } else {
@@ -185,6 +273,9 @@ impl AgentModule for QuadletsModule {
                     fs::write(&path, &payload.contents)
                         .with_context(|| format!("failed to write `{}`", path.display()))?;
                 }
+                // Called even in dry_run: apply_selinux returns the
+                // semange/restorecon commands that would run without
+                // executing them, so the caller can preview a real write.
                 let selinux =
                     apply_selinux(payload.selinux.as_ref(), Some(&path), payload.dry_run)?;
                 Ok(json!({
@@ -220,6 +311,10 @@ impl AgentModule for QuadletsModule {
             "install" => {
                 let payload: InstallPayload = parse_payload(payload)?;
                 let base_dir = quadlet_base_dir(payload.base_dir, payload.scope)?;
+                // The companion bundle is named after the first Quadlet
+                // resource's stem (`site.container` -> `site`). Callers are
+                // expected to put the primary unit first; with no Quadlets,
+                // companions land directly under files_base_dir.
                 let bundle_name = payload
                     .resources
                     .first()
@@ -230,6 +325,9 @@ impl AgentModule for QuadletsModule {
                     payload.scope,
                     bundle_name.as_deref(),
                 )?;
+                // Create both roots up front so a permission or disk failure
+                // surfaces before any file is written, rather than midway
+                // through the bundle.
                 if !payload.dry_run {
                     fs::create_dir_all(&base_dir)
                         .with_context(|| format!("failed to create `{}`", base_dir.display()))?;
@@ -267,6 +365,11 @@ impl AgentModule for QuadletsModule {
                         quadlet: false,
                     });
                 }
+                // Payload-level selinux labels the Quadlet scan directory
+                // (typically with `recursive: true`), on top of any
+                // per-resource labels above. Companion files under
+                // files_base_dir are not labeled here — callers label them
+                // per-resource when needed.
                 selinux.extend(apply_selinux(
                     payload.selinux.as_ref(),
                     Some(&base_dir),
@@ -288,6 +391,9 @@ impl AgentModule for QuadletsModule {
     }
 }
 
+/// Resolve the Quadlet scan directory for a request. An explicit `base_dir`
+/// always wins — tests and custom deployments rely on this — otherwise the
+/// scope picks the default Podman scan path.
 fn quadlet_base_dir(base_dir: Option<PathBuf>, scope: QuadletScope) -> Result<PathBuf> {
     if let Some(base_dir) = base_dir {
         return Ok(base_dir);
@@ -303,6 +409,11 @@ fn quadlet_base_dir(base_dir: Option<PathBuf>, scope: QuadletScope) -> Result<Pa
     }
 }
 
+/// Resolve the companion-files data root, optionally nested under a bundle
+/// name. Kept separate from `quadlet_base_dir` because the two roots serve
+/// different mutability and labeling needs (see the module docs). The
+/// `bundle_name` is joined via `safe_join` so a derived bundle path can
+/// never escape the data root.
 fn quadlet_files_base_dir(
     files_base_dir: Option<PathBuf>,
     scope: QuadletScope,
@@ -313,6 +424,10 @@ fn quadlet_files_base_dir(
     } else {
         match scope {
             QuadletScope::User => {
+                // Honor XDG_DATA_HOME when set, falling back to the spec's
+                // default of $HOME/.local/share. Never hardcode the latter so
+                // environments that relocate data (snaps, flatpak-style
+                // sandboxes) keep working.
                 let xdg_data_home = std::env::var_os("XDG_DATA_HOME");
                 let base = if let Some(xdg_data_home) = xdg_data_home {
                     PathBuf::from(xdg_data_home)
@@ -334,8 +449,15 @@ fn quadlet_files_base_dir(
     }
 }
 
+/// Derive the companion bundle name from a Quadlet filename
+/// (`app.container` -> `app`). This is also the first line of defense
+/// against path-traversal in filenames: it rejects absolute paths and any
+/// `..`/`Prefix` component before `safe_join` runs at write time.
 fn quadlet_bundle_name(filename: &str) -> Result<String> {
     let path = Path::new(filename);
+    // Reject absolute paths and `..`/`Prefix` components up front so the
+    // derived bundle name can't be used to escape the data root later.
+    // `Prefix` covers Windows drive roots and is harmless to reject on Linux.
     if path.is_absolute()
         || path.components().any(|component| {
             matches!(
@@ -360,6 +482,9 @@ fn quadlet_bundle_name(filename: &str) -> Result<String> {
     Ok(stem.to_string())
 }
 
+/// List Quadlet unit files directly under `base_dir` (non-recursive). Only
+/// flat files with a Quadlet extension are returned; subdirectories and
+/// non-Quadlet files are skipped, mirroring how Podman scans the directory.
 fn list_quadlets(base_dir: &Path) -> Result<Vec<QuadletFile>> {
     if !base_dir.exists() {
         return Ok(Vec::new());
@@ -388,6 +513,9 @@ fn list_quadlets(base_dir: &Path) -> Result<Vec<QuadletFile>> {
     Ok(files)
 }
 
+/// Same scan as `list_quadlets` but returns `ManagedFile` entries tagged
+/// `quadlet: true`, so `list_files` can merge Quadlet and companion results
+/// into a single response.
 fn list_quadlet_files(base_dir: &Path) -> Result<Vec<ManagedFile>> {
     Ok(list_quadlets(base_dir)?
         .into_iter()
@@ -399,6 +527,9 @@ fn list_quadlet_files(base_dir: &Path) -> Result<Vec<ManagedFile>> {
         .collect())
 }
 
+/// Recursively list companion files under the data root. Recursive because,
+/// unlike the Quadlet scan dir, the companion tree is ours to organize and
+/// may hold nested paths like `app/nginx/default.conf`.
 fn list_companion_files(base_dir: &Path) -> Result<Vec<ManagedFile>> {
     if !base_dir.exists() {
         return Ok(Vec::new());
@@ -410,6 +541,10 @@ fn list_companion_files(base_dir: &Path) -> Result<Vec<ManagedFile>> {
     Ok(files)
 }
 
+/// Recursive worker for `list_companion_files`. `base_dir` is anchored at
+/// the root so each entry's `filename` is reported relative to it (with
+/// forward slashes regardless of platform), while `path` stays absolute for
+/// filesystem access.
 fn collect_files(base_dir: &Path, dir: &Path, files: &mut Vec<ManagedFile>) -> Result<()> {
     for entry in fs::read_dir(dir).with_context(|| format!("failed to read `{}`", dir.display()))? {
         let entry = entry?;
@@ -428,6 +563,10 @@ fn collect_files(base_dir: &Path, dir: &Path, files: &mut Vec<ManagedFile>) -> R
             .with_context(|| format!("failed to make `{}` relative", path.display()))?
             .to_string_lossy()
             .replace('\\', "/");
+        // Classification is a suffix check only: a companion file that
+        // happens to end in `.container` would be flagged `quadlet: true`.
+        // This is fine because the flag is display-only and never gates a
+        // write — real Quadlet files should not live under the companion root.
         files.push(ManagedFile {
             quadlet: is_quadlet_filename(&filename),
             filename,
@@ -438,6 +577,10 @@ fn collect_files(base_dir: &Path, dir: &Path, files: &mut Vec<ManagedFile>) -> R
     Ok(())
 }
 
+/// Write one `InstallResource` under `base_dir`, creating parent
+/// directories as needed so nested companion paths such as
+/// `nginx/default.conf` work. `safe_join` enforces that the resource path
+/// stays within `base_dir`.
 fn write_resource(base_dir: &Path, resource: &InstallResource, dry_run: bool) -> Result<PathBuf> {
     let path = safe_join(base_dir, &resource.filename)?;
     if !dry_run {
@@ -451,6 +594,11 @@ fn write_resource(base_dir: &Path, resource: &InstallResource, dry_run: bool) ->
     Ok(path)
 }
 
+/// Cheap structural validation: supported extension, non-empty contents, and
+/// at least one Quadlet section header. This is *not* a full `quadlet
+/// -dryrun` lint — it just rejects obvious junk before anything is written
+/// to a system directory. The section-header check is what stops a stray
+/// `.service` or generic INI file from being installed as a Quadlet.
 fn validate_quadlet(filename: &str, contents: &str) -> Result<()> {
     if !is_quadlet_filename(filename) {
         bail!("`{filename}` is not a supported Quadlet filename");
@@ -469,6 +617,8 @@ fn validate_quadlet(filename: &str, contents: &str) -> Result<()> {
     Ok(())
 }
 
+/// True if `filename` ends with a supported Quadlet extension. Used both to
+/// reject non-Quadlet writes and to tag listed files as Quadlet vs companion.
 fn is_quadlet_filename(filename: &str) -> bool {
     QUADLET_EXTENSIONS
         .iter()

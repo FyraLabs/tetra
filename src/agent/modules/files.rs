@@ -1,3 +1,12 @@
+//! File read/write module for managed host configuration.
+//!
+//! `files` is the lowest-level persistence module: it lets the control plane
+//! read an arbitrary path and write contents to it, optionally relabeling the
+//! result with SELinux via the shared `apply_selinux` helper. Other modules
+//! (network, quadlets, samba, nfs, storage) reuse the same write + SELinux
+//! pattern but scope writes to their own managed paths; this module is the
+//! general-purpose escape hatch.
+
 use std::{fs, path::PathBuf};
 
 use anyhow::{Context, Result};
@@ -12,6 +21,8 @@ use crate::agent::{
     },
 };
 
+/// Marker type for the files module. Stateless; all behavior lives in the
+/// [`AgentModule`] impl and the static [`INFO`] descriptor.
 pub struct FileModule;
 
 const INFO: ModuleInfo = ModuleInfo {
@@ -22,11 +33,15 @@ const INFO: ModuleInfo = ModuleInfo {
     actions: &["capabilities", "read", "write"],
 };
 
+/// Payload for the `read` action: just the path to read from the host.
 #[derive(Debug, Deserialize)]
 struct ReadPayload {
     path: PathBuf,
 }
 
+/// Payload for the `write` action. `dry_run` skips the filesystem mutation but
+/// still echoes the planned result; `selinux` optionally relabels the written
+/// file via the shared `apply_selinux` helper.
 #[derive(Debug, Deserialize)]
 struct WritePayload {
     path: PathBuf,
@@ -43,6 +58,7 @@ impl AgentModule for FileModule {
     }
 
     fn handle(&self, action: &str, payload: Value) -> Result<Value> {
+        // Delegate `capabilities`/`plan` to the shared metadata handler first.
         if let Some(response) = handle_metadata(INFO, action, payload.clone())? {
             return Ok(response);
         }
@@ -56,10 +72,15 @@ impl AgentModule for FileModule {
             }
             "write" => {
                 let payload: WritePayload = serde_json::from_value(payload)?;
+                // Skip the actual write in dry-run; the SELinux plan below is
+                // still computed and echoed back so callers can preview it.
                 if !payload.dry_run {
                     fs::write(&payload.path, payload.contents)
                         .with_context(|| format!("failed to write `{}`", payload.path.display()))?;
                 }
+                // `apply_selinux` is a no-op when no options are supplied, so
+                // calling it unconditionally is safe. It returns a list of
+                // command-result objects (empty when nothing was requested).
                 let selinux = apply_selinux(
                     payload.selinux.as_ref(),
                     Some(&payload.path),

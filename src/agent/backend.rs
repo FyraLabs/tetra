@@ -1,3 +1,13 @@
+//! Kameo actor wrapping the [`Dispatcher`] so transports can handle commands
+//! concurrently without exposing a `&mut`.
+//!
+//! The actor is the unit of concurrency: each transport (HTTP, vsock, WSS)
+//! owns an [`ActorRef<AgentBackend>`] and sends [`DispatchCommand`]s to it.
+//! Kameo serializes `handle` calls on the actor's task, so the dispatcher's
+//! `&self`-only API stays sound no matter how many in-flight requests arrive.
+//! A long-running module action can't starve another transport's request
+//! because each `ask` is awaited independently by the caller.
+
 use anyhow::Result;
 use kameo::{
     actor::{Actor, ActorRef, Spawn},
@@ -7,25 +17,39 @@ use kameo::{
 
 use super::{AgentCommand, AgentResponse, Dispatcher, messages::DispatchCommand, modules};
 
+/// Kameo actor that owns the [`Dispatcher`] and handles [`DispatchCommand`]s.
+///
+/// Constructed via [`AgentBackend::with_default_modules`] (default feature set)
+/// or [`AgentBackend::new`] (custom dispatcher). Transports receive an
+/// [`ActorRef<Self>`] and drive it through `ask(DispatchCommand(...))`.
 pub struct AgentBackend {
     dispatcher: Dispatcher,
 }
 
 impl AgentBackend {
+    /// Wrap a pre-built dispatcher. Use this when a transport needs a
+    /// non-default module set.
     pub fn new(dispatcher: Dispatcher) -> Self {
         Self { dispatcher }
     }
 
+    /// Build a backend with the default feature-gated module set
+    /// ([`modules::default_dispatcher`]).
     pub fn with_default_modules() -> Self {
         Self::new(modules::default_dispatcher())
     }
 
+    /// Spawn an actor backed by the default module set and return a handle
+    /// the caller can `ask` from any async task.
     pub fn spawn_default() -> ActorRef<Self> {
         Self::spawn(modules::default_dispatcher())
     }
 }
 
 impl Actor for AgentBackend {
+    /// The dispatcher is passed in at spawn time (rather than built inside
+    /// `on_start`) so callers can configure the module set before the actor
+    /// owns it.
     type Args = Dispatcher;
     type Error = Infallible;
 
@@ -45,10 +69,17 @@ impl Message<DispatchCommand> for AgentBackend {
         DispatchCommand(command): DispatchCommand,
         _ctx: &mut Context<Self, Self::Reply>,
     ) -> Self::Reply {
+        // Dispatcher::dispatch takes &self, so the actor's `&mut self` here is
+        // only used by Kameo to serialize messages — the dispatcher itself
+        // stays freely shareable.
         Ok(self.dispatcher.dispatch(command))
     }
 }
 
+/// Convenience for the `agent-dispatch` CLI: spawn a one-shot backend, dispatch
+/// a single command, and print the response. The actor is dropped when the
+/// returned future completes; the spawned task won't leak because nothing else
+/// holds the `ActorRef`.
 pub async fn dispatch_with_default_backend(command: AgentCommand) -> Result<AgentResponse> {
     let backend = AgentBackend::spawn_default();
     backend

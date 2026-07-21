@@ -1,3 +1,12 @@
+//! Storage inspection and configuration module.
+//!
+//! Surfaces host storage state (`/proc/mounts`, `/proc/partitions`, `df`) and
+//! performs mount/unmount and `/etc/fstab` edits. The `mount` and `configure`
+//! actions also accept the shared `selinux` payload so the control plane can
+//! label a freshly mounted or configured path in the same request — important
+//! on SELinux-enabled hosts where an unlabeled mount point would be denied
+//! access to its intended service.
+
 use std::{fs, path::PathBuf};
 
 use anyhow::{Context, Result};
@@ -12,8 +21,10 @@ use crate::agent::{
     },
 };
 
+/// Storage module entry point registered under feature `storage`.
 pub struct StorageModule;
 
+/// Static capability metadata published via `capabilities`/`plan`.
 const INFO: ModuleInfo = ModuleInfo {
     name: "storage",
     feature: "storage",
@@ -30,6 +41,8 @@ const INFO: ModuleInfo = ModuleInfo {
     ],
 };
 
+/// Payload carrying a single path, used by `status` (the `df` target) and
+/// `unmount` (the mount point to detach).
 #[derive(Debug, Deserialize)]
 struct PathPayload {
     path: PathBuf,
@@ -37,6 +50,11 @@ struct PathPayload {
     dry_run: bool,
 }
 
+/// Payload for the `mount` action.
+///
+/// `fstype` and `options` are optional and only forwarded to `mount` when
+/// present, so callers can let `mount` autodetect the filesystem when they do
+/// not know it ahead of time.
 #[derive(Debug, Deserialize)]
 struct MountPayload {
     source: String,
@@ -49,6 +67,12 @@ struct MountPayload {
     selinux: Option<SelinuxOptions>,
 }
 
+/// Payload for the `configure` action, which appends a line to `/etc/fstab`.
+///
+/// `entry` is a raw fstab line as it should appear in the file; the module
+/// does not parse or validate it, only appends. `fstab_path` defaults to
+/// `/etc/fstab` but can be overridden — used by tests, and useful for staging
+/// an edit against a copy before swapping it into place.
 #[derive(Debug, Deserialize)]
 struct ConfigurePayload {
     #[serde(default = "default_fstab_path")]
@@ -60,18 +84,28 @@ struct ConfigurePayload {
     selinux: Option<SelinuxOptions>,
 }
 
+/// Dispatches `storage` actions.
+///
+/// Read actions (`list`, `status`) never take `dry_run` since they only
+/// inspect state; `mount`, `unmount`, and `configure` honor `dry_run` and
+/// short-circuit before exec/write.
 impl AgentModule for StorageModule {
     fn info(&self) -> ModuleInfo {
         INFO
     }
 
     fn handle(&self, action: &str, payload: Value) -> Result<Value> {
+        // Standard metadata fast-path: `capabilities` and `plan` are answered
+        // from `INFO` without touching the system.
         if let Some(response) = handle_metadata(INFO, action, payload.clone())? {
             return Ok(response);
         }
 
         match action {
             "list" => Ok(json!({
+                // unwrap_or_default swallows read/parse errors and yields an
+                // empty list — `list` is best-effort inventory, not a health
+                // probe, so a missing `/proc/*` file should not fail the call.
                 "mounts": read_mounts("/proc/mounts").unwrap_or_default(),
                 "partitions": read_partitions("/proc/partitions").unwrap_or_default(),
             })),
@@ -88,9 +122,16 @@ impl AgentModule for StorageModule {
                 if let Some(options) = payload.options {
                     args.extend(["-o".to_string(), options]);
                 }
+                // The target is captured separately so it can be used as the
+                // default relabel path for the shared SELinux options below;
+                // it is consumed by `args.extend` right after, which is why we
+                // clone it into a PathBuf first.
                 let target = PathBuf::from(&payload.target);
                 args.extend([payload.source, payload.target]);
                 let mount = run_command_or_dry_run("mount", args, payload.dry_run)?;
+                // Label the freshly mounted target as part of the same action;
+                // see `apply_selinux` in module_support.rs for the option
+                // resolution rules.
                 let selinux =
                     apply_selinux(payload.selinux.as_ref(), Some(&target), payload.dry_run)?;
                 Ok(json!({ "mount": mount, "selinux": selinux }))
@@ -108,6 +149,9 @@ impl AgentModule for StorageModule {
                 if !payload.dry_run {
                     append_fstab_entry(&payload.fstab_path, &payload.entry)?;
                 }
+                // The default relabel target here is `fstab_path`, which is
+                // rarely what callers want; pass an explicit `path` inside the
+                // selinux object to label the mount target instead.
                 let selinux = apply_selinux(
                     payload.selinux.as_ref(),
                     Some(&payload.fstab_path),
@@ -125,10 +169,16 @@ impl AgentModule for StorageModule {
     }
 }
 
+/// Default fstab location used when `configure` is invoked without an
+/// explicit `fstab_path`.
 fn default_fstab_path() -> PathBuf {
     PathBuf::from("/etc/fstab")
 }
 
+/// Parses `/proc/mounts`, whose rows are whitespace-delimited as
+/// `source target fstype opts dump pass`. Only the first four fields are
+/// surfaced; rows with fewer than four fields are skipped rather than
+/// erroring, so a malformed kernel-provided line never breaks the call.
 fn read_mounts(path: impl Into<PathBuf>) -> Result<Vec<Value>> {
     let path = path.into();
     let text = fs::read_to_string(&path)
@@ -149,6 +199,10 @@ fn read_mounts(path: impl Into<PathBuf>) -> Result<Vec<Value>> {
         .collect())
 }
 
+/// Parses `/proc/partitions`, which has a two-line header (a column line
+/// followed by a blank line) and then `major minor blocks name` rows.
+/// `skip(2)` drops the header; the strict four-field filter then keeps only
+/// real partition rows.
 fn read_partitions(path: impl Into<PathBuf>) -> Result<Vec<Value>> {
     let path = path.into();
     let text = fs::read_to_string(&path)
@@ -170,12 +224,25 @@ fn read_partitions(path: impl Into<PathBuf>) -> Result<Vec<Value>> {
         .collect())
 }
 
+/// Appends a single entry to an fstab file safely.
+///
+/// Reads the existing file (treating a missing file as empty), guarantees a
+/// newline separates any existing content from the new entry, trims trailing
+/// whitespace from the entry, and ensures the file ends with exactly one
+/// newline. This sidesteps the two common fstab foot-guns: joining two lines
+/// into one (no separator), and leaving the file without a terminating
+/// newline (which some fstab parsers reject).
 fn append_fstab_entry(path: &PathBuf, entry: &str) -> Result<()> {
     let mut text = fs::read_to_string(path).unwrap_or_default();
+    // Only add a separator when there is existing content that lacks a
+    // trailing newline; an empty file or one already ending in `\n` needs
+    // none, and adding one would create a stray blank line.
     if !text.ends_with('\n') && !text.is_empty() {
         text.push('\n');
     }
     text.push_str(entry.trim_end());
+    // Always terminate the file with a newline so subsequent appends and most
+    // fstab parsers stay happy.
     text.push('\n');
     fs::write(path, text).with_context(|| format!("failed to write `{}`", path.display()))
 }

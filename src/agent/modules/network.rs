@@ -1,3 +1,20 @@
+//! Network interface inspection and NetworkManager keyfile management.
+//!
+//! This module splits host networking into two concerns:
+//!
+//! - *Live state* (`interfaces`, `status`) is read from `/sys/class/net` sysfs
+//!   and `ip -json addr show`, so callers can see what is currently up.
+//! - *Persistent configuration* (`get_config`/`set_config`) is managed as
+//!   NetworkManager *keyfiles*: INI-style `.nmconnection` profiles under
+//!   `/etc/NetworkManager/system-connections/`. The agent reads and writes
+//!   those files directly rather than driving `nmcli`, which keeps the wire
+//!   format transparent and lets the control plane template profiles. After a
+//!   write, callers invoke `reload` to tell NetworkManager to pick up the new
+//!   profile via `systemctl reload-or-restart NetworkManager.service`.
+//!
+//! `set_config` supports the shared `selinux` options so written keyfiles can
+//! be relabeled (e.g. `NetworkManager_etc_t`) on SELinux-enabled hosts.
+
 use std::{fs, path::PathBuf};
 
 use anyhow::{Context, Result};
@@ -12,6 +29,8 @@ use crate::agent::{
     },
 };
 
+/// Marker type for the network module. Stateless; all behavior lives in the
+/// [`AgentModule`] impl and the static [`INFO`] descriptor.
 pub struct NetworkModule;
 
 const INFO: ModuleInfo = ModuleInfo {
@@ -30,16 +49,22 @@ const INFO: ModuleInfo = ModuleInfo {
     ],
 };
 
+/// Payload for `status`; the optional interface name narrows `ip addr show`
+/// to a single device via `dev <name>`. Omitting it lists all interfaces.
 #[derive(Debug, Deserialize)]
 struct InterfacePayload {
     interface: Option<String>,
 }
 
+/// Payload for `get_config`: the keyfile path to read (typically under
+/// `/etc/NetworkManager/system-connections/`).
 #[derive(Debug, Deserialize)]
 struct ConfigPayload {
     path: PathBuf,
 }
 
+/// Payload for `set_config`: writes `contents` to the keyfile at `path`. The
+/// `selinux` option relabels the file after the write; `dry_run` skips both.
 #[derive(Debug, Deserialize)]
 struct SetConfigPayload {
     path: PathBuf,
@@ -50,6 +75,8 @@ struct SetConfigPayload {
     selinux: Option<SelinuxOptions>,
 }
 
+/// Payload for `reload`: only carries the standard `dry_run` flag, since the
+/// reload target (NetworkManager.service) is fixed.
 #[derive(Debug, Deserialize)]
 struct DryRunPayload {
     #[serde(default)]
@@ -62,14 +89,20 @@ impl AgentModule for NetworkModule {
     }
 
     fn handle(&self, action: &str, payload: Value) -> Result<Value> {
+        // Delegate `capabilities`/`plan` to the shared metadata handler first.
         if let Some(response) = handle_metadata(INFO, action, payload.clone())? {
             return Ok(response);
         }
 
         match action {
+            // Sysfs-based snapshot of present interfaces. `unwrap_or_default`
+            // keeps the action resilient: a transient read failure yields an
+            // empty list rather than a 500 to the control plane.
             "interfaces" => Ok(json!({ "interfaces": read_interfaces().unwrap_or_default() })),
             "status" => {
                 let payload: InterfacePayload = parse_payload(payload)?;
+                // `ip -json addr show` returns structured JSON we can pass
+                // through verbatim; an optional `dev <name>` narrows the scope.
                 let mut args = vec!["-json".to_string(), "addr".to_string(), "show".to_string()];
                 if let Some(interface) = payload.interface {
                     args.push("dev".into());
@@ -85,6 +118,8 @@ impl AgentModule for NetworkModule {
             }
             "set_config" => {
                 let payload: SetConfigPayload = parse_payload(payload)?;
+                // Only touch the filesystem outside dry-run; SELinux planning
+                // below still runs so the response previews the relabel.
                 if !payload.dry_run {
                     fs::write(&payload.path, payload.contents)
                         .with_context(|| format!("failed to write `{}`", payload.path.display()))?;
@@ -103,6 +138,8 @@ impl AgentModule for NetworkModule {
             }
             "reload" => {
                 let payload: DryRunPayload = parse_payload(payload)?;
+                // `reload-or-restart` applies new keyfiles without dropping
+                // active connections when possible, falling back to a restart.
                 run_command_or_dry_run(
                     "systemctl",
                     ["reload-or-restart", "NetworkManager.service"],
@@ -114,6 +151,13 @@ impl AgentModule for NetworkModule {
     }
 }
 
+/// Reads the live interface list from `/sys/class/net` sysfs.
+///
+/// Each entry exposes `operstate` (up/down) and `address` (MAC) as plain text
+/// files. Missing attributes are tolerated via `unwrap_or_default` (e.g.
+/// virtual or bond devices may not report an operstate), so a single unreadable
+/// file does not fail the whole snapshot. Results are sorted by name for stable
+/// output to the control plane.
 fn read_interfaces() -> Result<Vec<Value>> {
     let mut interfaces = Vec::new();
     for entry in fs::read_dir("/sys/class/net").context("failed to read /sys/class/net")? {

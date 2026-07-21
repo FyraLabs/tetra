@@ -13,6 +13,11 @@ default = [
     "services",
     "quadlets",
     "reverse-proxy",
+    "podman",
+    "samba",
+    "nfs",
+    "users",
+    "virtual-machines",
 ]
 files = []
 recipes = []

@@ -5,12 +5,21 @@ use serde::{Deserialize, Serialize};
 
 use super::{AgentCommand, AgentResponse};
 
+/// The byte-stream contract a transport must implement to carry commands and
+/// responses between the control plane and the agent.
+///
+/// Each concrete transport (WSS, vsock) adapts this trait to its own
+/// framing. The HTTP transport doesn't implement `Transport` because it's
+/// request/response by nature — it routes directly to the backend actor.
 pub trait Transport {
     fn connect(&mut self) -> Result<()>;
     fn receive(&mut self) -> Result<Option<AgentCommand>>;
     fn send(&mut self, response: AgentResponse) -> Result<()>;
 }
 
+/// Connection parameters the `agent-connect` subcommand loads from a JSON
+/// config file. The `control_plane_url` selects the transport; the TLS paths
+/// are used only for `wss://` endpoints (mTLS to the control plane).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TransportConfig {
     pub control_plane_url: String,
@@ -26,11 +35,18 @@ pub struct TransportConfig {
 }
 
 impl TransportConfig {
+    /// Parse `control_plane_url` into a concrete endpoint kind. This is where
+    /// the URL scheme (`wss://`, `ws://`, `vsock://`) decides which transport
+    /// implementation will be used.
     pub fn endpoint(&self) -> Result<TransportEndpoint> {
         self.control_plane_url.parse()
     }
 }
 
+/// The transport kind selected by the `control_plane_url` scheme.
+///
+/// `vsock://` URLs target a VM's virtio-vsock address; `ws://`/`wss://` target
+/// a control-plane WebSocket. Other schemes are rejected at parse time.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TransportEndpoint {
     WebSocket { url: String },
@@ -55,6 +71,9 @@ impl FromStr for TransportEndpoint {
     }
 }
 
+/// A `vsock://CID:PORT` endpoint. CIDs identify the guest/host/named context
+/// in the virtio-vsock addressing model; see [`parse_cid`] for the symbolic
+/// aliases (`hypervisor`, `local`, `host`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VsockEndpoint {
     pub cid: u32,
@@ -80,6 +99,11 @@ impl FromStr for VsockEndpoint {
     }
 }
 
+/// Parse a vsock CID, accepting the standard symbolic aliases in addition to
+/// numeric values. Well-known CIDs per the Linux vsock(7) convention:
+/// - `hypervisor` → 0
+/// - `local` → 1 (the host, when addressed from the host itself)
+/// - `host` → 2 (the host, when addressed from a guest)
 fn parse_cid(value: &str) -> Result<u32> {
     match value {
         "hypervisor" => Ok(0),

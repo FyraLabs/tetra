@@ -1,3 +1,12 @@
+//! NFS export configuration module.
+//!
+//! Reads and replaces `/etc/exports`, lists configured exports by parsing the
+//! file, and manages the `nfs-server.service` systemd unit plus `exportfs -ra`
+//! to re-export. The `set_config` action accepts the shared `selinux` payload
+//! so an export directory can be labeled (typically `public_content_t` /
+//! `public_content_rw_t`) in the same request — otherwise SELinux denies nfsd
+//! access to the path on enforcing hosts.
+
 use std::{fs, path::PathBuf};
 
 use anyhow::{Context, Result};
@@ -12,8 +21,10 @@ use crate::agent::{
     },
 };
 
+/// NFS module entry point registered under feature `nfs`.
 pub struct NfsModule;
 
+/// Static capability metadata published via `capabilities`/`plan`.
 const INFO: ModuleInfo = ModuleInfo {
     name: "nfs",
     feature: "nfs",
@@ -31,12 +42,20 @@ const INFO: ModuleInfo = ModuleInfo {
     ],
 };
 
+/// Payload for read actions (`list_exports`, `get_config`). Defaults to
+/// `/etc/exports` when no path is supplied.
 #[derive(Debug, Deserialize)]
 struct ConfigPayload {
     #[serde(default = "default_exports_path")]
     path: PathBuf,
 }
 
+/// Payload for `set_config`, which overwrites `/etc/exports` with the
+/// supplied `contents`.
+///
+/// The `selinux` object typically points at the export directory declared
+/// inside `contents` (not the exports file itself) so the path gets labeled
+/// `public_content_t` / `public_content_rw_t`.
 #[derive(Debug, Deserialize)]
 struct SetConfigPayload {
     #[serde(default = "default_exports_path")]
@@ -48,18 +67,25 @@ struct SetConfigPayload {
     selinux: Option<SelinuxOptions>,
 }
 
+/// Payload for service actions (`reload`, `enable`, `disable`), which only
+/// need the `dry_run` flag.
 #[derive(Debug, Deserialize)]
 struct DryRunPayload {
     #[serde(default)]
     dry_run: bool,
 }
 
+/// Dispatches `nfs` actions. Config reads/writes target `/etc/exports`;
+/// `reload` runs `exportfs -ra` so the kernel re-reads the file without a
+/// full service restart; `enable`/`disable` drive `nfs-server.service`.
 impl AgentModule for NfsModule {
     fn info(&self) -> ModuleInfo {
         INFO
     }
 
     fn handle(&self, action: &str, payload: Value) -> Result<Value> {
+        // Standard metadata fast-path: `capabilities` and `plan` are answered
+        // from `INFO` without touching the system.
         if let Some(response) = handle_metadata(INFO, action, payload.clone())? {
             return Ok(response);
         }
@@ -78,9 +104,14 @@ impl AgentModule for NfsModule {
             "set_config" => {
                 let payload: SetConfigPayload = parse_payload(payload)?;
                 if !payload.dry_run {
+                    // The whole file is replaced; callers build the complete
+                    // desired `/etc/exports` rather than patching one export.
                     fs::write(&payload.path, payload.contents)
                         .with_context(|| format!("failed to write `{}`", payload.path.display()))?;
                 }
+                // Default relabel target is the exports file path; callers
+                // wanting to label the exported directory pass an explicit
+                // `path` inside the selinux object (e.g. `/srv/export`).
                 let selinux = apply_selinux(
                     payload.selinux.as_ref(),
                     Some(&payload.path),
@@ -94,6 +125,9 @@ impl AgentModule for NfsModule {
                 }))
             }
             "reload" => {
+                // `exportfs -ra` re-exports everything in /etc/exports in
+                // place, without bouncing nfs-server — that avoids dropping
+                // existing clients mid-reload.
                 let payload: DryRunPayload = parse_payload(payload)?;
                 run_command_or_dry_run("exportfs", ["-ra"], payload.dry_run)
             }
@@ -118,14 +152,22 @@ impl AgentModule for NfsModule {
     }
 }
 
+/// Default `/etc/exports` location used when a read/write action omits
+/// `path`.
 fn default_exports_path() -> PathBuf {
     PathBuf::from("/etc/exports")
 }
 
+/// Reads the exports file as UTF-8 text with a context-rich error.
 fn read_config(path: &PathBuf) -> Result<String> {
     fs::read_to_string(path).with_context(|| format!("failed to read `{}`", path.display()))
 }
 
+/// Parses `/etc/exports` into one record per non-comment, non-blank line.
+///
+/// The first whitespace-delimited field is the exported path; everything
+/// after it is collected verbatim as the list of `client(spec)` tokens (e.g.
+/// `192.168.1.0/24(rw)`, `*(ro)`). Lines without a leading path are dropped.
 fn parse_exports(contents: &str) -> Vec<Value> {
     contents
         .lines()

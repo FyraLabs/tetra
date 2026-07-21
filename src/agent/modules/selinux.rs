@@ -1,3 +1,17 @@
+//! SELinux management module.
+//!
+//! Wraps the userspace SELinux toolchain (`sestatus`, `getenforce`,
+//! `getsebool`, `setsebool`, `semanage fcontext`, `restorecon`) so the
+//! control plane can inspect and change policy state through the standard
+//! module envelope.
+//!
+//! This module owns *policy-level* SELinux operations: querying mode,
+//! flipping booleans, and registering or removing file-context rules plus
+//! relabeling. Modules that merely *apply* a label to a path they manage
+//! (storage, samba, nfs, files, quadlets, network) do not call into this
+//! code; they share the `SelinuxOptions` payload via `apply_selinux()` in
+//! `module_support.rs`.
+
 use anyhow::Result;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -10,8 +24,13 @@ use crate::agent::{
     },
 };
 
+/// SELinux module entry point registered under feature `selinux`.
+///
+/// Stateless: every action is a fresh invocation of an underlying SELinux
+/// tool, so there is nothing to hold across requests.
 pub struct SelinuxModule;
 
+/// Static capability metadata published via the `capabilities`/`plan` actions.
 const INFO: ModuleInfo = ModuleInfo {
     name: "selinux",
     feature: "selinux",
@@ -31,6 +50,12 @@ const INFO: ModuleInfo = ModuleInfo {
     ],
 };
 
+/// Payload for `set_boolean`.
+///
+/// `persistent` defaults to `true` because most callers want a change to
+/// survive reboot; opt out explicitly with `"persistent": false` for a
+/// runtime-only tweak (useful when validating a policy change before
+/// committing it).
 #[derive(Debug, Deserialize)]
 struct SetBooleanPayload {
     name: String,
@@ -41,6 +66,15 @@ struct SetBooleanPayload {
     dry_run: bool,
 }
 
+/// Payload for `add_file_context`.
+///
+/// `path_pattern` is passed verbatim to `semanage fcontext -a`. Unlike the
+/// shared `SelinuxOptions` flow used by other modules, this module does **not**
+/// auto-derive the `PATH(/.*)?` recursive form — the caller supplies the exact
+/// regex pattern semanage will store. This keeps the rule-adding action honest
+/// about what is being registered: callers may want `(/.*)?`, `/.+`, or a bare
+/// path with no recursion, and silently rewriting the pattern would hide that
+/// choice from the operator reading the audit log.
 #[derive(Debug, Deserialize)]
 struct FileContextPayload {
     path_pattern: String,
@@ -49,6 +83,10 @@ struct FileContextPayload {
     dry_run: bool,
 }
 
+/// Payload for `delete_file_context`.
+///
+/// The pattern must match what was originally added, including any `(/.*)?`
+/// suffix — `semanage fcontext -d` deletes by exact pattern match.
 #[derive(Debug, Deserialize)]
 struct DeleteFileContextPayload {
     path_pattern: String,
@@ -56,6 +94,13 @@ struct DeleteFileContextPayload {
     dry_run: bool,
 }
 
+/// Payload for `restore_context` (`restorecon`).
+///
+/// `restorecon` walks the filesystem at `path` and relabels each entry to
+/// whatever the active policy — including any fcontext rules added via
+/// `add_file_context` — says it should be. It is the second half of the
+/// standard add-rule-then-relabel flow: registering an fcontext changes the
+/// policy, but existing inodes keep their old labels until `restorecon` runs.
 #[derive(Debug, Deserialize)]
 struct RestoreContextPayload {
     path: String,
@@ -65,12 +110,21 @@ struct RestoreContextPayload {
     dry_run: bool,
 }
 
+/// Dispatches `selinux` actions to the underlying tools.
+///
+/// Read actions (`status`, `enforce`, `booleans`, `file_contexts`) always run
+/// the real tool even under `dry_run` — they have no side effects, and the
+/// parsed output is what the caller actually wants. Mutating actions
+/// (`set_boolean`, `add_file_context`, `delete_file_context`,
+/// `restore_context`) honor `dry_run` and short-circuit before exec.
 impl AgentModule for SelinuxModule {
     fn info(&self) -> ModuleInfo {
         INFO
     }
 
     fn handle(&self, action: &str, payload: Value) -> Result<Value> {
+        // Standard metadata fast-path: `capabilities` and `plan` are answered
+        // from `INFO` without touching the system.
         if let Some(response) = handle_metadata(INFO, action, payload.clone())? {
             return Ok(response);
         }
@@ -112,6 +166,9 @@ impl AgentModule for SelinuxModule {
             "set_boolean" => {
                 let payload: SetBooleanPayload = parse_payload(payload)?;
                 let mut args = Vec::new();
+                // -P persists the boolean to /etc/selinux/targeted/... so it
+                // survives reboot; without it the change lives only in the
+                // running policy and is lost on the next load.
                 if payload.persistent {
                     args.push("-P".to_string());
                 }
@@ -120,6 +177,9 @@ impl AgentModule for SelinuxModule {
                 run_command_or_dry_run("setsebool", args, payload.dry_run)
             }
             "file_contexts" => {
+                // `semanage fcontext -l` dumps every fcontext rule the policy
+                // knows about; `parse_semanage_fcontext` below turns the
+                // tabular output into structured JSON.
                 let result = run_command_output("semanage", ["fcontext", "-l"], false)?;
                 Ok(json!({
                     "command": result.command,
@@ -132,6 +192,8 @@ impl AgentModule for SelinuxModule {
             }
             "add_file_context" => {
                 let payload: FileContextPayload = parse_payload(payload)?;
+                // The pattern is forwarded unchanged; the caller is
+                // responsible for the regex shape (e.g. `/srv(/.*)?`).
                 run_command_or_dry_run(
                     "semanage",
                     [
@@ -158,6 +220,9 @@ impl AgentModule for SelinuxModule {
                 if payload.recursive {
                     args.push("-R".to_string());
                 }
+                // -v is always on so the response stdout lists every relabeled
+                // path — that listing is what operators expect to audit a
+                // relabeling run against.
                 args.push("-v".to_string());
                 args.push(payload.path);
                 run_command_or_dry_run("restorecon", args, payload.dry_run)
@@ -175,6 +240,9 @@ fn boolean_value(value: bool) -> &'static str {
     if value { "on" } else { "off" }
 }
 
+/// Parses `sestatus` output into a flat object keyed by lowercased,
+/// underscore-separated field names (e.g. `SELinux status:` becomes
+/// `selinux_status`). Lines without a `Key: value` pair are dropped.
 fn parse_sestatus(stdout: &str) -> Value {
     let mut object = serde_json::Map::new();
     for line in stdout.lines() {
@@ -186,6 +254,10 @@ fn parse_sestatus(stdout: &str) -> Value {
     Value::Object(object)
 }
 
+/// Parses `getsebool -a` output, one boolean per line as `name --> value`.
+///
+/// `enabled` normalizes the raw string (`on`/`1`/`true`) to a boolean so
+/// callers do not have to re-parse it; the original `value` is preserved too.
 fn parse_getsebool(stdout: &str) -> Vec<Value> {
     stdout
         .lines()
@@ -200,17 +272,27 @@ fn parse_getsebool(stdout: &str) -> Vec<Value> {
         .collect()
 }
 
+/// Parses `semanage fcontext -l` output.
+///
+/// Output shape is roughly `PATTERN  FILE_TYPE  CONTEXT`, where `file_type`
+/// may be a multi-word phrase like `all files` and `CONTEXT` is a
+/// `user:role:type:level` quadruple. The first printed line is a column
+/// header and the second is a `----` separator; both are filtered out below.
 fn parse_semanage_fcontext(stdout: &str) -> Vec<Value> {
     stdout
         .lines()
         .map(str::trim)
         .filter(|line| !line.is_empty())
+        // Drop the column header and the underline separator that semanage
+        // prints at the top of its output.
         .filter(|line| !line.starts_with("SELinux fcontext") && !line.starts_with('-'))
         .filter_map(|line| {
             let fields: Vec<_> = line.split_whitespace().collect();
             if fields.len() < 3 {
                 return None;
             }
+            // The context is always the last whitespace-delimited field; the
+            // middle fields collapse back into the `file_type` string.
             let context = fields[fields.len() - 1];
             Some(json!({
                 "path_pattern": fields[0],
@@ -222,10 +304,16 @@ fn parse_semanage_fcontext(stdout: &str) -> Vec<Value> {
         .collect()
 }
 
+/// Pulls the SELinux *type* out of a `user:role:type:level` context string.
+///
+/// The type is the third colon-separated field — the part callers actually
+/// compare against labels like `container_file_t` or `samba_share_t`.
 fn extract_context_type(context: &str) -> Option<&str> {
     context.split(':').nth(2)
 }
 
+/// Normalizes a `sestatus` field name into a stable JSON key: trimmed,
+/// lowercased, with spaces and dashes turned into underscores.
 fn normalize_key(key: &str) -> String {
     key.trim().to_lowercase().replace([' ', '-'], "_")
 }
