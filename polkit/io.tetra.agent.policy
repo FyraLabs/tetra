@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC
+ "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "https://www.freedesktop.org/standards/PolicyKit/1.0/policyconfig.dtd">
+<policyconfig>
+  <vendor>Tetra</vendor>
+  <vendor_url>https://github.com/ublue-os/tetra</vendor_url>
+
+  <action id="io.tetra.agent.elevate">
+    <description>Enter Tetra administrator mode</description>
+    <message>Authentication is required to enter Tetra administrator mode.</message>
+    <defaults>
+      <allow_any>auth_admin_keep</allow_any>
+      <allow_inactive>auth_admin_keep</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+  </action>
+
+  <action id="io.tetra.users.manage">
+    <description>Manage local users through Tetra</description>
+    <message>Authentication is required to manage local users through Tetra.</message>
+    <defaults>
+      <allow_any>auth_admin_keep</allow_any>
+      <allow_inactive>auth_admin_keep</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+  </action>
+
+  <action id="io.tetra.quadlets.manage">
+    <description>Manage system Quadlets through Tetra</description>
+    <message>Authentication is required to manage system Quadlets through Tetra.</message>
+    <defaults>
+      <allow_any>auth_admin_keep</allow_any>
+      <allow_inactive>auth_admin_keep</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+  </action>
+
+  <action id="io.tetra.reverse-proxy.manage">
+    <description>Manage reverse proxy configuration through Tetra</description>
+    <message>Authentication is required to manage reverse proxy configuration through Tetra.</message>
+    <defaults>
+      <allow_any>auth_admin_keep</allow_any>
+      <allow_inactive>auth_admin_keep</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+  </action>
+</policyconfig>

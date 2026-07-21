@@ -7,6 +7,9 @@ use std::{
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
+#[cfg(feature = "polkit")]
+use tetra::agent::polkit;
+
 use tetra::{
     agent::{
         AgentCommand, backend,
@@ -14,6 +17,7 @@ use tetra::{
         transport::TransportConfig,
         vsock::{self, VsockAgentConfig},
         websocket::{self, WebSocketAgentConfig},
+        websocket_server::{self, WebSocketServerConfig},
     },
     catalog::{self, RenderOptions},
 };
@@ -56,6 +60,13 @@ enum Commands {
 
     /// Connect the local agent backend to an outbound WSS control plane.
     AgentConnect(AgentConnectCli),
+
+    /// Serve an authenticated development WebSocket for a dashboard client.
+    AgentWsServe(AgentWsServeCli),
+
+    /// Report the current user-session polkit integration status.
+    #[cfg(feature = "polkit")]
+    PolkitStatus,
 }
 
 #[derive(Debug, Parser)]
@@ -109,6 +120,33 @@ struct AgentVsockServeCli {
 }
 
 #[derive(Debug, Parser)]
+struct AgentWsServeCli {
+    /// Loopback address for the development WebSocket listener.
+    #[arg(long, default_value = "127.0.0.1:7780")]
+    listen: SocketAddr,
+
+    /// URL-safe base64 Ed25519 public key enrolled for the dashboard controller.
+    #[arg(long, env = "TETRA_CONTROLLER_PUBLIC_KEY")]
+    controller_public_key: Option<String>,
+
+    /// One-time token accepted to enroll a controller while no key is stored.
+    #[arg(long, env = "TETRA_ENROLLMENT_TOKEN")]
+    enrollment_token: Option<String>,
+
+    /// Mutable identity directory. Defaults to /var/lib/tetra/identity.
+    #[arg(long, default_value = "/var/lib/tetra/identity")]
+    identity_dir: PathBuf,
+
+    /// PEM certificate for WSS. Required with --tls-key for non-loopback binds.
+    #[arg(long)]
+    tls_cert: Option<PathBuf>,
+
+    /// PEM private key for WSS. Required with --tls-cert for non-loopback binds.
+    #[arg(long)]
+    tls_key: Option<PathBuf>,
+}
+
+#[derive(Debug, Parser)]
 struct AgentConnectCli {
     /// JSON transport config containing control_plane_url and optional TLS paths.
     #[arg(short, long, value_name = "FILE")]
@@ -133,6 +171,9 @@ async fn main() -> Result<()> {
         Commands::AgentServe(cli) => agent_serve(cli).await,
         Commands::AgentVsockServe(cli) => agent_vsock_serve(cli),
         Commands::AgentConnect(cli) => agent_connect(cli).await,
+        Commands::AgentWsServe(cli) => agent_ws_serve(cli).await,
+        #[cfg(feature = "polkit")]
+        Commands::PolkitStatus => polkit_status(),
     }
 }
 
@@ -184,6 +225,25 @@ async fn agent_dispatch(cli: AgentDispatchCli) -> Result<()> {
     let response = backend::dispatch_with_default_backend(command).await?;
     println!("{}", serde_json::to_string_pretty(&response)?);
     Ok(())
+}
+
+#[cfg(feature = "polkit")]
+fn polkit_status() -> Result<()> {
+    let status = polkit::discover_status();
+    println!("{}", serde_json::to_string_pretty(&status)?);
+    Ok(())
+}
+
+async fn agent_ws_serve(cli: AgentWsServeCli) -> Result<()> {
+    websocket_server::serve(WebSocketServerConfig {
+        listen: cli.listen,
+        controller_public_key: cli.controller_public_key,
+        enrollment_token: cli.enrollment_token,
+        identity_dir: cli.identity_dir,
+        tls_cert_path: cli.tls_cert,
+        tls_key_path: cli.tls_key,
+    })
+    .await
 }
 
 async fn agent_serve(cli: AgentServeCli) -> Result<()> {

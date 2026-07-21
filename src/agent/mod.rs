@@ -22,13 +22,19 @@ pub mod command;
 pub mod crypto;
 pub mod dispatcher;
 pub mod http;
+pub mod identity;
 pub mod messages;
 pub mod module_support;
 pub mod modules;
+#[cfg(feature = "polkit")]
+pub mod polkit;
+#[cfg(feature = "polkit")]
+pub mod polkit_native;
 pub mod protocol;
 pub mod transport;
 pub mod vsock;
 pub mod websocket;
+pub mod websocket_server;
 
 pub use backend::AgentBackend;
 pub use command::{AgentCommand, AgentResponse};
