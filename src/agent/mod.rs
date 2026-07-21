@@ -7,6 +7,7 @@ pub mod module_support;
 pub mod modules;
 pub mod transport;
 pub mod vsock;
+pub mod websocket;
 
 pub use backend::AgentBackend;
 pub use command::{AgentCommand, AgentResponse};

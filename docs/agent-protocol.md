@@ -20,9 +20,9 @@ WSS with mTLS. When the agent runs inside a VM, the same JSON frame protocol may
 be carried over a virtio-vsock stream to the VM host so the VM can be controlled
 from the same dashboard interface without exposing guest networking.
 
-The current repository defines the transport boundary and configuration shape,
-but does not yet implement the WSS client. The JSON command envelope documented
-below is the stable application payload that the transport carries.
+The repository includes an outbound WSS client via `tetra agent-connect`. The
+JSON command envelope documented below is the stable application payload that
+the transport carries.
 
 Transport configuration:
 
@@ -59,6 +59,12 @@ Fields:
 - `client_key_path`: Private key for the client certificate. Required for WSS.
 - `server_ca_path`: CA bundle used to verify the dashboard/control-plane server
   certificate. Required for WSS.
+
+Run the outbound agent:
+
+```sh
+tetra agent-connect --config /etc/tetra/agent-transport.json --host-id host-01
+```
 
 For `vsock://` endpoints, `CID` may be numeric or one of the aliases
 `hypervisor` (`0`), `local` (`1`), or `host` (`2`). VM guest agents usually use
@@ -482,7 +488,9 @@ Feature: `recipes`
 Actions:
 
 - `render`
+- `render_inline`
 - `context`
+- `context_inline`
 
 `render` payload:
 
@@ -505,10 +513,63 @@ Response payload:
       "kind": "Container",
       "filename": "nextcloud-app.container",
       "contents": "[Container]\n..."
+    },
+    {
+      "kind": "File",
+      "filename": "index.html",
+      "contents": "<h1>Hello</h1>\n"
     }
   ]
 }
 ```
+
+Recipe resource kinds include Quadlet resources (`container`, `network`,
+`volume`, `pod`, `kube`) and `file` companion resources. Companion file
+resources are intended to be installed through `quadlets.install.files`, under
+the mutable companion-file bundle directory.
+
+`render_inline` payload:
+
+```json
+{
+  "recipe": "recipe_id: nginx-site\nname: Nginx static site\nversion: 0.1.0\n...",
+  "templates": {
+    "containers/nginx-site.container.tera": "[Container]\nContainerName={{ app_id }}\n"
+  },
+  "values": {
+    "app_id": "demo-web"
+  }
+}
+```
+
+This action is intended for recipe bundles fetched from a remote catalog by a
+dashboard or control plane. Tetra does not need to be updated when new recipes
+are published, as long as the bundle uses a recipe schema the installed Tetra
+version understands.
+
+Recommended remote catalog shape:
+
+```json
+{
+  "version": 1,
+  "recipes": [
+    {
+      "id": "nginx-site",
+      "name": "Nginx static site",
+      "description": "Serve static files with nginx.",
+      "category": "web",
+      "recipe": "recipe_id: nginx-site\n...",
+      "templates": {
+        "containers/nginx-site.container.tera": "[Container]\n..."
+      }
+    }
+  ]
+}
+```
+
+`context_inline` accepts the same `recipe` and `values` fields as
+`render_inline`, and returns resolved parameter context without rendering
+templates.
 
 `context` payload:
 
@@ -536,16 +597,27 @@ Actions:
 - `delete`
 - `validate`
 - `install`
+- `list_files`
 
 Shared payload fields:
 
 - `scope`: `"user"` or `"system"`. Defaults to `"user"`.
 - `base_dir`: Optional override. Useful for tests and custom deployments.
+- `files_base_dir`: Optional override for companion files.
 
-Default base directories:
+Default Quadlet unit directories:
 
 - User scope: `$HOME/.config/containers/systemd`
 - System scope: `/etc/containers/systemd`
+
+Default companion file directories:
+
+- User scope: `$XDG_DATA_HOME/tetra/quadlets` or `$HOME/.local/share/tetra/quadlets`
+- System scope: `/var/lib/tetra/quadlets`
+
+During `install`, companion files are written under a per-Quadlet bundle directory
+derived from the first Quadlet resource name. For example, `app.container` companion
+files default to `/var/lib/tetra/quadlets/app` in system scope.
 
 Supported Quadlet filename extensions:
 
@@ -587,12 +659,57 @@ Supported Quadlet filename extensions:
       "contents": "[Container]\nImage=example/app:latest\n"
     }
   ],
+  "files": [
+    {
+      "filename": "index.html",
+      "contents": "<h1>Hello</h1>\n"
+    },
+    {
+      "filename": "nginx/default.conf",
+      "contents": "server {}\n"
+    }
+  ],
   "selinux": {
     "context_type": "container_unit_file_t",
     "recursive": true
   }
 }
 ```
+
+`resources` are validated as Quadlet files and written to the Quadlet unit directory.
+`files` are companion files written under the mutable companion-file bundle directory,
+support nested relative paths, and are rejected if the path escapes the bundle directory.
+
+`list_files` payload:
+
+```json
+{ "scope": "user" }
+```
+
+`list_files` returns all regular files under the selected base directory, including
+companion files:
+
+```json
+{
+  "base_dir": "/home/example/.config/containers/systemd",
+  "files_base_dir": "/home/example/.local/share/tetra/quadlets",
+  "files": [
+    {
+      "filename": "app.container",
+      "path": "/home/example/.config/containers/systemd/app.container",
+      "quadlet": true
+    },
+    {
+      "filename": "app/index.html",
+      "path": "/home/example/.local/share/tetra/quadlets/app/index.html",
+      "quadlet": false
+    }
+  ]
+}
+```
+
+To read a companion file from the companion-file directory, include
+`"companion": true` in the `read` payload.
 
 `delete` payload:
 
@@ -947,6 +1064,7 @@ Feature: `podman`
 Actions:
 
 - `containers`
+- `inspect`
 - `images`
 - `volumes`
 - `networks`
@@ -957,6 +1075,14 @@ Actions:
 - `remove`
 
 List actions return raw command output plus parsed JSON in `data`.
+
+`inspect` returns `podman inspect NAME` output in `data`.
+
+`inspect` payload:
+
+```json
+{ "name": "app" }
+```
 
 `logs` payload:
 

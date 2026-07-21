@@ -113,13 +113,16 @@ fn files_module_reads_and_writes_files() {
 #[test]
 fn quadlets_module_installs_lists_reads_and_deletes_files() {
     let dir = tempdir().unwrap();
+    let files_dir = tempdir().unwrap();
     let base_dir = dir.path();
+    let files_base_dir = files_dir.path();
 
     let install = dispatch(
         "quadlets",
         "install",
         json!({
             "base_dir": base_dir,
+            "files_base_dir": files_base_dir,
             "resources": [
                 {
                     "filename": "app.container",
@@ -128,6 +131,12 @@ fn quadlets_module_installs_lists_reads_and_deletes_files() {
                 {
                     "filename": "app.network",
                     "contents": "[Network]\nDriver=bridge\n"
+                }
+            ],
+            "files": [
+                {
+                    "filename": "index.html",
+                    "contents": "<h1>Hello</h1>\n"
                 }
             ]
         }),
@@ -148,6 +157,21 @@ fn quadlets_module_installs_lists_reads_and_deletes_files() {
     assert_eq!(files[0]["filename"], "app.container");
     assert_eq!(files[1]["filename"], "app.network");
 
+    let list_files = dispatch(
+        "quadlets",
+        "list_files",
+        json!({ "base_dir": base_dir, "files_base_dir": files_base_dir }),
+    );
+    assert!(list_files.ok, "{list_files:?}");
+    let managed_files = list_files.payload.unwrap()["files"]
+        .as_array()
+        .unwrap()
+        .clone();
+    assert_eq!(managed_files.len(), 3);
+    assert_eq!(managed_files[0]["filename"], "app.container");
+    assert_eq!(managed_files[1]["filename"], "app.network");
+    assert_eq!(managed_files[2]["filename"], "app/index.html");
+
     let read = dispatch(
         "quadlets",
         "read",
@@ -157,6 +181,21 @@ fn quadlets_module_installs_lists_reads_and_deletes_files() {
     assert_eq!(
         read.payload.unwrap()["contents"],
         "[Container]\nImage=example/app:latest\n"
+    );
+
+    let read_companion = dispatch(
+        "quadlets",
+        "read",
+        json!({
+            "files_base_dir": files_base_dir,
+            "filename": "app/index.html",
+            "companion": true
+        }),
+    );
+    assert!(read_companion.ok, "{read_companion:?}");
+    assert_eq!(
+        read_companion.payload.unwrap()["contents"],
+        "<h1>Hello</h1>\n"
     );
 
     let delete = dispatch(
@@ -294,4 +333,42 @@ fn recipes_module_builds_template_context() {
     assert_eq!(context["domain"], "cloud.example.test");
     assert!(context["admin_password"].as_str().unwrap().len() == 32);
     assert!(context["db_password"].as_str().unwrap().len() == 32);
+}
+
+#[cfg(feature = "recipes")]
+#[test]
+fn recipes_module_renders_inline_recipe_bundles() {
+    let response = dispatch(
+        "recipes",
+        "render_inline",
+        json!({
+            "recipe": r#"
+recipe_id: nginx-site
+name: Nginx static site
+version: 0.1.0
+parameters:
+  - key: app_id
+    label: App ID
+    type: string
+    default: demo-web
+resources:
+  - type: container
+    filename: "{{ app_id }}.container"
+    template: containers/nginx.container.tera
+"#,
+            "templates": {
+                "containers/nginx.container.tera": "[Container]\nContainerName={{ app_id }}\n"
+            }
+        }),
+    );
+
+    assert!(response.ok, "{response:?}");
+    let payload = response.payload.unwrap();
+    let resources = payload["resources"].as_array().unwrap();
+    assert_eq!(resources.len(), 1);
+    assert_eq!(resources[0]["filename"], "demo-web.container");
+    assert_eq!(
+        resources[0]["contents"],
+        "[Container]\nContainerName=demo-web\n"
+    );
 }

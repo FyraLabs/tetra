@@ -92,6 +92,7 @@ pub enum ResourceKind {
     Volume,
     Pod,
     Kube,
+    File,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -114,8 +115,12 @@ pub fn load_recipe(path: impl AsRef<Path>) -> Result<AppRecipe> {
     let path = path.as_ref();
     let text = fs::read_to_string(path)
         .with_context(|| format!("failed to read recipe `{}`", path.display()))?;
-    let recipe: AppRecipe = serde_yaml::from_str(&text)
-        .with_context(|| format!("failed to parse recipe YAML `{}`", path.display()))?;
+    load_recipe_from_str(&text)
+        .with_context(|| format!("failed to parse recipe YAML `{}`", path.display()))
+}
+
+pub fn load_recipe_from_str(text: &str) -> Result<AppRecipe> {
+    let recipe: AppRecipe = serde_yaml::from_str(text).context("failed to parse recipe YAML")?;
     recipe.validate()?;
     Ok(recipe)
 }
@@ -160,8 +165,33 @@ pub fn render_recipe(
     values: &BTreeMap<String, YamlValue>,
     templates_dir: impl AsRef<Path>,
 ) -> Result<Vec<RenderedResource>> {
+    render_recipe_with_loader(recipe, values, |template| {
+        let templates_dir = templates_dir.as_ref();
+        let template_path = templates_dir.join(template);
+        fs::read_to_string(&template_path)
+            .with_context(|| format!("failed to read template `{}`", template_path.display()))
+    })
+}
+
+pub fn render_recipe_with_templates(
+    recipe: &AppRecipe,
+    values: &BTreeMap<String, YamlValue>,
+    templates: &BTreeMap<String, String>,
+) -> Result<Vec<RenderedResource>> {
+    render_recipe_with_loader(recipe, values, |template| {
+        templates
+            .get(template)
+            .cloned()
+            .with_context(|| format!("template `{template}` is missing from bundle"))
+    })
+}
+
+fn render_recipe_with_loader(
+    recipe: &AppRecipe,
+    values: &BTreeMap<String, YamlValue>,
+    load_template: impl Fn(&str) -> Result<String>,
+) -> Result<Vec<RenderedResource>> {
     recipe.validate()?;
-    let templates_dir = templates_dir.as_ref();
     let context = build_context(recipe, values)?;
     let mut rendered = Vec::new();
 
@@ -185,19 +215,13 @@ pub fn render_recipe(
         );
         resource_context.insert(
             "resource_name".into(),
-            JsonValue::String(
-                filename
-                    .trim_end_matches(resource_extension(resource))
-                    .to_string(),
-            ),
+            JsonValue::String(resource_name(&filename, resource)),
         );
         let tera_context =
             TeraContext::from_serialize(&resource_context).context("failed to build context")?;
-        let template_path = templates_dir.join(&resource.template);
-        let template = fs::read_to_string(&template_path)
-            .with_context(|| format!("failed to read template `{}`", template_path.display()))?;
+        let template = load_template(&resource.template)?;
         let contents = Tera::one_off(&template, &tera_context, false)
-            .with_context(|| format!("failed to render template `{}`", template_path.display()))?;
+            .with_context(|| format!("failed to render template `{}`", resource.template))?;
 
         rendered.push(RenderedResource {
             kind: resource.kind.clone(),
@@ -216,6 +240,16 @@ fn resource_extension(resource: &Resource) -> &'static str {
         ResourceKind::Volume => ".volume",
         ResourceKind::Pod => ".pod",
         ResourceKind::Kube => ".kube",
+        ResourceKind::File => "",
+    }
+}
+
+fn resource_name(filename: &str, resource: &Resource) -> String {
+    let extension = resource_extension(resource);
+    if extension.is_empty() {
+        filename.to_string()
+    } else {
+        filename.trim_end_matches(extension).to_string()
     }
 }
 
@@ -479,5 +513,95 @@ resources:
         assert_eq!(rendered[0].filename, "nextcloud-app.container");
         assert!(rendered[0].contents.contains("DOMAIN=cloud.example.com"));
         assert_eq!(rendered[1].filename, "nextcloud-redis.container");
+    }
+
+    #[test]
+    fn renders_file_resources_without_quadlet_extension() {
+        let templates = tempfile::tempdir().unwrap();
+        fs::write(
+            templates.path().join("site.container.tera"),
+            "[Container]\nContainerName={{ app_id }}\nVolume={{ bundle_dir }}:/usr/share/nginx/html:ro\n",
+        )
+        .unwrap();
+        fs::write(
+            templates.path().join("index.html.tera"),
+            "<h1>{{ site_title }}</h1>\n",
+        )
+        .unwrap();
+        let recipe: AppRecipe = serde_yaml::from_str(
+            r#"
+recipe_id: nginx-site
+name: Nginx static site
+version: 0.1.0
+parameters:
+  - key: app_id
+    label: App ID
+    type: string
+    default: demo-web
+  - key: bundle_dir
+    label: Bundle directory
+    type: string
+    default: /var/lib/tetra/quadlets/demo-web
+  - key: site_title
+    label: Site title
+    type: string
+    default: Demo Web
+resources:
+  - type: container
+    filename: "{{ app_id }}.container"
+    template: site.container.tera
+  - type: file
+    filename: index.html
+    template: index.html.tera
+"#,
+        )
+        .unwrap();
+
+        let rendered = render_recipe(&recipe, &BTreeMap::new(), templates.path()).unwrap();
+
+        assert_eq!(rendered.len(), 2);
+        assert_eq!(rendered[0].filename, "demo-web.container");
+        assert!(
+            rendered[0]
+                .contents
+                .contains("/var/lib/tetra/quadlets/demo-web")
+        );
+        assert_eq!(rendered[1].kind, ResourceKind::File);
+        assert_eq!(rendered[1].filename, "index.html");
+        assert_eq!(rendered[1].contents, "<h1>Demo Web</h1>\n");
+    }
+
+    #[test]
+    fn renders_recipe_with_inline_template_bundle() {
+        let recipe: AppRecipe = serde_yaml::from_str(
+            r#"
+recipe_id: nginx-site
+name: Nginx static site
+version: 0.1.0
+parameters:
+  - key: app_id
+    label: App ID
+    type: string
+    default: demo-web
+resources:
+  - type: container
+    filename: "{{ app_id }}.container"
+    template: containers/nginx.container.tera
+"#,
+        )
+        .unwrap();
+        let templates = BTreeMap::from([(
+            "containers/nginx.container.tera".into(),
+            "[Container]\nContainerName={{ app_id }}\n".into(),
+        )]);
+
+        let rendered = render_recipe_with_templates(&recipe, &BTreeMap::new(), &templates).unwrap();
+
+        assert_eq!(rendered.len(), 1);
+        assert_eq!(rendered[0].filename, "demo-web.container");
+        assert_eq!(
+            rendered[0].contents,
+            "[Container]\nContainerName=demo-web\n"
+        );
     }
 }
