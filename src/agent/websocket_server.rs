@@ -28,13 +28,13 @@ use tokio_tungstenite::{accept_async, tungstenite::Message};
 use super::polkit::{DEFAULT_ELEVATION_TTL, ElevationGrant};
 
 use super::{
-    AgentBackend, DispatchCommand,
+    AgentBackend,
     crypto::{parse_verifying_key, public_key_fingerprint, verify_challenge_signature},
     identity::HostIdentity,
     protocol::{AuthFrame, AuthenticatedSession, PROTOCOL_VERSION, SessionPolicy, unix_timestamp},
+    queue::{DEFAULT_QUEUE_CAPACITY, DispatchQueue, QueueError},
 };
 use ed25519_dalek::VerifyingKey;
-use kameo::actor::ActorRef;
 
 #[derive(Debug, Clone)]
 pub struct WebSocketServerConfig {
@@ -80,7 +80,7 @@ pub async fn serve(config: WebSocketServerConfig) -> Result<()> {
             config.listen
         )
     })?;
-    let backend = AgentBackend::spawn_default();
+    let queue = DispatchQueue::spawn(AgentBackend::spawn_default(), DEFAULT_QUEUE_CAPACITY);
 
     eprintln!(
         "serving authenticated Tetra WebSocket on {}://{}",
@@ -95,7 +95,7 @@ pub async fn serve(config: WebSocketServerConfig) -> Result<()> {
 
     loop {
         let (stream, peer) = listener.accept().await?;
-        let backend = backend.clone();
+        let queue = queue.clone();
         let identity = identity.clone();
         let enrollment_token = config.enrollment_token.clone();
         let tls_acceptor = tls_acceptor.clone();
@@ -113,7 +113,7 @@ pub async fn serve(config: WebSocketServerConfig) -> Result<()> {
             if let Err(error) = handle_connection(
                 stream,
                 peer,
-                backend,
+                queue,
                 identity,
                 controller_public_key,
                 enrollment_token,
@@ -129,7 +129,7 @@ pub async fn serve(config: WebSocketServerConfig) -> Result<()> {
 async fn handle_connection(
     stream: Box<dyn AsyncReadWrite>,
     peer: SocketAddr,
-    backend: ActorRef<AgentBackend>,
+    queue: DispatchQueue,
     identity: HostIdentity,
     controller_key: Option<VerifyingKey>,
     enrollment_token: Option<String>,
@@ -302,11 +302,20 @@ async fn handle_connection(
                 }
                 let now = unix_timestamp()?;
                 let command = session.accept_command(&frame, now)?.clone();
-                let response = backend
-                    .ask(DispatchCommand(command))
-                    .await
-                    .map_err(|error| anyhow::anyhow!("agent backend failed: {error}"))?;
-                send(&mut socket, &AuthFrame::Response { response }).await?;
+                match queue.dispatch(command).await {
+                    Ok(response) => send(&mut socket, &AuthFrame::Response { response }).await?,
+                    Err(QueueError::Full) => {
+                        send_error(
+                            &mut socket,
+                            "Tetra command queue is full; retry after backoff",
+                        )
+                        .await?;
+                    }
+                    Err(QueueError::Closed) => {
+                        send_error(&mut socket, "Tetra command queue is unavailable").await?;
+                        bail!("dispatch queue closed")
+                    }
+                }
             }
             AuthFrame::Error { error } => bail!("peer reported error: {error}"),
             _ => {
@@ -449,7 +458,7 @@ mod tests {
         let identity = HostIdentity::load_or_generate(identity_dir.path()).unwrap();
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
-        let backend = AgentBackend::spawn_default();
+        let queue = DispatchQueue::spawn(AgentBackend::spawn_default(), DEFAULT_QUEUE_CAPACITY);
         let expected_host_fingerprint = public_key_fingerprint(&identity.verifying_key());
         let controller_public_key = public_key_fingerprint(&controller.verifying_key());
 
@@ -458,7 +467,7 @@ mod tests {
             handle_connection(
                 Box::new(stream),
                 peer,
-                backend,
+                queue,
                 identity,
                 None,
                 Some("enroll-once".into()),
@@ -528,7 +537,7 @@ mod tests {
         let expected_host_fingerprint = public_key_fingerprint(&identity.verifying_key());
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
-        let backend = AgentBackend::spawn_default();
+        let queue = DispatchQueue::spawn(AgentBackend::spawn_default(), DEFAULT_QUEUE_CAPACITY);
         let controller_key = controller.verifying_key();
 
         tokio::spawn(async move {
@@ -536,7 +545,7 @@ mod tests {
             handle_connection(
                 Box::new(stream),
                 peer,
-                backend,
+                queue,
                 identity,
                 Some(controller_key),
                 None,

@@ -6,14 +6,17 @@ use std::{
 };
 
 use anyhow::{Context as _, Result, anyhow, bail};
-use kameo::actor::ActorRef;
+
 use serde_json::json;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
 };
 
-use super::{AgentBackend, AgentCommand, DispatchCommand};
+use super::{
+    AgentBackend, AgentCommand,
+    queue::{DEFAULT_QUEUE_CAPACITY, DispatchQueue, QueueError},
+};
 
 /// Largest request header block we'll buffer before giving up. Defends against
 /// a slow-loris-style peer that streams headers forever.
@@ -41,16 +44,16 @@ pub async fn serve(config: HttpAgentConfig) -> Result<()> {
     let listener = TcpListener::bind(config.listen)
         .await
         .with_context(|| format!("failed to bind agent HTTP listener on {}", config.listen))?;
-    let backend = AgentBackend::spawn_default();
+    let queue = DispatchQueue::spawn(AgentBackend::spawn_default(), DEFAULT_QUEUE_CAPACITY);
     let config = Arc::new(config);
 
     loop {
         let (stream, source) = listener.accept().await?;
-        let backend = backend.clone();
+        let queue = queue.clone();
         let config = Arc::clone(&config);
 
         tokio::spawn(async move {
-            if let Err(error) = handle_connection(stream, source, backend, config).await {
+            if let Err(error) = handle_connection(stream, source, queue, config).await {
                 println!(
                     "source={} method=- path=- status=500 duration_ms=0 error={:?}",
                     source.ip(),
@@ -64,14 +67,14 @@ pub async fn serve(config: HttpAgentConfig) -> Result<()> {
 async fn handle_connection(
     mut stream: TcpStream,
     source: SocketAddr,
-    backend: ActorRef<AgentBackend>,
+    queue: DispatchQueue,
     config: Arc<HttpAgentConfig>,
 ) -> Result<()> {
     let started = Instant::now();
     let request = read_request(&mut stream).await?;
     let method = request.method.clone();
     let path = request.path.clone();
-    let response = route_request(request, backend, &config).await;
+    let response = route_request(request, queue, &config).await;
     log_request(source.ip(), &method, &path, response.status, started);
     stream.write_all(response.to_bytes().as_slice()).await?;
     stream.shutdown().await?;
@@ -97,7 +100,7 @@ fn log_request(source: IpAddr, method: &str, path: &str, status: u16, started: I
 /// so a browser test UI on a different origin can call the API.
 async fn route_request(
     request: HttpRequest,
-    backend: ActorRef<AgentBackend>,
+    queue: DispatchQueue,
     config: &HttpAgentConfig,
 ) -> HttpResponse {
     if request.method == "OPTIONS" {
@@ -121,10 +124,10 @@ async fn route_request(
                 payload: json!({}),
                 signature: None,
             };
-            dispatch_json(backend, command).await
+            dispatch_json(&queue, command).await
         }
         ("POST", "/dispatch") => match serde_json::from_slice::<AgentCommand>(&request.body) {
-            Ok(command) => dispatch_json(backend, command).await,
+            Ok(command) => dispatch_json(&queue, command).await,
             Err(error) => json_response(
                 400,
                 json!({ "ok": false, "error": format!("invalid command JSON: {error}") }),
@@ -134,12 +137,16 @@ async fn route_request(
     }
 }
 
-async fn dispatch_json(backend: ActorRef<AgentBackend>, command: AgentCommand) -> HttpResponse {
-    match backend.ask(DispatchCommand(command)).await {
+async fn dispatch_json(queue: &DispatchQueue, command: AgentCommand) -> HttpResponse {
+    match queue.dispatch(command).await {
         Ok(response) => json_response(200, response),
-        Err(error) => json_response(
-            500,
-            json!({ "ok": false, "error": format!("agent dispatch failed: {error}") }),
+        Err(QueueError::Full) => json_response(
+            429,
+            json!({ "ok": false, "error": "Tetra command queue is full; retry after backoff" }),
+        ),
+        Err(QueueError::Closed) => json_response(
+            503,
+            json!({ "ok": false, "error": "Tetra command queue is unavailable" }),
         ),
     }
 }

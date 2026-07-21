@@ -31,6 +31,7 @@ pub mod polkit;
 #[cfg(feature = "polkit")]
 pub mod polkit_native;
 pub mod protocol;
+pub mod queue;
 pub mod transport;
 pub mod vsock;
 pub mod websocket;
