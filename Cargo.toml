@@ -12,6 +12,7 @@ default = [
     "selinux",
     "services",
     "quadlets",
+    "reverse-proxy",
 ]
 files = []
 recipes = []
@@ -23,6 +24,7 @@ nfs = []
 network = []
 podman = []
 quadlets = []
+reverse-proxy = []
 users = []
 virtual-machines = []
 

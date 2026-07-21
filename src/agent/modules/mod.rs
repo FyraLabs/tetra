@@ -10,6 +10,8 @@ pub mod podman;
 pub mod quadlets;
 #[cfg(feature = "recipes")]
 pub mod recipes;
+#[cfg(feature = "reverse-proxy")]
+pub mod reverse_proxy;
 #[cfg(feature = "samba")]
 pub mod samba;
 #[cfg(feature = "selinux")]
@@ -58,6 +60,9 @@ pub fn default_dispatcher() -> Dispatcher {
 
     #[cfg(feature = "quadlets")]
     let dispatcher = dispatcher.with_module(quadlets::QuadletsModule);
+
+    #[cfg(feature = "reverse-proxy")]
+    let dispatcher = dispatcher.with_module(reverse_proxy::ReverseProxyModule);
 
     #[cfg(feature = "users")]
     let dispatcher = dispatcher.with_module(users::UsersModule);
