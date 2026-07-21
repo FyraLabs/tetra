@@ -18,6 +18,17 @@ use tetra::{
     catalog::{self, RenderOptions},
 };
 
+/// Tetra CLI entry point.
+///
+/// The binary has two broad modes, exposed as subcommands:
+///
+/// - **Recipe rendering** (`render`) — pure local tooling that turns a YAML
+///   recipe + Tera templates into Quadlet and companion files. No agent
+///   backend, no transport.
+/// - **Agent** (`agent-dispatch`, `agent-serve`, `agent-vsock-serve`,
+///   `agent-connect`) — the same Kameo-backed dispatcher exposed through four
+///   different surfaces: a one-shot CLI, a dev HTTP API, a vsock smoke-test
+///   listener, and the production outbound WSS control-plane connection.
 #[derive(Debug, Parser)]
 #[command(
     author,
@@ -134,6 +145,9 @@ fn render(cli: RenderCli) -> Result<()> {
         dry_run: cli.dry_run,
     })?;
 
+    // In dry-run mode the renderer already skipped writes; print each resource
+    // to stdout with a `--- filename` separator so the caller can preview what
+    // would land on disk.
     if cli.dry_run {
         for resource in resources {
             println!("--- {}", resource.filename);
@@ -148,6 +162,8 @@ fn render(cli: RenderCli) -> Result<()> {
 }
 
 async fn agent_dispatch(cli: AgentDispatchCli) -> Result<()> {
+    // Read the command envelope from either a path arg or stdin. Stdin lets
+    // the agent be driven from a shell pipeline without a temp file.
     let text = match cli.command {
         Some(path) => fs::read_to_string(&path)
             .with_context(|| format!("failed to read command `{}`", path.display()))?,
@@ -162,6 +178,9 @@ async fn agent_dispatch(cli: AgentDispatchCli) -> Result<()> {
 
     let command: AgentCommand =
         serde_json::from_str(&text).context("failed to parse agent command JSON")?;
+    // Spawn a one-shot backend, dispatch, and print the response. The actor is
+    // dropped when this future completes — no long-lived state survives the
+    // CLI invocation, which is the right behavior for a one-shot dispatch.
     let response = backend::dispatch_with_default_backend(command).await?;
     println!("{}", serde_json::to_string_pretty(&response)?);
     Ok(())

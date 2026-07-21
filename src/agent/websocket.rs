@@ -115,7 +115,7 @@ pub async fn run(config: WebSocketAgentConfig) -> Result<()> {
 }
 
 /// Open one WSS session: send `Hello`, then pump frames until the socket
-closes or errors. Returns `Ok(())` on a clean close so the caller's reconnect
+/// closes or errors. Returns `Ok(())` on a clean close so the caller's reconnect
 /// loop can re-enter with a fresh backoff.
 async fn connect_once(
     url: &str,
