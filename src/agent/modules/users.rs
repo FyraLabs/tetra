@@ -1,3 +1,19 @@
+//! Local user and group management.
+//!
+//! Wraps the classic shadow-utils CLIs (`useradd`, `usermod`, `userdel`) for
+//! account lifecycle, and reads `/etc/passwd` and `/etc/group` directly for
+//! listing. Mutating actions honor the shared `dry_run` flag.
+//!
+//! A few conventions worth knowing:
+//! - `useradd` and `usermod` use *different* flag names for the home directory
+//!   (`--home-dir` vs `--home`); the arg-building code below mirrors that
+//!   difference on purpose.
+//! - `set_password` never sees a plaintext password. The caller supplies a
+//!   pre-hashed value (`$y$…`, `$6$…`, …) which is passed straight to
+//!   `usermod --password`, matching how `/etc/shadow` stores it.
+//! - `create`/`update` deliberately omit flags the caller did not set, so
+//!   shadow-utils defaults apply for anything left unspecified.
+
 use std::fs;
 
 use anyhow::{Context, Result};
@@ -12,6 +28,8 @@ use crate::agent::{
     },
 };
 
+/// Marker type for the users module. Stateless; all behavior lives in the
+/// [`AgentModule`] impl and the static [`INFO`] descriptor.
 pub struct UsersModule;
 
 const INFO: ModuleInfo = ModuleInfo {
@@ -32,17 +50,24 @@ const INFO: ModuleInfo = ModuleInfo {
     ],
 };
 
+/// Payload for `create`. All optional fields are forwarded to `useradd` only
+/// when present, so unspecified attributes fall back to `useradd` defaults.
 #[derive(Debug, Deserialize)]
 struct CreatePayload {
     name: String,
     shell: Option<String>,
     home: Option<String>,
+    /// Creates a system account (UID pulled from the system range) via
+    /// `useradd --system`.
     #[serde(default)]
     system: bool,
     #[serde(default)]
     dry_run: bool,
 }
 
+/// Payload for `update`. `groups`, when present, is joined with commas and
+/// passed to `usermod --groups`, which *replaces* the user's supplementary
+/// group list rather than appending.
 #[derive(Debug, Deserialize)]
 struct UpdatePayload {
     name: String,
@@ -53,6 +78,8 @@ struct UpdatePayload {
     dry_run: bool,
 }
 
+/// Payload for `set_password`. `password_hash` is a pre-computed crypt hash as
+/// stored in `/etc/shadow`; the agent does not hash plaintext.
 #[derive(Debug, Deserialize)]
 struct SetPasswordPayload {
     name: String,
@@ -67,13 +94,19 @@ impl AgentModule for UsersModule {
     }
 
     fn handle(&self, action: &str, payload: Value) -> Result<Value> {
+        // Delegate `capabilities`/`plan` to the shared metadata handler first.
         if let Some(response) = handle_metadata(INFO, action, payload.clone())? {
             return Ok(response);
         }
 
         match action {
+            // `/etc/passwd` is the source of truth for local accounts; the
+            // password field is deliberately not surfaced (it is `x` under
+            // shadow passwords, with the real hash in `/etc/shadow`).
             "list" => Ok(json!({ "users": parse_passwd(&read_file("/etc/passwd")?) })),
             "groups" => Ok(json!({ "groups": parse_group(&read_file("/etc/group")?) })),
+            // `id` exits non-zero for an unknown account, so `status` doubles as
+            // an existence check via the wrapped command's exit status.
             "status" => {
                 let payload: NamedPayload = parse_payload(payload)?;
                 run_command("id", [&payload.name])
@@ -87,6 +120,8 @@ impl AgentModule for UsersModule {
                 if let Some(shell) = payload.shell {
                     args.extend(["--shell".into(), shell]);
                 }
+                // `useradd` spells the home flag `--home-dir` (unlike
+                // `usermod`'s `--home` below).
                 if let Some(home) = payload.home {
                     args.extend(["--home-dir".into(), home]);
                 }
@@ -99,6 +134,7 @@ impl AgentModule for UsersModule {
                 if let Some(shell) = payload.shell {
                     args.extend(["--shell".into(), shell]);
                 }
+                // `usermod` spells the home flag `--home`.
                 if let Some(home) = payload.home {
                     args.extend(["--home".into(), home]);
                 }
@@ -114,6 +150,8 @@ impl AgentModule for UsersModule {
             }
             "set_password" => {
                 let payload: SetPasswordPayload = parse_payload(payload)?;
+                // The hash is passed through verbatim; `usermod --password`
+                // expects the same string `/etc/shadow` would store.
                 run_command_or_dry_run(
                     "usermod",
                     ["--password", &payload.password_hash, &payload.name],
@@ -125,10 +163,18 @@ impl AgentModule for UsersModule {
     }
 }
 
+/// Small helper to read a host file with a context-bearing error. Used for
+/// `/etc/passwd` and `/etc/group`.
 fn read_file(path: &str) -> Result<String> {
     fs::read_to_string(path).with_context(|| format!("failed to read `{path}`"))
 }
 
+/// Parses `/etc/passwd` into user objects.
+///
+/// The passwd format is `name:passwd:uid:gid:gecos:home:shell` (7 fields). We
+/// intentionally skip field 1 (`passwd`), which is `x` under shadow passwords
+/// and never useful to the control plane. The `>= 7` guard drops malformed or
+/// comment lines rather than panicking.
 fn parse_passwd(contents: &str) -> Vec<Value> {
     contents
         .lines()
@@ -148,6 +194,12 @@ fn parse_passwd(contents: &str) -> Vec<Value> {
         .collect()
 }
 
+/// Parses `/etc/group` into group objects.
+///
+/// The group format is `name:passwd:gid:members` (4 fields), where `members`
+/// is a comma-separated list. The `passwd` field (index 1) is skipped. Empty
+/// member strings are filtered out so a trailing comma does not yield a bogus
+/// empty member.
 fn parse_group(contents: &str) -> Vec<Value> {
     contents
         .lines()

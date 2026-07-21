@@ -18,6 +18,8 @@ pub mod samba;
 pub mod selinux;
 #[cfg(feature = "services")]
 pub mod services;
+// `settings` is always compiled — it provides the always-available `get_system`
+// action that other modules and the dashboard rely on for host identification.
 pub mod settings;
 #[cfg(feature = "storage")]
 pub mod storage;
@@ -28,6 +30,11 @@ pub mod virtual_machines;
 
 use super::Dispatcher;
 
+/// Build the dispatcher with every module enabled by the active Cargo features.
+///
+/// Order matters only for the `agent.capabilities` response, which lists
+/// modules in `BTreeMap` name order regardless of insertion order — so this
+/// function is free to list modules in whatever order reads cleanly.
 pub fn default_dispatcher() -> Dispatcher {
     let dispatcher = Dispatcher::new().with_module(settings::SettingsModule);
 

@@ -15,9 +15,21 @@ use super::{
     transport::{TransportConfig, TransportEndpoint},
 };
 
+/// Protocol version advertised in the `Hello` frame. Bumped when the wire
+/// format changes in a way the control plane must notice; the control plane
+/// can refuse or warn on mismatched versions.
 const PROTOCOL_VERSION: &str = "2026-06-29";
+/// Upper bound for reconnect backoff. Without this a long partition could
+/// push the delay into hours; capping at 60s keeps the agent responsive to a
+/// control-plane restart.
 const MAX_RECONNECT_DELAY: Duration = Duration::from_secs(60);
 
+/// Configuration for the outbound WSS control-plane connection (`agent-connect`).
+///
+/// This is the production transport: the agent dials out to the control plane,
+/// authenticates with mTLS, and exchanges [`TransportFrame`]s. Dialing out
+/// (rather than listening) keeps the agent behind NAT/firewalls without port
+/// forwarding — the same reason a Tailscale tailnet works.
 #[derive(Debug, Clone)]
 pub struct WebSocketAgentConfig {
     pub transport: TransportConfig,
@@ -25,6 +37,13 @@ pub struct WebSocketAgentConfig {
     pub reconnect: bool,
 }
 
+/// The wire frame for the WSS control-plane protocol. Tagged with `type` so a
+/// single `serde_json` parse dispatches on the frame kind.
+///
+/// The agent side only ever sends `Hello`, `Response`, `Pong`, and `Error`;
+/// it receives `Command` and `Ping`. The other variants appear in this enum
+/// so the deserialization round-trips frames the control plane might echo
+/// back (and so `handle_frame` can explicitly reject them with an `Error`).
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum TransportFrame {
@@ -55,6 +74,9 @@ enum TransportFrame {
     },
 }
 
+/// Connect to the control plane, exchange frames until the session closes, and
+/// (if `reconnect`) reconnect with backoff. The outer loop is the reconnect
+/// loop; the inner [`connect_once`] is a single session.
 pub async fn run(config: WebSocketAgentConfig) -> Result<()> {
     let url = match config.transport.endpoint()? {
         TransportEndpoint::WebSocket { url } => url,
@@ -74,6 +96,8 @@ pub async fn run(config: WebSocketAgentConfig) -> Result<()> {
                 if !config.reconnect {
                     return Ok(());
                 }
+                // Reset the backoff counter after a clean session so a brief
+                // blip doesn't leave the agent on a long delay forever.
                 attempt = 0;
                 eprintln!("websocket session closed; reconnecting");
             }
@@ -90,6 +114,9 @@ pub async fn run(config: WebSocketAgentConfig) -> Result<()> {
     }
 }
 
+/// Open one WSS session: send `Hello`, then pump frames until the socket
+closes or errors. Returns `Ok(())` on a clean close so the caller's reconnect
+/// loop can re-enter with a fresh backoff.
 async fn connect_once(
     url: &str,
     config: &WebSocketAgentConfig,
@@ -128,12 +155,16 @@ async fn connect_once(
                     serde_json::from_slice(&bytes).context("invalid websocket frame JSON")?;
                 handle_frame(&mut socket, backend.clone(), frame).await?;
             }
+            // tungstenite handles Ping/Pong at the protocol layer; we just echo.
             Message::Ping(bytes) => socket.send(Message::Pong(bytes)).await?,
             Message::Pong(_) => {}
             Message::Close(frame) => {
                 eprintln!("control plane closed websocket: {frame:?}");
                 return Ok(());
             }
+            // Raw frames only appear when the underlying codec is in a state we
+            // don't model; tungstenite normally decodes these for us, so this
+            // is a defensive no-op.
             Message::Frame(_) => {}
         }
     }
@@ -141,6 +172,11 @@ async fn connect_once(
     Ok(())
 }
 
+/// Dispatch one received frame. `Command` frames go to the backend actor and
+/// the response is sent back as a `Response` frame; `Ping` is echoed as a
+/// `Pong`; anything else (including `Hello`, `Response`, `Pong`, `Error`) is
+/// rejected with an `Error` frame — the control plane should never send those
+/// to an agent.
 async fn handle_frame<S>(
     socket: &mut S,
     backend: ActorRef<AgentBackend>,
@@ -154,6 +190,9 @@ where
         TransportFrame::Command { command } => {
             let response = match backend.ask(DispatchCommand(command)).await {
                 Ok(response) => response,
+                // The actor itself failed (panicked or stopped), not the
+                // command — synthesize an error response so the control plane
+                // sees a well-formed envelope with the right id.
                 Err(error) => AgentResponse::error("dispatch-error", error.to_string()),
             };
             send_frame(socket, &TransportFrame::Response { response }).await?;
@@ -178,6 +217,8 @@ where
     Ok(())
 }
 
+/// Serialize and send one frame as a text message. We always send text (not
+/// binary) so the frames are easy to inspect in a proxy or log.
 async fn send_frame<S>(socket: &mut S, frame: &TransportFrame) -> Result<()>
 where
     S: SinkExt<Message> + Unpin,
@@ -190,6 +231,9 @@ where
         .context("failed to send websocket frame")
 }
 
+/// Warn (but don't fail) when a `wss://` URL is missing the full set of mTLS
+/// paths. The session will still attempt to connect using the platform's root
+/// CA store, which is almost certainly not what a production mTLS setup wants.
 fn validate_tls_config(url: &str, config: &TransportConfig) -> Result<()> {
     if url.starts_with("wss://")
         && (config.client_cert_path.is_none()
@@ -204,6 +248,9 @@ fn validate_tls_config(url: &str, config: &TransportConfig) -> Result<()> {
     Ok(())
 }
 
+/// Exponential reconnect backoff with jitter: `2^attempt` seconds, capped at
+/// [`MAX_RECONNECT_DELAY`], plus up to 1 second of random jitter to spread out
+/// a thundering herd of agents reconnecting after a control-plane restart.
 fn reconnect_delay(attempt: u32) -> Duration {
     let exponent = attempt.min(6);
     let base = Duration::from_secs(2_u64.saturating_pow(exponent));
@@ -212,6 +259,10 @@ fn reconnect_delay(attempt: u32) -> Duration {
     capped + Duration::from_millis(jitter_ms)
 }
 
+/// Best-effort hostname for the `Hello` frame. `HOSTNAME` is what systemd
+/// sets on Linux; `COMPUTERNAME` is the Windows equivalent. We don't fall
+/// back to `gethostname()` because the env vars are good enough for a
+/// display name and avoid a syscall.
 fn hostname() -> Option<String> {
     env::var("HOSTNAME")
         .ok()

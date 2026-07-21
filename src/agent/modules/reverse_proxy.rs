@@ -1,3 +1,16 @@
+//! Caddy reverse proxy site management.
+//!
+//! Manages per-site Caddy snippet files under a managed directory so the
+//! Ultramarine Server dashboard can provision reverse proxies for hosted
+//! services (e.g. point `app.example.com` at a container's `127.0.0.1:8080`)
+//! without editing the main Caddyfile by hand. Each site is a small
+//! `*.caddy` file with a `reverse_proxy` block; the main Caddyfile is
+//! expected to `import` the managed directory.
+//!
+//! Registered behind the `reverse-proxy` cargo feature. Mutating actions
+//! (`write`, `delete`) accept `dry_run` and an optional `reload` flag that
+//! triggers `systemctl reload caddy.service` after the change.
+
 use std::{fs, path::PathBuf};
 
 use anyhow::{Context, Result, bail};
@@ -12,8 +25,16 @@ use crate::agent::{
     },
 };
 
+/// Agent module that manages Caddy reverse proxy snippets.
+///
+/// Stateless: all persisted state lives as `*.caddy` files under the
+/// configured `config_dir`, with site metadata embedded in a header comment
+/// so the module can list and round-trip sites without a separate database.
 pub struct ReverseProxyModule;
 
+/// Static descriptor published via the shared `capabilities` and `plan`
+/// actions; one source of truth for the module's name, feature gate, and
+/// supported actions.
 const INFO: ModuleInfo = ModuleInfo {
     name: "reverse_proxy",
     feature: "reverse-proxy",
@@ -30,7 +51,14 @@ const INFO: ModuleInfo = ModuleInfo {
     ],
 };
 
+/// Directory where managed site snippets live. Overridable per request via
+/// `config_dir` (used by tests and deployments that keep Caddy config
+/// elsewhere). The main Caddyfile is expected to `import` this directory.
 const DEFAULT_CONFIG_DIR: &str = "/etc/caddy/tetra-sites";
+/// Sentinel first line written to every managed file. `list_sites` uses this
+/// to distinguish Tetra-managed snippets from any other `*.caddy` files the
+/// operator may have placed in the same directory, so we never touch files
+/// we didn't write.
 const MANAGED_HEADER: &str = "# Managed by Tetra reverse_proxy";
 
 #[derive(Debug, Deserialize)]
@@ -38,6 +66,11 @@ struct BasePayload {
     config_dir: Option<PathBuf>,
 }
 
+/// Payload for `render` and `write`: describes one site to proxy.
+///
+/// `tls` defaults to `true` because Caddy provisions automatic HTTPS by
+/// default; callers opt out for local-only sites or when TLS is terminated
+/// upstream.
 #[derive(Debug, Deserialize)]
 struct SitePayload {
     config_dir: Option<PathBuf>,
@@ -47,6 +80,9 @@ struct SitePayload {
     tls: bool,
     #[serde(default)]
     dry_run: bool,
+    /// Reload Caddy after the change. The dashboard typically sets this so a
+    /// single command applies the new config; batch operations may prefer to
+    /// reload once at the end via the dedicated `reload` action.
     #[serde(default)]
     reload: bool,
 }
@@ -67,6 +103,9 @@ struct ReloadPayload {
     dry_run: bool,
 }
 
+/// In-memory and on-disk representation of a managed site. Serialized as
+/// JSON into a `# tetra: ...` comment header in the snippet so `list_sites`
+/// can recover the original parameters without re-parsing the Caddy block.
 #[derive(Debug, Serialize, Deserialize)]
 struct SiteMetadata {
     domain: String,
@@ -74,12 +113,15 @@ struct SiteMetadata {
     tls: bool,
 }
 
+/// Dispatches reverse-proxy actions. Mutating actions persist `*.caddy`
+/// files under `config_dir` and optionally reload Caddy.
 impl AgentModule for ReverseProxyModule {
     fn info(&self) -> ModuleInfo {
         INFO
     }
 
     fn handle(&self, action: &str, payload: Value) -> Result<Value> {
+        // Answer the shared `capabilities`/`plan` metadata actions first.
         if let Some(response) = handle_metadata(INFO, action, payload.clone())? {
             return Ok(response);
         }
@@ -90,6 +132,8 @@ impl AgentModule for ReverseProxyModule {
                 let config_dir = config_dir(payload.config_dir);
                 Ok(json!({ "config_dir": config_dir, "sites": list_sites(&config_dir)? }))
             }
+            // `render` only produces the snippet text; it does not touch disk.
+            // Use `write` to persist (and optionally reload).
             "render" => {
                 let payload: SitePayload = parse_payload(payload)?;
                 let site = validated_site(payload.domain, payload.upstream, payload.tls)?;
@@ -104,6 +148,9 @@ impl AgentModule for ReverseProxyModule {
                 let config_dir = config_dir(payload.config_dir);
                 let site = validated_site(payload.domain, payload.upstream, payload.tls)?;
                 let filename = site_filename(&site.domain);
+                // `safe_join` rejects absolute paths and `..` traversal, so
+                // even a hostile domain (already blocked by `validate_domain`)
+                // cannot escape `config_dir` — defense in depth.
                 let path = safe_join(&config_dir, &filename)?;
                 let contents = render_site(&site)?;
 
@@ -114,6 +161,8 @@ impl AgentModule for ReverseProxyModule {
                         .with_context(|| format!("failed to write `{}`", path.display()))?;
                 }
 
+                // Reload only when explicitly requested, so callers can batch
+                // writes and reload once at the end.
                 let reload = if payload.reload {
                     Some(reload_caddy(payload.dry_run)?)
                 } else {
@@ -138,6 +187,8 @@ impl AgentModule for ReverseProxyModule {
                 let filename = site_filename(&domain);
                 let path = safe_join(&config_dir, &filename)?;
 
+                // Guard on `path.exists()` so deleting a missing site is a
+                // no-op rather than an error.
                 if !payload.dry_run && path.exists() {
                     fs::remove_file(&path)
                         .with_context(|| format!("failed to delete `{}`", path.display()))?;
@@ -167,6 +218,8 @@ impl AgentModule for ReverseProxyModule {
     }
 }
 
+/// Serde default for `tls`. Caddy auto-provisions HTTPS, so TLS is the
+/// safe default; callers must explicitly opt out.
 fn default_tls() -> bool {
     true
 }
@@ -183,6 +236,12 @@ fn validated_site(domain: String, upstream: String, tls: bool) -> Result<SiteMet
     })
 }
 
+/// Normalize and validate a DNS domain for use as a Caddy site label.
+///
+/// Lowercases and strips the trailing dot (FQDN form), then enforces RFC
+/// length limits and allowed characters. This is primarily a safety check:
+/// the domain is interpolated into a Caddy block, so rejecting `/`, `:`,
+/// and non-DNS characters prevents Caddy config injection.
 fn validate_domain(domain: &str) -> Result<String> {
     let domain = domain.trim().trim_end_matches('.').to_ascii_lowercase();
     if domain.is_empty() {
@@ -204,6 +263,11 @@ fn validate_domain(domain: &str) -> Result<String> {
     Ok(domain)
 }
 
+/// Validate an upstream address such as `127.0.0.1:8080`.
+///
+/// As with the domain, the upstream is interpolated into a Caddy block, so
+/// newlines and `{`/`}` are rejected to prevent block injection. Requiring
+/// a `:` catches the common mistake of omitting the port.
 fn validate_upstream(upstream: &str) -> Result<String> {
     let upstream = upstream.trim();
     if upstream.is_empty() {
@@ -223,6 +287,11 @@ fn validate_upstream(upstream: &str) -> Result<String> {
     Ok(upstream.to_string())
 }
 
+/// Map a (validated) domain to a safe on-disk snippet filename.
+///
+/// `*` (wildcard site labels) becomes `wildcard` and `.` becomes `_`, so
+/// `*.example.com` -> `wildcard_example_com.caddy`. The domain is already
+/// validated to contain only `[a-z0-9-.]`, so no further escaping is needed.
 fn site_filename(domain: &str) -> String {
     format!(
         "{}.caddy",
@@ -230,6 +299,12 @@ fn site_filename(domain: &str) -> String {
     )
 }
 
+/// Render a single site snippet.
+///
+/// The `# tetra: {metadata}` line embeds `SiteMetadata` as JSON so
+/// `list_sites` can round-trip the original parameters. TLS off emits
+/// `auto_https off` to disable Caddy's automatic certificate provisioning
+/// for this site.
 fn render_site(site: &SiteMetadata) -> Result<String> {
     let metadata = serde_json::to_string(site)?;
     let tls = if site.tls { "" } else { "\n\tauto_https off" };
@@ -239,6 +314,13 @@ fn render_site(site: &SiteMetadata) -> Result<String> {
     ))
 }
 
+/// List Tetra-managed sites in `config_dir`.
+///
+/// Skips any `*.caddy` file that doesn't start with `MANAGED_HEADER`, so
+/// operator-authored files in the same directory are neither reported nor
+/// touched. Metadata is recovered from the `# tetra:` comment line; files
+/// without a parseable header are silently ignored. Results are sorted by
+/// domain for stable dashboard output.
 fn list_sites(config_dir: &PathBuf) -> Result<Vec<Value>> {
     let mut sites = Vec::new();
     if !config_dir.exists() {
@@ -279,6 +361,9 @@ fn list_sites(config_dir: &PathBuf) -> Result<Vec<Value>> {
     Ok(sites)
 }
 
+/// Reload Caddy via systemd so new or removed sites take effect without
+/// restarting (which would drop active connections). Dry runs report the
+/// command that would run without invoking systemctl.
 fn reload_caddy(dry_run: bool) -> Result<Value> {
     run_command_or_dry_run("systemctl", ["reload", "caddy.service"], dry_run)
 }

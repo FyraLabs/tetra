@@ -1,3 +1,22 @@
+//! The agent: a feature-gated command dispatcher plus the transports that
+//! expose it to a dashboard or control plane.
+//!
+//! Architecture at a glance:
+//!
+//! - [`Dispatcher`] routes an [`AgentCommand`] `{module, action, payload}`
+//!   envelope to the matching [`AgentModule`] and returns an [`AgentResponse`].
+//! - [`modules`] holds one `AgentModule` implementation per host-management
+//!   surface (settings, files, services, quadlets, recipes, …), each gated by
+//!   a Cargo feature so installs only ship what they need.
+//! - [`module_support`] provides the shared plumbing every module uses:
+//!   `ModuleInfo` metadata, the `capabilities`/`plan` meta-actions, the dry-run
+//!   command runner, and the shared SELinux-labeling helper.
+//! - [`backend`] wraps the dispatcher in a Kameo actor so transports can handle
+//!   commands concurrently without sharing a `&mut Dispatcher`.
+//! - Transports — [`http`], [`vsock`], [`websocket`] — all feed the same
+//!   envelope shape into the same backend. [`transport`] holds the shared
+//!   endpoint-parsing config.
+
 pub mod backend;
 pub mod command;
 pub mod dispatcher;

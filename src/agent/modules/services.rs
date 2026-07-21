@@ -1,3 +1,15 @@
+//! systemd service inspection and control via `systemctl` / `journalctl`.
+//!
+//! The services module is the control plane's window into the host's service
+//! manager. Read actions (`list`, `status`, `logs`) run unconditionally;//! mutating actions (`start`/`stop`/`restart`/`enable`/`disable` and
+//! `daemon_reload`) honor the shared `dry_run` flag so a controller can preview
+//! the exact `systemctl` invocation before applying it.
+//!
+//! Both system and per-user systemd scopes are supported: a `scope` field on
+//! the payload selects which, and is translated into the `--user` flag (or its
+//! absence) on every `systemctl`/`journalctl` invocation. `list` additionally
+//! parses the raw `list-units` table into a stable `services` array.
+
 use anyhow::Result;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -10,6 +22,8 @@ use crate::agent::{
     },
 };
 
+/// Marker type for the services module. Stateless; all behavior lives in the
+/// [`AgentModule`] impl and the static [`INFO`] descriptor.
 pub struct ServicesModule;
 
 const INFO: ModuleInfo = ModuleInfo {
@@ -32,6 +46,8 @@ const INFO: ModuleInfo = ModuleInfo {
     ],
 };
 
+/// Payload for `logs`: which service journal to read, in which scope, and how
+/// many trailing lines to return (defaults to 100).
 #[derive(Debug, Deserialize)]
 struct LogsPayload {
     service: String,
@@ -41,6 +57,8 @@ struct LogsPayload {
     lines: u16,
 }
 
+/// Payload for `daemon_reload`. Unlike other mutations it carries no service
+/// name, since `daemon-reload` operates on the whole unit file tree.
 #[derive(Debug, Deserialize)]
 struct DaemonReloadPayload {
     #[serde(default)]
@@ -49,6 +67,8 @@ struct DaemonReloadPayload {
     dry_run: bool,
 }
 
+/// Payload for the single-service actions (`status`, `start`, `stop`,
+/// `restart`, `enable`, `disable`).
 #[derive(Debug, Deserialize)]
 struct ServicePayload {
     service: String,
@@ -58,6 +78,9 @@ struct ServicePayload {
     dry_run: bool,
 }
 
+/// Selects the systemd instance to talk to. `System` (the default) targets the
+/// PID 1 system manager; `User` targets the requesting user's systemd, which we
+/// request by prepending `--user` to every `systemctl`/`journalctl` call.
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[derive(Default)]
@@ -73,11 +96,18 @@ impl AgentModule for ServicesModule {
     }
 
     fn handle(&self, action: &str, payload: Value) -> Result<Value> {
+        // Delegate `capabilities`/`plan` to the shared metadata handler first.
         if let Some(response) = handle_metadata(INFO, action, payload.clone())? {
             return Ok(response);
         }
 
         match action {
+            // `list-units` is a read, so it is never dry-run. The flags below
+            // ask systemctl for machine-friendly output: `--plain` disables
+            // column alignment/headers, `--legend=false` drops the summary
+            // footer, and `--no-pager` avoids interactive pagers. We still
+            // return the raw stdout alongside the parsed `services` array so a
+            // controller can fall back to the verbatim table if needed.
             "list" => {
                 let result = run_command_output(
                     "systemctl",
@@ -112,6 +142,9 @@ impl AgentModule for ServicesModule {
             }
             "logs" => {
                 let payload: LogsPayload = parse_payload(payload)?;
+                // `journalctl -u <unit>` follows the unit's journal across
+                // whatever files it spans; `-n` caps the tail to keep payloads
+                // bounded. `logs` is a read and therefore never dry-run.
                 run_command(
                     "journalctl",
                     journalctl_args(
@@ -134,6 +167,10 @@ impl AgentModule for ServicesModule {
                     payload.dry_run,
                 )
             }
+            // The five single-service mutations share one arm because their
+            // `systemctl` invocation has identical shape: `systemctl <action>
+            // <service>`. The `action` string is already a valid systemctl
+            // subcommand, which is why it can be forwarded directly.
             "start" | "stop" | "restart" | "enable" | "disable" => {
                 let payload: ServicePayload = parse_payload(payload)?;
                 run_command_or_dry_run(
@@ -147,6 +184,10 @@ impl AgentModule for ServicesModule {
     }
 }
 
+/// Prepends `--user` to a `systemctl` argument list when talking to the
+/// per-user systemd instance; system scope is the default and needs no flag.
+/// The const generic `N` lets callers pass a fixed-size array of `&str`
+/// without having to allocate a `Vec` at the call site.
 fn systemctl_args<const N: usize>(scope: ServiceScope, args: [&str; N]) -> Vec<&str> {
     match scope {
         ServiceScope::System => args.to_vec(),
@@ -159,6 +200,8 @@ fn systemctl_args<const N: usize>(scope: ServiceScope, args: [&str; N]) -> Vec<&
     }
 }
 
+/// Same scope-prefixing as [`systemctl_args`], but for `journalctl` invocations
+/// so `logs` reads from the correct journal.
 fn journalctl_args<const N: usize>(scope: ServiceScope, args: [&str; N]) -> Vec<&str> {
     match scope {
         ServiceScope::System => args.to_vec(),
@@ -175,6 +218,14 @@ fn default_log_lines() -> u16 {
     100
 }
 
+/// Parses the whitespace-separated rows emitted by `systemctl list-units`.
+///
+/// Each row has the fixed prefix `UNIT LOAD ACTIVE SUB` followed by a
+/// free-form `DESCRIPTION` that may contain spaces. We split on runs of
+/// whitespace and treat the first four fields as the fixed columns, rejoining
+/// everything from index 4 onward as the description. Rows with fewer than
+/// four fields (e.g. stray blank lines or the suppressed legend) are dropped
+/// via the `>= 4` guard.
 fn parse_systemctl_services(stdout: &str) -> Vec<Value> {
     stdout
         .lines()

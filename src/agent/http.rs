@@ -15,15 +15,28 @@ use tokio::{
 
 use super::{AgentBackend, AgentCommand, DispatchCommand};
 
+/// Largest request header block we'll buffer before giving up. Defends against
+/// a slow-loris-style peer that streams headers forever.
 const MAX_HEADER_BYTES: usize = 16 * 1024;
+/// Largest request body we'll accept. A single agent command JSON is well under
+/// this; it's a guardrail against a peer that lies in its `Content-Length`.
 const MAX_BODY_BYTES: usize = 1024 * 1024;
 
+/// Configuration for the dev HTTP agent API (`agent-serve` subcommand).
+///
+/// This is a development / Tailscale-only harness: the production transport is
+/// the WSS control-plane connection in [`super::websocket`]. The HTTP API
+/// exists so the dashboard can drive the same Kameo-backed agent from a
+/// browser test UI on a private network.
 #[derive(Debug, Clone)]
 pub struct HttpAgentConfig {
     pub listen: SocketAddr,
     pub bearer_token: Option<String>,
 }
 
+/// Bind the listener and serve connections forever. Each connection is handled
+/// on its own tokio task; the shared [`AgentBackend`] actor serializes the
+/// actual dispatch work.
 pub async fn serve(config: HttpAgentConfig) -> Result<()> {
     let listener = TcpListener::bind(config.listen)
         .await
@@ -72,6 +85,16 @@ fn log_request(source: IpAddr, method: &str, path: &str, status: u16, started: I
     );
 }
 
+/// Route a parsed request to the agent API. Three endpoints are exposed:
+/// - `GET /health` — unauthenticated liveness check.
+/// - `GET /capabilities` — dispatches the `agent.capabilities` command and
+///   returns the result; lets the dashboard discover modules without a token.
+/// - `POST /dispatch` — accepts a full [`AgentCommand`] envelope as JSON and
+///   returns the [`AgentResponse`].
+///
+/// `OPTIONS` is answered with a 204 for CORS preflight, and every response
+/// carries permissive `Access-Control-Allow-*` headers (see [`HttpResponse::to_bytes`])
+/// so a browser test UI on a different origin can call the API.
 async fn route_request(
     request: HttpRequest,
     backend: ActorRef<AgentBackend>,
@@ -88,6 +111,9 @@ async fn route_request(
     match (request.method.as_str(), request.path.as_str()) {
         ("GET", "/health") => json_response(200, json!({ "ok": true })),
         ("GET", "/capabilities") => {
+            // Synthesize a capabilities command so the dashboard can hit a
+            // plain GET without constructing an envelope. The command id is
+            // fixed because the response id is irrelevant for a GET.
             let command = AgentCommand {
                 id: "ui-capabilities".into(),
                 module: "agent".into(),
@@ -118,6 +144,10 @@ async fn dispatch_json(backend: ActorRef<AgentBackend>, command: AgentCommand) -
     }
 }
 
+/// Validate the bearer token if one is configured. When no token is set the
+/// API is open — appropriate for localhost dev but *not* for a routable
+/// address. The README warns about this; the dashboard's register-host flow
+/// encourages setting a token for anything beyond 127.0.0.1.
 fn authorize(request: &HttpRequest, config: &HttpAgentConfig) -> Result<()> {
     let Some(expected) = config.bearer_token.as_deref() else {
         return Ok(());
@@ -134,6 +164,14 @@ fn authorize(request: &HttpRequest, config: &HttpAgentConfig) -> Result<()> {
     Ok(())
 }
 
+/// Read one HTTP/1.1 request from `stream` into an [`HttpRequest`].
+///
+/// This is a deliberately small hand-rolled parser — the dev HTTP API doesn't
+/// need chunked transfer encoding, keep-alive, or HTTP/2, and pulling in a
+/// full HTTP framework would dwarf the rest of the agent. Headers are read
+/// incrementally until the `\r\n\r\n` terminator, then the body is read to the
+/// declared `Content-Length`. Both are capped by [`MAX_HEADER_BYTES`] and
+/// [`MAX_BODY_BYTES`] respectively to bound memory use against a hostile peer.
 async fn read_request(stream: &mut TcpStream) -> Result<HttpRequest> {
     let mut buffer = Vec::new();
     let header_end = loop {
@@ -200,6 +238,10 @@ fn find_header_end(buffer: &[u8]) -> Option<usize> {
     buffer.windows(4).position(|window| window == b"\r\n\r\n")
 }
 
+/// Parse a header block (without the terminating blank line) into a request
+/// line and a lowercased-name → value map. Header names are lowercased so the
+/// `authorization`/`content-length` lookups above are case-insensitive per
+/// RFC 7230.
 fn parse_headers(header_text: &str) -> Result<(String, BTreeMap<String, String>)> {
     let mut lines = header_text.split("\r\n");
     let request_line = lines
@@ -246,6 +288,9 @@ impl HttpResponse {
         }
     }
 
+    /// Serialize the response as a complete HTTP/1.1 message with `Connection:
+    /// close`. The permissive CORS headers are added to every response so the
+    /// browser test UI can call the dev API from a different origin.
     fn to_bytes(&self) -> Vec<u8> {
         let reason = match self.status {
             200 => "OK",

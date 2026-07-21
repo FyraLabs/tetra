@@ -1,3 +1,12 @@
+//! Samba share configuration module.
+//!
+//! Reads and replaces `/etc/samba/smb.conf`, lists configured shares by
+//! scanning for `[name]` section headers, and manages the `smb.service`
+//! systemd unit (reload/enable/disable). The `set_config` action also accepts
+//! the shared `selinux` payload so a share directory can be labeled
+//! `samba_share_t` in the same request that defines the share — otherwise
+//! SELinux will deny smbd access to the path on enforcing hosts.
+
 use std::{fs, path::PathBuf};
 
 use anyhow::{Context, Result};
@@ -12,8 +21,10 @@ use crate::agent::{
     },
 };
 
+/// Samba module entry point registered under feature `samba`.
 pub struct SambaModule;
 
+/// Static capability metadata published via `capabilities`/`plan`.
 const INFO: ModuleInfo = ModuleInfo {
     name: "samba",
     feature: "samba",
@@ -31,12 +42,20 @@ const INFO: ModuleInfo = ModuleInfo {
     ],
 };
 
+/// Payload for read actions (`list_shares`, `get_config`). Defaults to
+/// `/etc/samba/smb.conf` when no path is supplied.
 #[derive(Debug, Deserialize)]
 struct ConfigPayload {
     #[serde(default = "default_smb_conf")]
     path: PathBuf,
 }
 
+/// Payload for `set_config`, which overwrites the smb.conf file with the
+/// supplied `contents`.
+///
+/// The `selinux` object typically points at the share directory declared
+/// inside `contents` (not the config file itself) so the share path gets
+/// labeled `samba_share_t`.
 #[derive(Debug, Deserialize)]
 struct SetConfigPayload {
     #[serde(default = "default_smb_conf")]
@@ -48,18 +67,24 @@ struct SetConfigPayload {
     selinux: Option<SelinuxOptions>,
 }
 
+/// Payload for the systemd service actions (`reload`, `enable`,
+/// `disable`), which only need the `dry_run` flag.
 #[derive(Debug, Deserialize)]
 struct DryRunPayload {
     #[serde(default)]
     dry_run: bool,
 }
 
+/// Dispatches `samba` actions. Config reads/writes target `smb.conf`;
+/// service actions shell out to `systemctl` against `smb.service`.
 impl AgentModule for SambaModule {
     fn info(&self) -> ModuleInfo {
         INFO
     }
 
     fn handle(&self, action: &str, payload: Value) -> Result<Value> {
+        // Standard metadata fast-path: `capabilities` and `plan` are answered
+        // from `INFO` without touching the system.
         if let Some(response) = handle_metadata(INFO, action, payload.clone())? {
             return Ok(response);
         }
@@ -78,9 +103,15 @@ impl AgentModule for SambaModule {
             "set_config" => {
                 let payload: SetConfigPayload = parse_payload(payload)?;
                 if !payload.dry_run {
+                    // The whole file is replaced; callers are expected to
+                    // build the full desired smb.conf (including `[global]`)
+                    // rather than patch a single share in place.
                     fs::write(&payload.path, payload.contents)
                         .with_context(|| format!("failed to write `{}`", payload.path.display()))?;
                 }
+                // The default relabel target is the config file path; callers
+                // wanting to label the share directory pass an explicit `path`
+                // inside the selinux object pointing at e.g. `/srv/media`.
                 let selinux = apply_selinux(
                     payload.selinux.as_ref(),
                     Some(&payload.path),
@@ -122,14 +153,22 @@ impl AgentModule for SambaModule {
     }
 }
 
+/// Default smb.conf location used when a read/write action omits `path`.
 fn default_smb_conf() -> PathBuf {
     PathBuf::from("/etc/samba/smb.conf")
 }
 
+/// Reads the smb.conf file as UTF-8 text with a context-rich error.
 fn read_config(path: &PathBuf) -> Result<String> {
     fs::read_to_string(path).with_context(|| format!("failed to read `{}`", path.display()))
 }
 
+/// Extracts share section names from smb.conf contents.
+///
+/// Scans for `[name]` lines and returns the inner names, skipping `[global]`
+/// (Samba's settings section, not a share). The rest of the file is not
+/// validated — malformed lines are simply ignored, mirroring smbd's own
+/// tolerant parsing posture.
 fn parse_samba_shares(contents: &str) -> Vec<String> {
     contents
         .lines()

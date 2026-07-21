@@ -14,6 +14,11 @@ use anyhow::{Result, bail};
 use super::AgentCommand;
 use super::{Dispatcher, modules};
 
+/// Configuration for the vsock agent smoke-test server (`agent-vsock-serve`).
+///
+/// This is the host→guest test path: run Tetra inside a VM guest and have the
+/// host send a single command JSON object per connection. The production
+/// control-plane transport is the WSS connection in [`super::websocket`].
 #[derive(Debug, Clone)]
 pub struct VsockAgentConfig {
     pub port: u32,
@@ -29,6 +34,12 @@ impl Default for VsockAgentConfig {
     }
 }
 
+/// Listen on a vsock port and handle one command per connection.
+///
+/// Concurrency here is OS threads (not tokio tasks) because vsock I/O on
+/// Linux is a blocking `Read`/`Write` surface — there's no async vsock crate in
+/// the dependency set. Each connection runs on its own thread and dispatches
+/// through the shared [`Dispatcher`].
 pub fn serve(config: VsockAgentConfig) -> Result<()> {
     serve_with_dispatcher(config, Arc::new(modules::default_dispatcher()))
 }
@@ -37,6 +48,9 @@ pub fn serve(config: VsockAgentConfig) -> Result<()> {
 fn serve_with_dispatcher(config: VsockAgentConfig, dispatcher: Arc<Dispatcher>) -> Result<()> {
     use socket2::{Domain, SockAddr, Socket, Type};
 
+    // VMADDR_CID_ANY (-1 / u32::MAX) tells the host kernel to accept
+    // connections from any guest CID, which is what a smoke-test listener
+    // wants — we don't know ahead of time which guest will connect.
     const VMADDR_CID_ANY: u32 = u32::MAX;
 
     let listener = Socket::new(Domain::VSOCK, Type::STREAM, None)
@@ -83,6 +97,9 @@ fn handle_connection(
     max_command_bytes: usize,
 ) -> Result<()> {
     let mut command_text = String::new();
+    // `take(max + 1)` lets us detect oversized payloads: if the peer sends
+    // exactly `max` bytes we accept it; if it sends more, the extra byte gets
+    // read into `command_text` and `dispatch_command_text` rejects it below.
     Read::by_ref(&mut stream)
         .take(max_command_bytes as u64 + 1)
         .read_to_string(&mut command_text)

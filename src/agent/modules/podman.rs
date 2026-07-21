@@ -1,3 +1,14 @@
+//! Podman container, image, volume, and network inspection and lifecycle.
+//!
+//! A thin wrapper around the `podman` CLI. The listing actions (`containers`,
+//! `images`, `volumes`, `networks`, `inspect`) all rely on podman's native
+//! `--format json`, so [`run_command_json`] parses stdout straight into the
+//! response `data` field with no module-specific parsing of our own. The
+//! mutating lifecycle actions (`start`/`stop`/`restart`/`remove`) honor the
+//! shared `dry_run` flag. Note the action name `remove` maps to the `podman rm`
+//! subcommand, keeping the protocol verb consistent across modules while the
+//! underlying CLI uses its native spelling.
+
 use anyhow::Result;
 use serde::Deserialize;
 use serde_json::Value;
@@ -10,6 +21,8 @@ use crate::agent::{
     },
 };
 
+/// Marker type for the podman module. Stateless; all behavior lives in the
+/// [`AgentModule`] impl and the static [`INFO`] descriptor.
 pub struct PodmanModule;
 
 const INFO: ModuleInfo = ModuleInfo {
@@ -33,6 +46,8 @@ const INFO: ModuleInfo = ModuleInfo {
     ],
 };
 
+/// Payload for `logs`: which container to tail and how many trailing lines to
+/// return (defaults to 100).
 #[derive(Debug, Deserialize)]
 struct LogsPayload {
     name: String,
@@ -46,12 +61,18 @@ impl AgentModule for PodmanModule {
     }
 
     fn handle(&self, action: &str, payload: Value) -> Result<Value> {
+        // Delegate `capabilities`/`plan` to the shared metadata handler first.
         if let Some(response) = handle_metadata(INFO, action, payload.clone())? {
             return Ok(response);
         }
 
         match action {
+            // Listing actions lean on podman's own `--format json`, which emits
+            // a JSON array directly. `run_command_json` parses that stdout and
+            // exposes it as `data`, alongside the raw command/result fields.
             "containers" => run_command_json("podman", ["ps", "--all", "--format", "json"]),
+            // `inspect` returns a rich JSON document for a single container (or
+            // image/volume/network when qualified). It is passed through as-is.
             "inspect" => {
                 let payload: NamedPayload = parse_payload(payload)?;
                 run_command_json("podman", ["inspect", &payload.name])
@@ -61,15 +82,20 @@ impl AgentModule for PodmanModule {
             "networks" => run_command_json("podman", ["network", "ls", "--format", "json"]),
             "logs" => {
                 let payload: LogsPayload = parse_payload(payload)?;
+                // `--tail` bounds the response; `logs` is a read and therefore
+                // never dry-run.
                 run_command(
                     "podman",
                     ["logs", "--tail", &payload.lines.to_string(), &payload.name],
                 )
             }
+            // Lifecycle verbs share the trivial `podman <verb> <name>` shape, so
+            // the action string is forwarded directly as the subcommand.
             "start" | "stop" | "restart" => {
                 let payload: NamedPayload = parse_payload(payload)?;
                 run_command_or_dry_run("podman", [action, &payload.name], payload.dry_run)
             }
+            // Protocol verb is `remove`; the podman subcommand is `rm`.
             "remove" => {
                 let payload: NamedPayload = parse_payload(payload)?;
                 run_command_or_dry_run("podman", ["rm", &payload.name], payload.dry_run)

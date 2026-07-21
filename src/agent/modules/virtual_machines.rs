@@ -1,3 +1,20 @@
+//! libvirt virtual machine inspection and lifecycle via `virsh`.
+//!
+//! This module wraps the `virsh` CLI for domain (VM) management plus
+//! `journalctl` for the `libvirtd` service log. Read actions (`list`,
+//! `status`, `logs`) run unconditionally; lifecycle actions (`start`, `stop`,
+//! `restart`, `create`, `delete`) honor the shared `dry_run` flag.
+//!
+//! A couple of protocol-to-CLI mappings are non-obvious:
+//! - `stop` maps to `virsh shutdown` (graceful guest shutdown), and `restart`
+//!   maps to `virsh reboot`, rather than hard power operations.
+//! - `create` maps to `virsh define`, which registers a *persistent* domain
+//!   from an XML file. We avoid `virsh create` because that builds a transient
+//!   domain that disappears on shutdown.
+//!
+//! `list` and `status` additionally parse virsh's text output into stable
+//! `domains` / `domain` JSON fields so callers do not have to.
+
 use anyhow::Result;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -10,6 +27,8 @@ use crate::agent::{
     },
 };
 
+/// Marker type for the virtual_machines module. Stateless; all behavior lives
+/// in the [`AgentModule`] impl and the static [`INFO`] descriptor.
 pub struct VirtualMachinesModule;
 
 const INFO: ModuleInfo = ModuleInfo {
@@ -31,6 +50,9 @@ const INFO: ModuleInfo = ModuleInfo {
     ],
 };
 
+/// Payload for `create`: a path to a libvirt domain XML file to register with
+/// `virsh define`. The XML is not sent inline because it can be large and is
+/// usually already present on the host (e.g. rendered by the recipes module).
 #[derive(Debug, Deserialize)]
 struct CreatePayload {
     xml_path: String,
@@ -38,6 +60,8 @@ struct CreatePayload {
     dry_run: bool,
 }
 
+/// Payload for `logs`: only the trailing line count (defaults to 100). The
+/// journal source is fixed to `libvirtd.service`.
 #[derive(Debug, Deserialize)]
 struct LogsPayload {
     #[serde(default = "default_log_lines")]
@@ -50,11 +74,14 @@ impl AgentModule for VirtualMachinesModule {
     }
 
     fn handle(&self, action: &str, payload: Value) -> Result<Value> {
+        // Delegate `capabilities`/`plan` to the shared metadata handler first.
         if let Some(response) = handle_metadata(INFO, action, payload.clone())? {
             return Ok(response);
         }
 
         match action {
+            // `list --all` includes powered-off domains, not just running ones.
+            // `list` is a read and therefore never dry-run.
             "list" => {
                 let result = run_command_output("virsh", ["list", "--all"], false)?;
                 let domains = parse_virsh_list(&result.stdout);
@@ -67,6 +94,8 @@ impl AgentModule for VirtualMachinesModule {
                     "domains": domains,
                 }))
             }
+            // `dominfo` prints `Key: Value` lines; `parse_virsh_dominfo`
+            // collapses them into a single JSON object under `domain`.
             "status" => {
                 let payload: NamedPayload = parse_payload(payload)?;
                 let result = run_command_output("virsh", ["dominfo", &payload.name], false)?;
@@ -82,6 +111,8 @@ impl AgentModule for VirtualMachinesModule {
             }
             "logs" => {
                 let payload: LogsPayload = parse_payload(payload)?;
+                // Logs come from the libvirtd unit journal, not `virsh`, since
+                // virsh itself does not expose host-side daemon logs.
                 run_command(
                     "journalctl",
                     [
@@ -97,18 +128,25 @@ impl AgentModule for VirtualMachinesModule {
                 let payload: NamedPayload = parse_payload(payload)?;
                 run_command_or_dry_run("virsh", ["start", &payload.name], payload.dry_run)
             }
+            // `stop` uses `shutdown` for a graceful guest-initiated shutdown
+            // rather than `destroy` (hard power-off).
             "stop" => {
                 let payload: NamedPayload = parse_payload(payload)?;
                 run_command_or_dry_run("virsh", ["shutdown", &payload.name], payload.dry_run)
             }
+            // `restart` uses `reboot`, the guest-graceful equivalent.
             "restart" => {
                 let payload: NamedPayload = parse_payload(payload)?;
                 run_command_or_dry_run("virsh", ["reboot", &payload.name], payload.dry_run)
             }
+            // `create` maps to `define`: register a persistent domain from the
+            // given XML file. See the module docs for why we avoid `virsh create`.
             "create" => {
                 let payload: CreatePayload = parse_payload(payload)?;
                 run_command_or_dry_run("virsh", ["define", &payload.xml_path], payload.dry_run)
             }
+            // `delete` maps to `undefine`: remove the domain registration. It
+            // does not delete disk images by default.
             "delete" => {
                 let payload: NamedPayload = parse_payload(payload)?;
                 run_command_or_dry_run("virsh", ["undefine", &payload.name], payload.dry_run)
@@ -122,6 +160,14 @@ fn default_log_lines() -> u16 {
     100
 }
 
+/// Parses `virsh list --all` output into domain objects.
+///
+/// The table has a header row, a `---` separator, then one row per domain in
+/// the form `Id Name State`. `skip_while` + `skip(1)` jumps past the separator;
+/// from there each row's first two whitespace fields are id and name, and the
+/// remaining fields (state can be multiple words, e.g. "shut off") are rejoined
+/// as the state. An id of `-` means the domain is not running, so we emit `null`
+/// for `id` in that case to keep the field typed as a number-or-null for callers.
 fn parse_virsh_list(stdout: &str) -> Vec<Value> {
     stdout
         .lines()
@@ -144,6 +190,13 @@ fn parse_virsh_list(stdout: &str) -> Vec<Value> {
         .collect()
 }
 
+/// Parses `virsh dominfo` output into a flat JSON object.
+///
+/// `dominfo` emits `Key: Value` lines (e.g. `Name: vm1`, `CPU(s): 2`). We
+/// lower-case keys and replace spaces with underscores so `CPU(s)` becomes
+/// `cpu(s)`, giving callers stable, case-insensitive field names without having
+/// to know virsh's exact capitalization. Lines without a colon (blank lines,
+/// section headers) are skipped.
 fn parse_virsh_dominfo(stdout: &str) -> Value {
     let mut object = serde_json::Map::new();
     for line in stdout.lines() {
