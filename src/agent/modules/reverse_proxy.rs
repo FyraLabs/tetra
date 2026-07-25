@@ -163,10 +163,17 @@ impl AgentModule for ReverseProxyModule {
 
                 // Reload only when explicitly requested, so callers can batch
                 // writes and reload once at the end.
-                let reload = if payload.reload {
-                    Some(reload_caddy(payload.dry_run)?)
+                // Persisting the site and reloading Caddy are separate outcomes.
+                // A container or development userspace may not run systemd even
+                // though the managed file was written successfully, so preserve
+                // the write result and report reload failure as structured data.
+                let (reload, reload_error) = if payload.reload {
+                    match reload_caddy(payload.dry_run) {
+                        Ok(result) => (Some(result), None),
+                        Err(error) => (None, Some(error.to_string())),
+                    }
                 } else {
-                    None
+                    (None, None)
                 };
 
                 Ok(json!({
@@ -178,6 +185,7 @@ impl AgentModule for ReverseProxyModule {
                     "written": !payload.dry_run,
                     "dry_run": payload.dry_run,
                     "reload": reload,
+                    "reload_error": reload_error,
                 }))
             }
             "delete" => {
@@ -194,10 +202,16 @@ impl AgentModule for ReverseProxyModule {
                         .with_context(|| format!("failed to delete `{}`", path.display()))?;
                 }
 
-                let reload = if payload.reload {
-                    Some(reload_caddy(payload.dry_run)?)
+                // As with writes, deletion is successful once the managed file
+                // is removed. A missing systemd bus is returned as a reload
+                // warning instead of making the persisted deletion look failed.
+                let (reload, reload_error) = if payload.reload {
+                    match reload_caddy(payload.dry_run) {
+                        Ok(result) => (Some(result), None),
+                        Err(error) => (None, Some(error.to_string())),
+                    }
                 } else {
-                    None
+                    (None, None)
                 };
 
                 Ok(json!({
@@ -207,6 +221,7 @@ impl AgentModule for ReverseProxyModule {
                     "deleted": !payload.dry_run,
                     "dry_run": payload.dry_run,
                     "reload": reload,
+                    "reload_error": reload_error,
                 }))
             }
             "reload" => {
