@@ -168,6 +168,38 @@ struct QuadletFile {
     filename: String,
     path: PathBuf,
 }
+impl QuadletFile {
+    /// List Quadlet unit files directly under `base_dir` (non-recursive). Only
+    /// flat files with a Quadlet extension are returned; subdirectories and
+    /// non-Quadlet files are skipped, mirroring how Podman scans the directory.
+    fn list(base_dir: &Path) -> Result<Vec<Self>> {
+        if !base_dir.exists() {
+            return Ok(Vec::new());
+        }
+
+        let mut files = Vec::new();
+        for entry in fs::read_dir(base_dir)
+            .with_context(|| format!("failed to read `{}`", base_dir.display()))?
+        {
+            let entry = entry?;
+            if !entry.file_type()?.is_file() {
+                continue;
+            }
+            let path = entry.path();
+            let Some(filename) = path.file_name().and_then(|name| name.to_str()) else {
+                continue;
+            };
+            if is_quadlet_filename(filename) {
+                files.push(QuadletFile {
+                    filename: filename.to_owned(),
+                    path,
+                });
+            }
+        }
+        files.sort_by(|left, right| left.filename.cmp(&right.filename));
+        Ok(files)
+    }
+}
 
 /// Response entry for `list_files`, covering both Quadlet units and
 /// companion files. `quadlet` flags which entries are Quadlet units so the
@@ -177,6 +209,21 @@ struct ManagedFile {
     filename: String,
     path: PathBuf,
     quadlet: bool,
+}
+impl ManagedFile {
+    /// Same scan as [`QuadletFile::list`] but returns [`ManagedFile`] entries tagged
+    /// `quadlet: true`, so `list_files` can merge Quadlet and companion results
+    /// into a single response.
+    fn list(base_dir: &Path) -> Result<Vec<Self>> {
+        Ok(QuadletFile::list(base_dir)?
+            .into_iter()
+            .map(|QuadletFile { filename, path }| ManagedFile {
+                filename,
+                path,
+                quadlet: true,
+            })
+            .collect())
+    }
 }
 
 /// Which Podman/systemd tree a request targets. `User` resolves to the
@@ -213,14 +260,14 @@ impl AgentModule for QuadletsModule {
             "list" => {
                 let payload: BasePayload = parse_payload(payload)?;
                 let base_dir = quadlet_base_dir(payload.base_dir, payload.scope)?;
-                Ok(json!({ "base_dir": base_dir, "files": list_quadlets(&base_dir)? }))
+                Ok(json!({ "base_dir": base_dir, "files": QuadletFile::list(&base_dir)? }))
             }
             "list_files" => {
                 let payload: BasePayload = parse_payload(payload)?;
                 let base_dir = quadlet_base_dir(payload.base_dir, payload.scope)?;
                 let files_base_dir =
                     quadlet_files_base_dir(payload.files_base_dir, payload.scope, None)?;
-                let mut files = list_quadlet_files(&base_dir)?;
+                let mut files = ManagedFile::list(&base_dir)?;
                 files.extend(list_companion_files(&files_base_dir)?);
                 // Quadlet entries first, then companions, each group sorted by
                 // filename. This pins a bundle's unit file to the top of its
@@ -481,51 +528,6 @@ fn quadlet_bundle_name(filename: &str) -> Result<String> {
         bail!("`{filename}` is not a supported Quadlet filename");
     }
     Ok(stem.to_owned())
-}
-
-/// List Quadlet unit files directly under `base_dir` (non-recursive). Only
-/// flat files with a Quadlet extension are returned; subdirectories and
-/// non-Quadlet files are skipped, mirroring how Podman scans the directory.
-fn list_quadlets(base_dir: &Path) -> Result<Vec<QuadletFile>> {
-    if !base_dir.exists() {
-        return Ok(Vec::new());
-    }
-
-    let mut files = Vec::new();
-    for entry in fs::read_dir(base_dir)
-        .with_context(|| format!("failed to read `{}`", base_dir.display()))?
-    {
-        let entry = entry?;
-        if !entry.file_type()?.is_file() {
-            continue;
-        }
-        let path = entry.path();
-        let Some(filename) = path.file_name().and_then(|name| name.to_str()) else {
-            continue;
-        };
-        if is_quadlet_filename(filename) {
-            files.push(QuadletFile {
-                filename: filename.to_owned(),
-                path,
-            });
-        }
-    }
-    files.sort_by(|left, right| left.filename.cmp(&right.filename));
-    Ok(files)
-}
-
-/// Same scan as `list_quadlets` but returns `ManagedFile` entries tagged
-/// `quadlet: true`, so `list_files` can merge Quadlet and companion results
-/// into a single response.
-fn list_quadlet_files(base_dir: &Path) -> Result<Vec<ManagedFile>> {
-    Ok(list_quadlets(base_dir)?
-        .into_iter()
-        .map(|file| ManagedFile {
-            filename: file.filename,
-            path: file.path,
-            quadlet: true,
-        })
-        .collect())
 }
 
 /// Recursively list companion files under the data root. Recursive because,

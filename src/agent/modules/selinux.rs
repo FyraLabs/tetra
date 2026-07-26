@@ -13,6 +13,7 @@
 //! `module_support.rs`.
 
 use anyhow::Result;
+use itertools::Itertools;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -181,7 +182,7 @@ impl AgentModule for SelinuxModule {
                 }
                 args.push(payload.name);
                 args.push(boolean_value(payload.value).to_owned());
-                crate::cmd!({&INFO, action, user} DRY_RUN(payload.dry_run) "setsebool" &args ; json)
+                crate::cmd!({&INFO, action, user} (payload.dry_run) "setsebool" &args ; json)
             }
             "file_contexts" => {
                 // `semanage fcontext -l` dumps every fcontext rule the policy
@@ -201,7 +202,7 @@ impl AgentModule for SelinuxModule {
                 let payload: FileContextPayload = parse_payload(payload)?;
                 // The pattern is forwarded unchanged; the caller is
                 // responsible for the regex shape (e.g. `/srv(/.*)?`).
-                crate::cmd!(DRY_RUN(payload.dry_run){&INFO, action, user} "semanage" [
+                crate::cmd!((payload.dry_run){&INFO, action, user} "semanage" [
                     "fcontext",
                     "-a",
                     "-t",
@@ -211,7 +212,7 @@ impl AgentModule for SelinuxModule {
             }
             "delete_file_context" => {
                 let payload: DeleteFileContextPayload = parse_payload(payload)?;
-                crate::cmd!(DRY_RUN(payload.dry_run){&INFO, action, user} "semange" ["fcontext", "-d", &payload.path_pattern] json)
+                crate::cmd!((payload.dry_run){&INFO, action, user} "semange" ["fcontext", "-d", &payload.path_pattern] json)
             }
             "restore_context" => {
                 let payload: RestoreContextPayload = parse_payload(payload)?;
@@ -224,7 +225,7 @@ impl AgentModule for SelinuxModule {
                 // relabeling run against.
                 args.push("-v".to_owned());
                 args.push(payload.path);
-                crate::cmd!(DRY_RUN(payload.dry_run){&INFO, action, user} "restorecon" &args ; json)
+                crate::cmd!((payload.dry_run){&INFO, action, user} "restorecon" &args ; json)
             }
             _ => unsupported_action(INFO.name, action),
         }
@@ -286,16 +287,15 @@ fn parse_semanage_fcontext(stdout: &str) -> Vec<Value> {
         // prints at the top of its output.
         .filter(|line| !line.starts_with("SELinux fcontext") && !line.starts_with('-'))
         .filter_map(|line| {
-            let fields: Vec<_> = line.split_whitespace().collect();
-            if fields.len() < 3 {
-                return None;
-            }
+            let fields = line.split_whitespace().collect_vec();
             // The context is always the last whitespace-delimited field; the
             // middle fields collapse back into the `file_type` string.
-            let context = fields[fields.len() - 1];
+            let [path_pattern, file_type @ .., context] = &fields[..] else {
+                return None;
+            };
             Some(json!({
-                "path_pattern": fields[0],
-                "file_type": fields[1..fields.len() - 1].join(" "),
+                "path_pattern": path_pattern,
+                "file_type": file_type.join(" "),
                 "context": context,
                 "context_type": extract_context_type(context),
             }))

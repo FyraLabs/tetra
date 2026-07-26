@@ -12,8 +12,7 @@ use serde_json::{Value, json};
 use crate::agent::{
     AgentModule,
     module_support::{
-        ModuleInfo, ModuleStatus, handle_metadata, parse_payload,
-        run_command_or_dry_run_for_module, unsupported_action,
+        ModuleInfo, ModuleStatus, handle_metadata, parse_payload, unsupported_action,
     },
 };
 
@@ -65,14 +64,7 @@ impl AgentModule for SettingsModule {
             })),
             "set_hostname" => {
                 let payload: SetHostnamePayload = parse_payload(payload)?;
-                run_command_or_dry_run_for_module(
-                    &INFO,
-                    action,
-                    "hostnamectl",
-                    ["set-hostname", &payload.hostname],
-                    payload.dry_run,
-                    user,
-                )
+                crate::cmd!({ &INFO, action, user } (payload.dry_run) "hostnamectl" ["set-hostname", &payload.hostname] json)
             }
             _ => unsupported_action(INFO.name, action),
         }

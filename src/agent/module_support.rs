@@ -162,6 +162,9 @@ macro_rules! __cmd_inner {
     (($dry_run:expr, $default_user:expr) DRY_RUN($dry:expr) $($idk:tt)+) => {
         $crate::__cmd_inner!(($dry, $default_user) $($idk)+)
     };
+    (($dry_run:expr, $default_user:expr) ($dry:expr) $($idk:tt)+) => {
+        $crate::__cmd_inner!(($dry, $default_user) $($idk)+)
+    };
     (($dry_run:expr, $default_user:expr) DRY_RUN $($idk:tt)+) => {
         $crate::__cmd_inner!((true, $default_user) $($idk)+)
     };
@@ -514,7 +517,9 @@ pub fn apply_selinux(
                     .map(|path| default_fcontext_pattern(path, options.recursive))
             })
             .context("SELinux context_type requires path, path_pattern, or default path")?;
-        operations.push(cmd!(DRY_RUN(dry_run) "semanage" ["fcontext", "-a", "-t", context_type, &pattern]; json)?);
+        operations.push(
+            cmd!((dry_run) "semanage" ["fcontext", "-a", "-t", context_type, &pattern] json)?,
+        );
     }
 
     if let Some(path) = path {
@@ -524,7 +529,7 @@ pub fn apply_selinux(
         }
         args.push("-v".to_owned());
         args.push(path);
-        operations.push(cmd!(DRY_RUN(dry_run) "restorecon" &args ; json)?);
+        operations.push(cmd!((dry_run) "restorecon" &args ; json)?);
     }
 
     Ok(operations)
@@ -640,7 +645,11 @@ mod tests {
 
     #[test]
     fn dry_run_command_does_not_execute() {
-        let result = run_command_output("definitely-not-a-real-command", ["arg"], true).unwrap();
+        let result = cmd!(DRY_RUN "definitely-not-a-real-command" ["arg"]).unwrap();
+        assert_eq!(result.command, "definitely-not-a-real-command arg");
+        assert!(result.dry_run);
+        assert_eq!(result.status, None);
+        let result = cmd!((true) "definitely-not-a-real-command" ["arg"]).unwrap();
         assert_eq!(result.command, "definitely-not-a-real-command arg");
         assert!(result.dry_run);
         assert_eq!(result.status, None);

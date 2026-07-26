@@ -20,8 +20,7 @@ use serde_json::{Value, json};
 use crate::agent::{
     AgentModule,
     module_support::{
-        ModuleInfo, ModuleStatus, handle_metadata, parse_payload,
-        run_command_or_dry_run_for_module, safe_join, unsupported_action,
+        ModuleInfo, ModuleStatus, handle_metadata, parse_payload, safe_join, unsupported_action,
     },
 };
 
@@ -381,14 +380,7 @@ fn list_sites(config_dir: &PathBuf) -> Result<Vec<Value>> {
 /// restarting (which would drop active connections). Dry runs report the
 /// command that would run without invoking systemctl.
 fn reload_caddy(action: &str, dry_run: bool, user: Option<&str>) -> Result<Value> {
-    run_command_or_dry_run_for_module(
-        &INFO,
-        action,
-        "systemctl",
-        ["reload", "caddy.service"],
-        dry_run,
-        user,
-    )
+    crate::cmd!({ &INFO, action, user } (dry_run) "systemctl" ["reload", "caddy.service"] json)
 }
 
 #[cfg(test)]

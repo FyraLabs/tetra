@@ -204,13 +204,12 @@ async fn agent_dispatch(cli: AgentDispatchCli) -> Result<()> {
 }
 
 async fn agent_ws_serve(cli: AgentWsServeCli) -> Result<()> {
-    websocket_server::serve(WebSocketServerConfig {
+    websocket_server::WebSocketServerConfig::serve(WebSocketServerConfig {
         listen: cli.listen,
         controller_public_key: cli.controller_public_key,
         enrollment_token: cli.enrollment_token,
         identity_dir: cli.identity_dir,
-        tls_cert_path: cli.tls_cert,
-        tls_key_path: cli.tls_key,
+        tls_cert_key_path: cli.tls_cert.zip(cli.tls_key),
     })
     .await
 }

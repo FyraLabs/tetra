@@ -23,8 +23,7 @@ use serde_json::{Value, json};
 use crate::agent::{
     AgentModule,
     module_support::{
-        ModuleInfo, ModuleStatus, NamedPayload, handle_metadata, parse_payload,
-        run_command_for_module, run_command_or_dry_run_for_module, unsupported_action,
+        ModuleInfo, ModuleStatus, NamedPayload, handle_metadata, parse_payload, unsupported_action,
     },
 };
 
@@ -89,6 +88,24 @@ struct SetPasswordPayload {
     dry_run: bool,
 }
 
+macro_rules! flag {
+    ($args:ident $payload:ident:$($idk:tt)+) => {
+        $($args.extend(flag!(@$payload $idk));)+
+    };
+    (@$payload:ident [$field:ident]) => {
+        $payload.$field.into_iter().flat_map(|$field| [stringify!(--$field).to_owned(), $field])
+    };
+    (@$payload:ident [$s:literal $field:ident]) => {
+        $payload.$field.into_iter().flat_map(|$field| [$s.to_owned(), $field])
+    };
+    (@$payload:ident $field:ident) => {
+        $payload.$field.then(|| stringify!(--$field).to_owned())
+    };
+    (@$payload:ident $field:ident($e:expr)) => {
+        $payload.$field.then(|| $e)
+    };
+}
+
 impl AgentModule for UsersModule {
     fn info(&self) -> ModuleInfo {
         INFO
@@ -110,78 +127,36 @@ impl AgentModule for UsersModule {
             // an existence check via the wrapped command's exit status.
             "status" => {
                 let payload: NamedPayload = parse_payload(payload)?;
-                run_command_for_module(&INFO, action, "id", [&payload.name], user)
+                crate::cmd!({ &INFO, action, user } "id" [&payload.name] json)
             }
             "create" => {
                 let payload: CreatePayload = parse_payload(payload)?;
                 let mut args = Vec::new();
-                if payload.system {
-                    args.push("--system".to_owned());
-                }
-                if let Some(shell) = payload.shell {
-                    args.extend(["--shell".into(), shell]);
-                }
                 // `useradd` spells the home flag `--home-dir` (unlike
                 // `usermod`'s `--home` below).
-                if let Some(home) = payload.home {
-                    args.extend(["--home-dir".into(), home]);
-                }
+                flag!(args payload: system [shell] ["--home-dir" home]);
                 args.push(payload.name);
-                run_command_or_dry_run_for_module(
-                    &INFO,
-                    action,
-                    "useradd",
-                    args,
-                    payload.dry_run,
-                    user,
-                )
+                crate::cmd!((payload.dry_run) { &INFO, action, user } "useradd" => &args ; json)
             }
             "update" => {
                 let payload: UpdatePayload = parse_payload(payload)?;
                 let mut args = Vec::new();
-                if let Some(shell) = payload.shell {
-                    args.extend(["--shell".into(), shell]);
-                }
-                // `usermod` spells the home flag `--home`.
-                if let Some(home) = payload.home {
-                    args.extend(["--home".into(), home]);
-                }
-                if let Some(groups) = payload.groups {
-                    args.extend(["--groups".into(), groups.join(",")]);
-                }
+                flag!(args payload: [shell] [home]);
+                args.extend(
+                    (payload.groups.into_iter()).flat_map(|g| ["--groups".to_owned(), g.join(",")]),
+                );
                 args.push(payload.name);
-                run_command_or_dry_run_for_module(
-                    &INFO,
-                    action,
-                    "usermod",
-                    args,
-                    payload.dry_run,
-                    user,
-                )
+                crate::cmd!((payload.dry_run) { &INFO, action, user } "usermod" => &args ; json)
             }
             "delete" => {
                 let payload: NamedPayload = parse_payload(payload)?;
-                run_command_or_dry_run_for_module(
-                    &INFO,
-                    action,
-                    "userdel",
-                    [&payload.name],
-                    payload.dry_run,
-                    user,
-                )
+                crate::cmd!((payload.dry_run) { &INFO, action, user } "userdel" [&payload.name] json)
             }
             "set_password" => {
                 let payload: SetPasswordPayload = parse_payload(payload)?;
                 // The hash is passed through verbatim; `usermod --password`
                 // expects the same string `/etc/shadow` would store.
-                run_command_or_dry_run_for_module(
-                    &INFO,
-                    action,
-                    "usermod",
-                    ["--password", &payload.password_hash, &payload.name],
-                    payload.dry_run,
-                    user,
-                )
+                crate::cmd!((payload.dry_run) { &INFO, action, user } "usermod" ["--password", &payload.password_hash, &payload.name] json)
             }
             _ => unsupported_action(INFO.name, action),
         }
