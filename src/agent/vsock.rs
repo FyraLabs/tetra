@@ -70,8 +70,10 @@ fn serve_with_dispatcher(config: VsockAgentConfig, dispatcher: Arc<Dispatcher>) 
             .context("failed to accept vsock connection")?;
         let dispatcher = Arc::clone(&dispatcher);
         let max_command_bytes = config.max_command_bytes;
-        let peer = peer
-            .as_vsock_address().map_or_else(|| "cid=- port=-".into(), |(cid, port)| format!("cid={cid} port={port}"));
+        let peer = peer.as_vsock_address().map_or_else(
+            || "cid=- port=-".into(),
+            |(cid, port)| format!("cid={cid} port={port}"),
+        );
 
         thread::spawn(move || {
             if let Err(error) = handle_connection(stream, dispatcher, max_command_bytes) {

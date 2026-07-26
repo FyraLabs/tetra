@@ -9,7 +9,7 @@ use std::{
     fs::File,
     io::BufReader,
     net::SocketAddr,
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -46,18 +46,45 @@ pub struct WebSocketServerConfig {
     /// One-time token accepted only while no controller key is enrolled.
     pub enrollment_token: Option<String>,
     pub identity_dir: PathBuf,
-    pub tls_cert_path: Option<PathBuf>,
-    pub tls_key_path: Option<PathBuf>,
+    /// Paths to TLS certificate and key
+    pub tls_cert_key_path: Option<(PathBuf, PathBuf)>,
 }
+impl WebSocketServerConfig {
+    fn tls_acceptor(&self) -> Result<Option<TlsAcceptor>> {
+        Ok((self.tls_cert_key_path.as_ref())
+            .map(Self::load_tls_config)
+            .transpose()?
+            .map(Arc::new)
+            .map(TlsAcceptor::from))
+    }
 
-pub async fn serve(config: WebSocketServerConfig) -> Result<()> {
-    let tls_acceptor = tls_acceptor(&config)?;
-    validate_listener_security(&config.listen, tls_acceptor.is_some())?;
+    fn load_tls_config((cert_path, key_path): &(PathBuf, PathBuf)) -> Result<rustls::ServerConfig> {
+        let mut cert_reader = BufReader::new(File::open(cert_path).with_context(|| {
+            format!("failed to open TLS certificate `{}`", cert_path.display())
+        })?);
+        let certificates = rustls_pemfile::certs(&mut cert_reader)
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .context("failed to parse TLS certificate PEM")?;
+        let mut key_reader = BufReader::new(
+            File::open(key_path)
+                .with_context(|| format!("failed to open TLS key `{}`", key_path.display()))?,
+        );
+        let key = rustls_pemfile::private_key(&mut key_reader)
+            .context("failed to parse TLS private key PEM")?
+            .ok_or_else(|| anyhow::anyhow!("TLS private key PEM contains no private key"))?;
+        rustls::ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(certificates, key)
+            .context("invalid TLS certificate/private-key pair")
+    }
 
-    let identity = HostIdentity::load_or_generate(&config.identity_dir)?;
-    let persisted_controller_key = identity.load_controller_key()?;
-    let controller_public_key = match config.controller_public_key {
-        Some(configured) => {
+    pub async fn serve(self) -> Result<()> {
+        let tls_acceptor = self.tls_acceptor()?;
+        validate_listener_security(&self.listen, tls_acceptor.is_some())?;
+
+        let identity = HostIdentity::load_or_generate(&self.identity_dir)?;
+        let persisted_controller_key = identity.load_controller_key()?;
+        let controller_public_key =self.controller_public_key.map(|configured| {
             if let Some(persisted) = &persisted_controller_key {
                 ensure!(
                     persisted == &configured,
@@ -69,69 +96,68 @@ pub async fn serve(config: WebSocketServerConfig) -> Result<()> {
                 // unpaired on its next restart.
                 identity.enroll_controller_key(&configured)?;
             }
-            Some(configured)
-        }
-        None => persisted_controller_key,
-    }
-    .map(|key| parse_verifying_key(&key).context("invalid controller public key"))
-    .transpose()?;
-    let listener = TcpListener::bind(config.listen).await.with_context(|| {
-        format!(
-            "failed to bind development WebSocket listener on {}",
-            config.listen
-        )
-    })?;
-    let dispatcher = super::modules::default_dispatcher();
-    let privileged_actions = build_privilege_map(&dispatcher);
-    let queue = DispatchQueue::spawn(AgentBackend::spawn(dispatcher), DEFAULT_QUEUE_CAPACITY);
-
-    eprintln!(
-        "serving authenticated Tetra WebSocket on {}://{}",
-        if tls_acceptor.is_some() { "wss" } else { "ws" },
-        config.listen
-    );
-    eprintln!("host identity: {}", identity.path().display());
-    eprintln!(
-        "host fingerprint: {}",
-        public_key_fingerprint(&identity.verifying_key())
-    );
-
-    loop {
-        let (stream, peer) = listener.accept().await?;
-        let queue = queue.clone();
-        let identity = identity.clone();
-        let enrollment_token = config.enrollment_token.clone();
-        let tls_acceptor = tls_acceptor.clone();
-        let privileged_actions = privileged_actions.clone();
-        tokio::spawn(async move {
-            let stream = match tls_acceptor {
-                Some(acceptor) => match acceptor.accept(stream).await {
-                    Ok(stream) => Box::new(stream) as Box<dyn AsyncReadWrite>,
-                    Err(error) => {
-                        eprintln!("TLS peer {peer} failed handshake: {error}");
-                        return;
-                    }
-                },
-                None => Box::new(stream) as Box<dyn AsyncReadWrite>,
-            };
-            if let Err(error) = handle_connection(
-                stream,
-                peer,
-                queue,
-                identity,
-                controller_public_key,
-                enrollment_token,
-                privileged_actions.clone(),
+            Ok(configured)
+        }).transpose()?.or(persisted_controller_key)
+        .map(|key| parse_verifying_key(&key).context("invalid controller public key"))
+        .transpose()?;
+        let listener = TcpListener::bind(self.listen).await.with_context(|| {
+            format!(
+                "failed to bind development WebSocket listener on {}",
+                self.listen
             )
-            .await
-            {
-                eprintln!("WebSocket peer {peer} closed with error: {error:?}");
-            }
-        });
+        })?;
+        let dispatcher = super::modules::default_dispatcher();
+        let privileged_actions = build_privilege_map(&dispatcher);
+        let queue = DispatchQueue::spawn(AgentBackend::spawn(dispatcher), DEFAULT_QUEUE_CAPACITY);
+
+        eprintln!(
+            "serving authenticated Tetra WebSocket on {}://{}",
+            if tls_acceptor.is_some() { "wss" } else { "ws" },
+            self.listen
+        );
+        eprintln!("host identity: {}", identity.path().display());
+        eprintln!(
+            "host fingerprint: {}",
+            public_key_fingerprint(&identity.verifying_key())
+        );
+
+        loop {
+            let (stream, peer) = listener.accept().await?;
+            let queue = queue.clone();
+            let identity = identity.clone();
+            let enrollment_token = self.enrollment_token.clone();
+            let tls_acceptor = tls_acceptor.clone();
+            let privileged_actions = privileged_actions.clone();
+            tokio::spawn(async move {
+                let stream = match tls_acceptor {
+                    Some(acceptor) => match acceptor.accept(stream).await {
+                        Ok(stream) => Box::new(stream) as Box<dyn AsyncReadWrite>,
+                        Err(error) => {
+                            eprintln!("TLS peer {peer} failed handshake: {error}");
+                            return;
+                        }
+                    },
+                    None => Box::new(stream) as Box<dyn AsyncReadWrite>,
+                };
+                if let Err(error) = handle_connection(ConnectionHandler {
+                    stream,
+                    peer,
+                    queue,
+                    identity,
+                    controller_key: controller_public_key,
+                    enrollment_token,
+                    privileged_actions: privileged_actions.clone(),
+                })
+                .await
+                {
+                    eprintln!("WebSocket peer {peer} closed with error: {error:?}");
+                }
+            });
+        }
     }
 }
 
-async fn handle_connection(
+struct ConnectionHandler {
     stream: Box<dyn AsyncReadWrite>,
     peer: SocketAddr,
     queue: DispatchQueue,
@@ -139,101 +165,31 @@ async fn handle_connection(
     controller_key: Option<VerifyingKey>,
     enrollment_token: Option<String>,
     privileged_actions: BTreeMap<String, Vec<String>>,
+}
+
+async fn handle_connection(
+    ConnectionHandler {
+        stream,
+        peer,
+        queue,
+        identity,
+        controller_key,
+        enrollment_token,
+        privileged_actions,
+    }: ConnectionHandler,
 ) -> Result<()> {
     let mut socket = accept_async(stream)
         .await
         .context("WebSocket handshake failed")?;
     let session_id = random_token(24)?;
     let challenge = random_token(32)?;
-    let controller_key = if let Some(key) = controller_key { key } else {
-        send(
-            &mut socket,
-            &AuthFrame::EnrollmentRequired {
-                host_fingerprint: public_key_fingerprint(&identity.verifying_key()),
-            },
-        )
-        .await?;
-        let Some(message) = socket.next().await else {
-            bail!("peer disconnected before enrollment")
-        };
-        let AuthFrame::Enroll { token, public_key } = parse_message(message?)? else {
-            send_error(&mut socket, "controller enrollment is required").await?;
-            bail!("peer sent non-enrollment frame to unpaired host")
-        };
-        let expected_token = enrollment_token
-            .as_deref()
-            .ok_or_else(|| anyhow::anyhow!("no enrollment token configured"))?;
-        if token != expected_token {
-            send_error(&mut socket, "invalid enrollment token").await?;
-            bail!("invalid enrollment token")
-        }
-        let key = parse_verifying_key(&public_key).context("invalid enrollment public key")?;
-        identity.enroll_controller_key(&public_key)?;
-        send(
-            &mut socket,
-            &AuthFrame::Response {
-                response: super::AgentResponse::ok("enrolled", json!({"host_fingerprint": public_key_fingerprint(&identity.verifying_key())})),
-            },
-        )
-        .await?;
+    let controller_key = if let Some(key) = controller_key {
         key
+    } else {
+        get_controller_key(&identity, enrollment_token, &mut socket).await?
     };
 
-    send(
-        &mut socket,
-        &AuthFrame::Challenge {
-            protocol_version: PROTOCOL_VERSION.into(),
-            session_id: session_id.clone(),
-            challenge: challenge.clone(),
-            host_fingerprint: public_key_fingerprint(&identity.verifying_key()),
-        },
-    )
-    .await?;
-
-    let Some(message) = socket.next().await else {
-        bail!("peer disconnected before authentication")
-    };
-    let frame = parse_message(message?)?;
-    let AuthFrame::Authenticate {
-        protocol_version,
-        session_id: received_session,
-        public_key,
-        signature,
-        user,
-    } = frame
-    else {
-        send_error(&mut socket, "authentication is required before commands").await?;
-        bail!("peer sent non-authentication frame")
-    };
-    if protocol_version != PROTOCOL_VERSION || received_session != session_id {
-        send_error(&mut socket, "protocol version or session id mismatch").await?;
-        bail!("authentication context mismatch")
-    }
-    let supplied_key = parse_verifying_key(&public_key)?;
-    if supplied_key != controller_key {
-        send_error(&mut socket, "controller public key is not enrolled").await?;
-        bail!("controller public key is not enrolled")
-    }
-    verify_challenge_signature(
-        &controller_key,
-        &signature,
-        &protocol_version,
-        &session_id,
-        &challenge,
-    )?;
-    let mut session = AuthenticatedSession::new(
-        session_id.clone(),
-        controller_key,
-        user.clone(),
-        SessionPolicy::default(),
-    )?;
-    send(
-        &mut socket,
-        &AuthFrame::Response {
-            response: super::AgentResponse::ok("authenticated", json!({"session_id": session_id})),
-        },
-    )
-    .await?;
+    let mut session = auth(identity, &mut socket, session_id, challenge, controller_key).await?;
 
     // Elevation grant for headless servers. The dashboard provides the
     // administrator password via PasswordResponse.
@@ -416,6 +372,111 @@ async fn handle_connection(
     Ok(())
 }
 
+async fn auth(
+    identity: HostIdentity,
+    socket: &mut tokio_tungstenite::WebSocketStream<Box<dyn AsyncReadWrite>>,
+    session_id: String,
+    challenge: String,
+    controller_key: VerifyingKey,
+) -> Result<AuthenticatedSession, anyhow::Error> {
+    send(
+        socket,
+        &AuthFrame::Challenge {
+            protocol_version: PROTOCOL_VERSION.into(),
+            session_id: session_id.clone(),
+            challenge: challenge.clone(),
+            host_fingerprint: public_key_fingerprint(&identity.verifying_key()),
+        },
+    )
+    .await?;
+    let Some(message) = socket.next().await else {
+        bail!("peer disconnected before authentication")
+    };
+    let AuthFrame::Authenticate {
+        protocol_version,
+        session_id: received_session,
+        public_key,
+        signature,
+        user,
+    } = parse_message(message?)?
+    else {
+        send_error(socket, "authentication is required before commands").await?;
+        bail!("peer sent non-authentication frame")
+    };
+    if protocol_version != PROTOCOL_VERSION || received_session != session_id {
+        send_error(socket, "protocol version or session id mismatch").await?;
+        bail!("authentication context mismatch")
+    }
+    let supplied_key = parse_verifying_key(&public_key)?;
+    if supplied_key != controller_key {
+        send_error(socket, "controller public key is not enrolled").await?;
+        bail!("controller public key is not enrolled")
+    }
+    verify_challenge_signature(
+        &controller_key,
+        &signature,
+        &protocol_version,
+        &session_id,
+        &challenge,
+    )?;
+    let session = AuthenticatedSession::new(
+        session_id.clone(),
+        controller_key,
+        user.clone(),
+        SessionPolicy::default(),
+    )?;
+    send(
+        socket,
+        &AuthFrame::Response {
+            response: super::AgentResponse::ok("authenticated", json!({"session_id": session_id})),
+        },
+    )
+    .await?;
+    Ok(session)
+}
+
+// TODO: correct function name
+async fn get_controller_key(
+    identity: &HostIdentity,
+    enrollment_token: Option<String>,
+    socket: &mut tokio_tungstenite::WebSocketStream<Box<dyn AsyncReadWrite>>,
+) -> Result<VerifyingKey, anyhow::Error> {
+    send(
+        socket,
+        &AuthFrame::EnrollmentRequired {
+            host_fingerprint: public_key_fingerprint(&identity.verifying_key()),
+        },
+    )
+    .await?;
+    let Some(message) = socket.next().await else {
+        bail!("peer disconnected before enrollment")
+    };
+    let AuthFrame::Enroll { token, public_key } = parse_message(message?)? else {
+        send_error(socket, "controller enrollment is required").await?;
+        bail!("peer sent non-enrollment frame to unpaired host")
+    };
+    let expected_token = enrollment_token
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("no enrollment token configured"))?;
+    if token != expected_token {
+        send_error(socket, "invalid enrollment token").await?;
+        bail!("invalid enrollment token")
+    }
+    let key = parse_verifying_key(&public_key).context("invalid enrollment public key")?;
+    identity.enroll_controller_key(&public_key)?;
+    send(
+        socket,
+        &AuthFrame::Response {
+            response: super::AgentResponse::ok(
+                "enrolled",
+                json!({"host_fingerprint": public_key_fingerprint(&identity.verifying_key())}),
+            ),
+        },
+    )
+    .await?;
+    Ok(key)
+}
+
 fn parse_message(message: Message) -> Result<AuthFrame> {
     match message {
         Message::Text(text) => {
@@ -459,42 +520,13 @@ where
 trait AsyncReadWrite: AsyncRead + AsyncWrite + Unpin + Send {}
 impl<T: AsyncRead + AsyncWrite + Unpin + Send> AsyncReadWrite for T {}
 
+#[inline]
 fn validate_listener_security(listen: &SocketAddr, tls_enabled: bool) -> Result<()> {
-    if !listen.ip().is_loopback() && !tls_enabled {
-        bail!("non-loopback WebSocket listeners require --tls-cert and --tls-key");
-    }
-    Ok(())
-}
-
-fn tls_acceptor(config: &WebSocketServerConfig) -> Result<Option<TlsAcceptor>> {
-    match (&config.tls_cert_path, &config.tls_key_path) {
-        (None, None) => Ok(None),
-        (Some(cert), Some(key)) => Ok(Some(TlsAcceptor::from(Arc::new(load_tls_config(
-            cert, key,
-        )?)))),
-        _ => bail!("--tls-cert and --tls-key must be supplied together"),
-    }
-}
-
-fn load_tls_config(cert_path: &Path, key_path: &Path) -> Result<rustls::ServerConfig> {
-    let mut cert_reader =
-        BufReader::new(File::open(cert_path).with_context(|| {
-            format!("failed to open TLS certificate `{}`", cert_path.display())
-        })?);
-    let certificates = rustls_pemfile::certs(&mut cert_reader)
-        .collect::<std::result::Result<Vec<_>, _>>()
-        .context("failed to parse TLS certificate PEM")?;
-    let mut key_reader = BufReader::new(
-        File::open(key_path)
-            .with_context(|| format!("failed to open TLS key `{}`", key_path.display()))?,
+    ensure!(
+        !listen.ip().is_loopback() && !tls_enabled,
+        "non-loopback WebSocket listeners require --tls-cert and --tls-key"
     );
-    let key = rustls_pemfile::private_key(&mut key_reader)
-        .context("failed to parse TLS private key PEM")?
-        .ok_or_else(|| anyhow::anyhow!("TLS private key PEM contains no private key"))?;
-    rustls::ServerConfig::builder()
-        .with_no_client_auth()
-        .with_single_cert(certificates, key)
-        .context("invalid TLS certificate/private-key pair")
+    Ok(())
 }
 
 /// In-memory elevation grant for headless hosts. Verified against a password
@@ -594,15 +626,15 @@ mod tests {
 
         tokio::spawn(async move {
             let (stream, peer) = listener.accept().await.unwrap();
-            handle_connection(
-                Box::new(stream),
+            handle_connection(ConnectionHandler {
+                stream: Box::new(stream),
                 peer,
                 queue,
                 identity,
-                None,
-                Some("enroll-once".into()),
-                BTreeMap::new(),
-            )
+                controller_key: None,
+                enrollment_token: Some("enroll-once".into()),
+                privileged_actions: BTreeMap::new(),
+            })
             .await
             .unwrap();
         });
@@ -674,15 +706,15 @@ mod tests {
 
         tokio::spawn(async move {
             let (stream, peer) = listener.accept().await.unwrap();
-            handle_connection(
-                Box::new(stream),
+            handle_connection(ConnectionHandler {
+                stream: Box::new(stream),
                 peer,
                 queue,
                 identity,
-                Some(controller_key),
-                None,
-                BTreeMap::new(),
-            )
+                controller_key: Some(controller_key),
+                enrollment_token: None,
+                privileged_actions: BTreeMap::new(),
+            })
             .await
             .unwrap();
         });

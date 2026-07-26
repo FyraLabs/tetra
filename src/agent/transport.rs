@@ -39,6 +39,26 @@ impl TransportConfig {
     pub fn endpoint(&self) -> Result<TransportEndpoint> {
         self.control_plane_url.parse()
     }
+
+    /// Reject production WSS configurations until the transport has enough TLS
+    /// material for explicit mutual authentication. The current connector still
+    /// needs a custom rustls client setup to consume these files; failing closed is
+    /// safer than silently using platform roots and ignoring the configured mTLS
+    /// paths.
+    pub fn validate(&self, url: &str) -> Result<()> {
+        if url.starts_with("ws://") {
+            bail!("outbound production transport requires wss://; ws:// is development-only")
+        }
+        if self.client_cert_path.is_none()
+            || self.client_key_path.is_none()
+            || self.server_ca_path.is_none()
+        {
+            bail!(
+                "wss control-plane transport requires client_cert_path, client_key_path, and server_ca_path"
+            )
+        }
+        Ok(())
+    }
 }
 
 /// The transport kind selected by the `control_plane_url` scheme.

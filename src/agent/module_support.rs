@@ -462,7 +462,7 @@ pub fn safe_join(base: &Path, name: &str) -> Result<PathBuf> {
 
 /// Render a command and its args as a single space-joined display string.
 /// Used both for dry-run previews and for error messages (`\`foo bar\` failed`).
-#[must_use] 
+#[must_use]
 pub fn command_display(program: &str, args: &[String]) -> String {
     std::iter::once(program.to_owned())
         .chain(args.iter().cloned())

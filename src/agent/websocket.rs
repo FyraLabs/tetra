@@ -75,6 +75,69 @@ enum TransportFrame {
     },
 }
 
+impl TransportFrame {
+    /// Serialize and send one frame as a text message. We always send text (not
+    /// binary) so the frames are easy to inspect in a proxy or log.
+    async fn send<S>(&self, socket: &mut S) -> Result<()>
+    where
+        S: SinkExt<Message> + Unpin,
+        <S as futures_util::Sink<Message>>::Error: std::error::Error + Send + Sync + 'static,
+    {
+        let text = serde_json::to_string(&self).context("failed to serialize websocket frame")?;
+        socket
+            .send(Message::Text(text.into()))
+            .await
+            .context("failed to send websocket frame")
+    }
+
+    /// Dispatch one received frame. `Command` frames go to the backend actor and
+    /// the response is sent back as a `Response` frame; `Ping` is echoed as a
+    /// `Pong`; anything else (including `Hello`, `Response`, `Pong`, `Error`) is
+    /// rejected with an `Error` frame — the control plane should never send those
+    /// to an agent.
+    async fn handle<S>(self, socket: &mut S, queue: &DispatchQueue) -> Result<()>
+    where
+        S: SinkExt<Message> + Unpin,
+        <S as futures_util::Sink<Message>>::Error: std::error::Error + Send + Sync + 'static,
+    {
+        match self {
+            TransportFrame::Command { command } => match queue.dispatch(command).await {
+                Ok(response) => TransportFrame::Response { response }.send(socket).await?,
+                Err(QueueError::Full) => {
+                    TransportFrame::Error {
+                        error: "Tetra command queue is full; retry after backoff".into(),
+                    }
+                    .send(socket)
+                    .await?;
+                }
+                Err(QueueError::Closed) => {
+                    TransportFrame::Error {
+                        error: "Tetra command queue is unavailable".into(),
+                    }
+                    .send(socket)
+                    .await?;
+                    bail!("dispatch queue closed")
+                }
+            },
+            TransportFrame::Ping { id, sent_at } => {
+                TransportFrame::Pong { id, sent_at }.send(socket).await?;
+            }
+            TransportFrame::Hello { .. }
+            | TransportFrame::Response { .. }
+            | TransportFrame::Pong { .. }
+            | TransportFrame::Error { .. } => {
+                TransportFrame::Error {
+                    error: "unsupported frame from control plane".into(),
+                }
+                .send(socket)
+                .await?
+            }
+        }
+
+        Ok(())
+    }
+}
+
 /// Connect to the control plane, exchange frames until the session closes, and
 /// (if `reconnect`) reconnect with backoff. The outer loop is the reconnect
 /// loop; the inner [`connect_once`] is a single session.
@@ -131,17 +194,15 @@ async fn connect_once(
         response.status()
     );
 
-    send_frame(
-        &mut socket,
-        &TransportFrame::Hello {
-            host_id: config.host_id.clone(),
-            agent_version: env!("CARGO_PKG_VERSION").to_string(),
-            protocol_version: PROTOCOL_VERSION.to_owned(),
-            hostname: hostname(),
-            os: env::consts::OS.to_owned(),
-            arch: env::consts::ARCH.to_owned(),
-        },
-    )
+    TransportFrame::Hello {
+        host_id: config.host_id.clone(),
+        agent_version: env!("CARGO_PKG_VERSION").to_string(),
+        protocol_version: PROTOCOL_VERSION.to_owned(),
+        hostname: hostname(),
+        os: env::consts::OS.to_owned(),
+        arch: env::consts::ARCH.to_owned(),
+    }
+    .send(&mut socket)
     .await?;
 
     while let Some(message) = socket.next().await {
@@ -149,12 +210,12 @@ async fn connect_once(
             Message::Text(text) => {
                 let frame: TransportFrame =
                     serde_json::from_str(&text).context("invalid websocket frame JSON")?;
-                handle_frame(&mut socket, queue.clone(), frame).await?;
+                frame.handle(&mut socket, &queue).await?;
             }
             Message::Binary(bytes) => {
                 let frame: TransportFrame =
                     serde_json::from_slice(&bytes).context("invalid websocket frame JSON")?;
-                handle_frame(&mut socket, queue.clone(), frame).await?;
+                frame.handle(&mut socket, &queue).await?;
             }
             // tungstenite handles Ping/Pong at the protocol layer; we just echo.
             Message::Ping(bytes) => socket.send(Message::Pong(bytes)).await?,
@@ -173,91 +234,14 @@ async fn connect_once(
     Ok(())
 }
 
-/// Dispatch one received frame. `Command` frames go to the backend actor and
-/// the response is sent back as a `Response` frame; `Ping` is echoed as a
-/// `Pong`; anything else (including `Hello`, `Response`, `Pong`, `Error`) is
-/// rejected with an `Error` frame — the control plane should never send those
-/// to an agent.
-async fn handle_frame<S>(socket: &mut S, queue: DispatchQueue, frame: TransportFrame) -> Result<()>
-where
-    S: SinkExt<Message> + Unpin,
-    <S as futures_util::Sink<Message>>::Error: std::error::Error + Send + Sync + 'static,
-{
-    match frame {
-        TransportFrame::Command { command } => match queue.dispatch(command).await {
-            Ok(response) => send_frame(socket, &TransportFrame::Response { response }).await?,
-            Err(QueueError::Full) => {
-                send_frame(
-                    socket,
-                    &TransportFrame::Error {
-                        error: "Tetra command queue is full; retry after backoff".into(),
-                    },
-                )
-                .await?;
-            }
-            Err(QueueError::Closed) => {
-                send_frame(
-                    socket,
-                    &TransportFrame::Error {
-                        error: "Tetra command queue is unavailable".into(),
-                    },
-                )
-                .await?;
-                bail!("dispatch queue closed")
-            }
-        },
-        TransportFrame::Ping { id, sent_at } => {
-            send_frame(socket, &TransportFrame::Pong { id, sent_at }).await?;
-        }
-        TransportFrame::Hello { .. }
-        | TransportFrame::Response { .. }
-        | TransportFrame::Pong { .. }
-        | TransportFrame::Error { .. } => {
-            send_frame(
-                socket,
-                &TransportFrame::Error {
-                    error: "unsupported frame from control plane".into(),
-                },
-            )
-            .await?;
-        }
-    }
-
-    Ok(())
-}
-
-/// Serialize and send one frame as a text message. We always send text (not
-/// binary) so the frames are easy to inspect in a proxy or log.
-async fn send_frame<S>(socket: &mut S, frame: &TransportFrame) -> Result<()>
-where
-    S: SinkExt<Message> + Unpin,
-    <S as futures_util::Sink<Message>>::Error: std::error::Error + Send + Sync + 'static,
-{
-    let text = serde_json::to_string(frame).context("failed to serialize websocket frame")?;
-    socket
-        .send(Message::Text(text.into()))
-        .await
-        .context("failed to send websocket frame")
-}
-
 /// Reject production WSS configurations until the transport has enough TLS
 /// material for explicit mutual authentication. The current connector still
 /// needs a custom rustls client setup to consume these files; failing closed is
 /// safer than silently using platform roots and ignoring the configured mTLS
 /// paths.
+#[deprecated = "use TransportConfig::validate instead"]
 fn validate_tls_config(url: &str, config: &TransportConfig) -> Result<()> {
-    if url.starts_with("ws://") {
-        bail!("outbound production transport requires wss://; ws:// is development-only")
-    }
-    if config.client_cert_path.is_none()
-        || config.client_key_path.is_none()
-        || config.server_ca_path.is_none()
-    {
-        bail!(
-            "wss control-plane transport requires client_cert_path, client_key_path, and server_ca_path"
-        )
-    }
-    Ok(())
+    config.validate(url)
 }
 
 /// Exponential reconnect backoff with jitter: `2^attempt` seconds, capped at

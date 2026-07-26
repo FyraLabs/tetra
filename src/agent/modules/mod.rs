@@ -35,7 +35,7 @@ use super::Dispatcher;
 /// Order matters only for the `agent.capabilities` response, which lists
 /// modules in `BTreeMap` name order regardless of insertion order — so this
 /// function is free to list modules in whatever order reads cleanly.
-#[must_use] 
+#[must_use]
 pub fn default_dispatcher() -> Dispatcher {
     let dispatcher = Dispatcher::new().with_module(settings::SettingsModule);
 

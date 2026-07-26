@@ -62,20 +62,20 @@ impl HostIdentity {
         })
     }
 
-    #[must_use] 
+    #[must_use]
     pub const fn signing_key(&self) -> &SigningKey {
         &self.signing_key
     }
-    #[must_use] 
+    #[must_use]
     pub fn verifying_key(&self) -> VerifyingKey {
         self.signing_key.verifying_key()
     }
-    #[must_use] 
+    #[must_use]
     pub fn path(&self) -> &Path {
         &self.path
     }
 
-    #[must_use] 
+    #[must_use]
     pub fn directory(&self) -> &Path {
         self.path
             .parent()

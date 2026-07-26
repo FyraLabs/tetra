@@ -147,12 +147,12 @@ impl AuthenticatedSession {
         })
     }
 
-    #[must_use] 
+    #[must_use]
     pub fn user(&self) -> Option<&str> {
         self.user.as_deref()
     }
 
-    #[must_use] 
+    #[must_use]
     pub fn session_id(&self) -> &str {
         &self.session_id
     }
@@ -236,7 +236,7 @@ struct SignedChallenge<'a> {
 
 /// Canonical challenge bytes signed during authentication. A struct fixes field
 /// order, avoiding JSON-map implementation differences between Rust and Node.
-#[must_use] 
+#[must_use]
 pub fn challenge_bytes(protocol_version: &str, session_id: &str, challenge: &str) -> Vec<u8> {
     serde_json::to_vec(&SignedChallenge {
         protocol_version,
