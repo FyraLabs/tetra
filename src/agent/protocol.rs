@@ -12,6 +12,7 @@ use std::{
 use super::{AgentCommand, crypto::verify_command_signature};
 use anyhow::{Result, bail, ensure};
 use ed25519_dalek::VerifyingKey;
+use rand::distr::weighted::Weight;
 use serde::{Deserialize, Serialize};
 
 pub const PROTOCOL_VERSION: &str = "2026-07-auth-v1";
@@ -205,17 +206,15 @@ impl AuthenticatedSession {
             nonce,
         )?;
 
-        self.next_sequence = self
-            .next_sequence
-            .checked_add(1)
-            .ok_or_else(|| anyhow::anyhow!("command sequence exhausted"))?;
+        self.next_sequence
+            .checked_add_assign(&1)
+            .map_err(|()| anyhow::anyhow!("command sequence exhausted"))?;
+        // NOTE: why do you need two lists of nonces?
         self.nonces.insert(nonce.clone());
         self.nonce_order.push_back(nonce.clone());
-        while self.nonce_order.len() > self.policy.nonce_limit {
-            if let Some(oldest) = self.nonce_order.pop_front() {
-                self.nonces.remove(&oldest);
-            }
-        }
+        let to_remove = self.nonce_order.len() - self.policy.nonce_limit;
+        let olds = self.nonce_order.drain(..to_remove);
+        olds.for_each(|old| _ = self.nonces.remove(&old));
         Ok(command)
     }
 }
