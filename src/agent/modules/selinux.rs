@@ -20,8 +20,7 @@ use serde_json::{Value, json};
 use crate::agent::{
     AgentModule,
     module_support::{
-        ModuleInfo, ModuleStatus, handle_metadata, parse_payload,
-        run_command_or_dry_run_for_module, run_command_output_for_module, unsupported_action,
+        ModuleInfo, ModuleStatus, handle_metadata, parse_payload, unsupported_action,
     },
 };
 
@@ -244,14 +243,11 @@ const fn boolean_value(value: bool) -> &'static str {
 /// underscore-separated field names (e.g. `SELinux status:` becomes
 /// `selinux_status`). Lines without a `Key: value` pair are dropped.
 fn parse_sestatus(stdout: &str) -> Value {
-    let mut object = serde_json::Map::new();
-    for line in stdout.lines() {
-        let Some((key, value)) = line.split_once(':') else {
-            continue;
-        };
-        object.insert(normalize_key(key), Value::String(value.trim().to_owned()));
-    }
-    Value::Object(object)
+    Value::Object(
+        (stdout.lines().filter_map(|line| line.split_once(':')))
+            .map(|(key, value)| (normalize_key(key), Value::String(value.trim().to_owned())))
+            .collect(),
+    )
 }
 
 /// Parses `getsebool -a` output, one boolean per line as `name --> value`.
@@ -259,15 +255,13 @@ fn parse_sestatus(stdout: &str) -> Value {
 /// `enabled` normalizes the raw string (`on`/`1`/`true`) to a boolean so
 /// callers do not have to re-parse it; the original `value` is preserved too.
 fn parse_getsebool(stdout: &str) -> Vec<Value> {
-    stdout
-        .lines()
-        .filter_map(|line| {
-            let (name, value) = line.split_once("-->")?;
-            Some(json!({
+    (stdout.lines().filter_map(|line| line.split_once("-->")))
+        .map(|(name, value)| {
+            json!({
                 "name": name.trim(),
                 "enabled": matches!(value.trim(), "on" | "1" | "true"),
                 "value": value.trim(),
-            }))
+            })
         })
         .collect()
 }
@@ -279,9 +273,7 @@ fn parse_getsebool(stdout: &str) -> Vec<Value> {
 /// `user:role:type:level` quadruple. The first printed line is a column
 /// header and the second is a `----` separator; both are filtered out below.
 fn parse_semanage_fcontext(stdout: &str) -> Vec<Value> {
-    stdout
-        .lines()
-        .map(str::trim)
+    (stdout.lines().map(str::trim))
         .filter(|line| !line.is_empty())
         // Drop the column header and the underline separator that semanage
         // prints at the top of its output.

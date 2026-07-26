@@ -11,14 +11,14 @@
 //! parses the raw `list-units` table into a stable `services` array.
 
 use anyhow::Result;
+use itertools::Itertools;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::agent::{
     AgentModule,
     module_support::{
-        ModuleInfo, ModuleStatus, handle_metadata, parse_payload, run_command_for_module,
-        run_command_or_dry_run_for_module, run_command_output_for_module, unsupported_action,
+        ModuleInfo, ModuleStatus, handle_metadata, parse_payload, unsupported_action,
     },
 };
 
@@ -117,21 +117,14 @@ impl AgentModule for ServicesModule {
             // return the raw stdout alongside the parsed `services` array so a
             // controller can fall back to the verbatim table if needed.
             "list" => {
-                let result = run_command_output_for_module(
-                    &INFO,
-                    action,
-                    "systemctl",
-                    [
-                        "--no-pager",
-                        "--plain",
-                        "--legend=false",
-                        "list-units",
-                        "--type=service",
-                        "--all",
-                    ],
-                    false,
-                    user,
-                )?;
+                let result = crate::cmd!({ &INFO, action, user } "systemctl" [
+                    "--no-pager",
+                    "--plain",
+                    "--legend=false",
+                    "list-units",
+                    "--type=service",
+                    "--all",
+                ])?;
                 Ok(json!({
                     "command": result.command,
                     "status": result.status,
@@ -143,49 +136,32 @@ impl AgentModule for ServicesModule {
             }
             "status" => {
                 let payload: ServicePayload = parse_payload(payload)?;
-                run_command_for_module(
-                    &INFO,
-                    action,
-                    "systemctl",
-                    &systemctl_args(
-                        payload.scope,
-                        ["--no-pager", "--plain", "status", &payload.service],
-                    ),
-                    user,
-                )
+                let args = systemctl_args(
+                    payload.scope,
+                    ["--no-pager", "--plain", "status", &payload.service],
+                );
+                crate::cmd!({ &INFO, action, user } "systemctl" => &args ; json)
             }
             "logs" => {
                 let payload: LogsPayload = parse_payload(payload)?;
                 // `journalctl -u <unit>` follows the unit's journal across
                 // whatever files it spans; `-n` caps the tail to keep payloads
                 // bounded. `logs` is a read and therefore never dry-run.
-                run_command_for_module(
-                    &INFO,
-                    action,
-                    "journalctl",
-                    &journalctl_args(
-                        payload.scope,
-                        [
-                            "--no-pager",
-                            "-u",
-                            &payload.service,
-                            "-n",
-                            &payload.lines.to_string(),
-                        ],
-                    ),
-                    user,
-                )
+                crate::cmd!({ &INFO, action, user } "journalctl" => &journalctl_args(
+                    payload.scope,
+                    [
+                        "--no-pager",
+                        "-u",
+                        &payload.service,
+                        "-n",
+                        &payload.lines.to_string(),
+                    ],
+                ); json)
             }
             "daemon_reload" => {
                 let payload: DaemonReloadPayload = parse_payload(payload)?;
-                run_command_or_dry_run_for_module(
-                    &INFO,
-                    action,
-                    "systemctl",
-                    &systemctl_args(payload.scope, ["daemon-reload"]),
-                    payload.dry_run,
-                    user,
-                )
+                let args = systemctl_args(payload.scope, ["daemon-reload"]);
+                crate::cmd!((payload.dry_run) { &INFO, action, user } "systemctl" => &args ; json)
             }
             // The five single-service mutations share one arm because their
             // `systemctl` invocation has identical shape: `systemctl <action>
@@ -193,14 +169,8 @@ impl AgentModule for ServicesModule {
             // subcommand, which is why it can be forwarded directly.
             "start" | "stop" | "restart" | "enable" | "disable" => {
                 let payload: ServicePayload = parse_payload(payload)?;
-                run_command_or_dry_run_for_module(
-                    &INFO,
-                    action,
-                    "systemctl",
-                    &systemctl_args(payload.scope, [action, &payload.service]),
-                    payload.dry_run,
-                    user,
-                )
+                let args = systemctl_args(payload.scope, [action, &payload.service]);
+                crate::cmd!((payload.dry_run) { &INFO, action, user } "systemctl" => &args ; json)
             }
             _ => unsupported_action(INFO.name, action),
         }
@@ -253,16 +223,15 @@ fn parse_systemctl_services(stdout: &str) -> Vec<Value> {
     stdout
         .lines()
         .filter_map(|line| {
-            let fields: Vec<_> = line.split_whitespace().collect();
-            (fields.len() >= 4).then(|| {
-                json!({
-                    "unit": fields[0],
-                    "load": fields[1],
-                    "active": fields[2],
-                    "sub": fields[3],
-                    "description": fields.get(4..).unwrap_or(&[]).join(" "),
-                })
-            })
+            let mut it = line.split_whitespace();
+            let (unit, load, active, sub) = it.next_tuple()?;
+            Some(json!({
+                "unit": unit,
+                "load": load,
+                "active": active,
+                "sub": sub,
+                "description": it.join(" "),
+            }))
         })
         .collect()
 }
