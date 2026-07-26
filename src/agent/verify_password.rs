@@ -22,33 +22,23 @@ pub fn verify_password(username: &str, password: &str) -> Result<bool> {
         bail!("username and password must be non-empty");
     }
 
-    let Ok(mut child) = Command::new("/usr/sbin/unix_chkpwd")
-        .arg(username)
-        .arg("invoke")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-    else {
-        // Fallback: try /sbin/unix_chkpwd on some distributions
-        let mut child = Command::new("/sbin/unix_chkpwd")
+    let spawn_cmd = |program: &str| {
+        Command::new(program)
             .arg(username)
             .arg("invoke")
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
-            .context("failed to spawn unix_chkpwd")?;
-        let mut stdin = child.stdin.take().context("no stdin")?;
-        stdin.write_all(password.as_bytes())?;
-        drop(stdin);
-        let status = child.wait().context("unix_chkpwd exited abnormally")?;
-        return Ok(status.success());
     };
 
-    let mut stdin = child.stdin.take().context("no stdin")?;
-    stdin.write_all(password.as_bytes())?;
-    drop(stdin);
+    let mut child = spawn_cmd("/usr/sbin/unix_chkpwd").or_else(|e| {
+        spawn_cmd("/sbin/unix_chkpwd")
+            .context("failed to spawn unix_chkpwd")
+            .context(e)
+    })?;
+
+    (child.stdin.take().context("no stdin")?).write_all(password.as_bytes())?;
     let status = child.wait().context("unix_chkpwd exited abnormally")?;
     Ok(status.success())
 }
