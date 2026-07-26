@@ -224,8 +224,12 @@ async fn handle_connection(
         &session_id,
         &challenge,
     )?;
-    let mut session =
-        AuthenticatedSession::new(session_id.clone(), controller_key, user.clone(), SessionPolicy::default())?;
+    let mut session = AuthenticatedSession::new(
+        session_id.clone(),
+        controller_key,
+        user.clone(),
+        SessionPolicy::default(),
+    )?;
     send(
         &mut socket,
         &AuthFrame::Response {

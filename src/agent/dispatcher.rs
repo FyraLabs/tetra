@@ -94,7 +94,11 @@ impl Dispatcher {
             bail!("unknown module `{}`", command.module);
         };
 
-        module.handle(&command.action, command.payload.clone(), command.user.as_deref())
+        module.handle(
+            &command.action,
+            command.payload.clone(),
+            command.user.as_deref(),
+        )
     }
 }
 

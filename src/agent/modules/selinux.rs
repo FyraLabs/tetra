@@ -196,7 +196,14 @@ impl AgentModule for SelinuxModule {
                 }
                 args.push(payload.name);
                 args.push(boolean_value(payload.value).to_string());
-                run_command_or_dry_run_for_module(&INFO, action, "setsebool", args, payload.dry_run, user)
+                run_command_or_dry_run_for_module(
+                    &INFO,
+                    action,
+                    "setsebool",
+                    args,
+                    payload.dry_run,
+                    user,
+                )
             }
             "file_contexts" => {
                 // `semanage fcontext -l` dumps every fcontext rule the policy

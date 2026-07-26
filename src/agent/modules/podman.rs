@@ -83,11 +83,21 @@ impl AgentModule for PodmanModule {
             // image/volume/network when qualified). It is passed through as-is.
             "inspect" => {
                 let payload: NamedPayload = parse_payload(payload)?;
-                run_command_json_for_module(&INFO, action, "podman", ["inspect", &payload.name], user)
+                run_command_json_for_module(
+                    &INFO,
+                    action,
+                    "podman",
+                    ["inspect", &payload.name],
+                    user,
+                )
             }
-            "images" => {
-                run_command_json_for_module(&INFO, action, "podman", ["images", "--format", "json"], user)
-            }
+            "images" => run_command_json_for_module(
+                &INFO,
+                action,
+                "podman",
+                ["images", "--format", "json"],
+                user,
+            ),
             "volumes" => run_command_json_for_module(
                 &INFO,
                 action,

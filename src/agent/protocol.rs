@@ -294,9 +294,13 @@ mod tests {
     #[test]
     fn rejects_replay_wrong_sequence_and_stale_timestamp() {
         let key = SigningKey::from_bytes(&[4_u8; 32]);
-        let mut session =
-            AuthenticatedSession::new("session-1", key.verifying_key(), None, SessionPolicy::default())
-                .unwrap();
+        let mut session = AuthenticatedSession::new(
+            "session-1",
+            key.verifying_key(),
+            None,
+            SessionPolicy::default(),
+        )
+        .unwrap();
         let first = signed_frame(&key, 0, 1000, "nonce-000000000001");
         session.accept_command(&first, 1000).unwrap();
         assert!(session.accept_command(&first, 1000).is_err());

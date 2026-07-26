@@ -266,7 +266,11 @@ where
 ///
 /// Privileged actions always run as root (`None`). Unprivileged actions run as
 /// the supplied `user` when it is present, otherwise they fall back to root.
-fn effective_user<'a>(info: &'a ModuleInfo, action: &'a str, user: Option<&'a str>) -> Option<&'a str> {
+fn effective_user<'a>(
+    info: &'a ModuleInfo,
+    action: &'a str,
+    user: Option<&'a str>,
+) -> Option<&'a str> {
     if info.privileged_actions.contains(&action) {
         None
     } else {

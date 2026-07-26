@@ -127,7 +127,14 @@ impl AgentModule for UsersModule {
                     args.extend(["--home-dir".into(), home]);
                 }
                 args.push(payload.name);
-                run_command_or_dry_run_for_module(&INFO, action, "useradd", args, payload.dry_run, user)
+                run_command_or_dry_run_for_module(
+                    &INFO,
+                    action,
+                    "useradd",
+                    args,
+                    payload.dry_run,
+                    user,
+                )
             }
             "update" => {
                 let payload: UpdatePayload = parse_payload(payload)?;
@@ -143,7 +150,14 @@ impl AgentModule for UsersModule {
                     args.extend(["--groups".into(), groups.join(",")]);
                 }
                 args.push(payload.name);
-                run_command_or_dry_run_for_module(&INFO, action, "usermod", args, payload.dry_run, user)
+                run_command_or_dry_run_for_module(
+                    &INFO,
+                    action,
+                    "usermod",
+                    args,
+                    payload.dry_run,
+                    user,
+                )
             }
             "delete" => {
                 let payload: NamedPayload = parse_payload(payload)?;
@@ -248,7 +262,11 @@ mod tests {
     #[test]
     fn dry_run_create_does_not_call_useradd() {
         let response = UsersModule
-            .handle("create", json!({ "name": "testuser", "dry_run": true }), None)
+            .handle(
+                "create",
+                json!({ "name": "testuser", "dry_run": true }),
+                None,
+            )
             .unwrap();
 
         assert_eq!(response["command"], "useradd testuser");
