@@ -3,7 +3,7 @@ name = "tetra"
 version = "0.1.0"
 edition = "2024"
 license = "LGPL-2.1-or-later"
-description = "A modular host agent and recipe layer for generating and managing Podman Quadlets"
+description = "A modular host agent for Ultramarine Server and cloud hosts"
 
 [features]
 default = [
@@ -32,7 +32,7 @@ quadlets = []
 reverse-proxy = []
 users = []
 virtual-machines = []
-polkit = ["dep:zbus"]
+
 
 [dependencies]
 anyhow = "1"
@@ -52,11 +52,6 @@ tokio-rustls = "0.26"
 tokio-tungstenite = { version = "0.29", features = ["rustls-tls-native-roots"] }
 rustls = "0.23"
 rustls-pemfile = "2"
-zbus = { version = "5", optional = true, features = ["tokio"] }
-
-[build-dependencies]
-cc = "1"
-pkg-config = "0.3"
 
 [dev-dependencies]
 tempfile = "3"

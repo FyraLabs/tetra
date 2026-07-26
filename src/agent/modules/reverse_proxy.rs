@@ -20,8 +20,8 @@ use serde_json::{Value, json};
 use crate::agent::{
     AgentModule,
     module_support::{
-        ModuleInfo, ModuleStatus, handle_metadata, parse_payload, run_command_or_dry_run,
-        safe_join, unsupported_action,
+        ModuleInfo, ModuleStatus, handle_metadata, parse_payload,
+        run_command_or_dry_run_for_module, safe_join, unsupported_action,
     },
 };
 
@@ -49,6 +49,7 @@ const INFO: ModuleInfo = ModuleInfo {
         "delete",
         "reload",
     ],
+    privileged_actions: &["write", "delete", "reload"],
 };
 
 /// Directory where managed site snippets live. Overridable per request via
@@ -168,7 +169,7 @@ impl AgentModule for ReverseProxyModule {
                 // though the managed file was written successfully, so preserve
                 // the write result and report reload failure as structured data.
                 let (reload, reload_error) = if payload.reload {
-                    match reload_caddy(payload.dry_run) {
+                    match reload_caddy(action, payload.dry_run) {
                         Ok(result) => (Some(result), None),
                         Err(error) => (None, Some(error.to_string())),
                     }
@@ -206,7 +207,7 @@ impl AgentModule for ReverseProxyModule {
                 // is removed. A missing systemd bus is returned as a reload
                 // warning instead of making the persisted deletion look failed.
                 let (reload, reload_error) = if payload.reload {
-                    match reload_caddy(payload.dry_run) {
+                    match reload_caddy(action, payload.dry_run) {
                         Ok(result) => (Some(result), None),
                         Err(error) => (None, Some(error.to_string())),
                     }
@@ -226,7 +227,7 @@ impl AgentModule for ReverseProxyModule {
             }
             "reload" => {
                 let payload: ReloadPayload = parse_payload(payload)?;
-                reload_caddy(payload.dry_run)
+                reload_caddy(action, payload.dry_run)
             }
             _ => unsupported_action(INFO.name, action),
         }
@@ -379,8 +380,14 @@ fn list_sites(config_dir: &PathBuf) -> Result<Vec<Value>> {
 /// Reload Caddy via systemd so new or removed sites take effect without
 /// restarting (which would drop active connections). Dry runs report the
 /// command that would run without invoking systemctl.
-fn reload_caddy(dry_run: bool) -> Result<Value> {
-    run_command_or_dry_run("systemctl", ["reload", "caddy.service"], dry_run)
+fn reload_caddy(action: &str, dry_run: bool) -> Result<Value> {
+    run_command_or_dry_run_for_module(
+        &INFO,
+        action,
+        "systemctl",
+        ["reload", "caddy.service"],
+        dry_run,
+    )
 }
 
 #[cfg(test)]

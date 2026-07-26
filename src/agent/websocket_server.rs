@@ -5,16 +5,19 @@
 //! configured controller public key and authenticates before dispatching frames.
 
 use std::{
+    collections::BTreeMap,
     fs::File,
     io::BufReader,
     net::SocketAddr,
     path::{Path, PathBuf},
     sync::Arc,
+    time::{Duration, Instant},
 };
 
 use anyhow::{Context, Result, bail, ensure};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use futures_util::{SinkExt, StreamExt};
+use kameo::actor::Spawn;
 use rand::RngExt;
 use serde_json::json;
 use tokio::{
@@ -24,15 +27,13 @@ use tokio::{
 use tokio_rustls::TlsAcceptor;
 use tokio_tungstenite::{accept_async, tungstenite::Message};
 
-#[cfg(feature = "polkit")]
-use super::polkit::{DEFAULT_ELEVATION_TTL, ElevationGrant};
-
 use super::{
     AgentBackend,
     crypto::{parse_verifying_key, public_key_fingerprint, verify_challenge_signature},
     identity::HostIdentity,
     protocol::{AuthFrame, AuthenticatedSession, PROTOCOL_VERSION, SessionPolicy, unix_timestamp},
     queue::{DEFAULT_QUEUE_CAPACITY, DispatchQueue, QueueError},
+    verify_password::verify_password,
 };
 use ed25519_dalek::VerifyingKey;
 
@@ -80,7 +81,9 @@ pub async fn serve(config: WebSocketServerConfig) -> Result<()> {
             config.listen
         )
     })?;
-    let queue = DispatchQueue::spawn(AgentBackend::spawn_default(), DEFAULT_QUEUE_CAPACITY);
+    let dispatcher = super::modules::default_dispatcher();
+    let privileged_actions = build_privilege_map(&dispatcher);
+    let queue = DispatchQueue::spawn(AgentBackend::spawn(dispatcher), DEFAULT_QUEUE_CAPACITY);
 
     eprintln!(
         "serving authenticated Tetra WebSocket on {}://{}",
@@ -99,6 +102,7 @@ pub async fn serve(config: WebSocketServerConfig) -> Result<()> {
         let identity = identity.clone();
         let enrollment_token = config.enrollment_token.clone();
         let tls_acceptor = tls_acceptor.clone();
+        let privileged_actions = privileged_actions.clone();
         tokio::spawn(async move {
             let stream = match tls_acceptor {
                 Some(acceptor) => match acceptor.accept(stream).await {
@@ -117,6 +121,7 @@ pub async fn serve(config: WebSocketServerConfig) -> Result<()> {
                 identity,
                 controller_public_key,
                 enrollment_token,
+                privileged_actions.clone(),
             )
             .await
             {
@@ -133,6 +138,7 @@ async fn handle_connection(
     identity: HostIdentity,
     controller_key: Option<VerifyingKey>,
     enrollment_token: Option<String>,
+    privileged_actions: BTreeMap<String, Vec<String>>,
 ) -> Result<()> {
     let mut socket = accept_async(stream)
         .await
@@ -227,15 +233,15 @@ async fn handle_connection(
     )
     .await?;
 
-    // A grant only controls elevation UI state. Typed privileged helpers must
-    // still perform their own polkit authorization checks before an operation.
-    #[cfg(feature = "polkit")]
-    let mut elevation: Option<ElevationGrant> = None;
+    // Elevation grant for headless servers. The dashboard provides the
+    // administrator password via PasswordResponse.
+    let mut elevation: Option<HeadlessElevationGrant> = None;
+    let mut pending_prompt: Option<String> = None;
+    const ELEVATION_TTL: Duration = Duration::from_secs(30 * 60);
 
     while let Some(message) = socket.next().await {
         let frame = parse_message(message?)?;
         match frame {
-            #[cfg(feature = "polkit")]
             AuthFrame::ElevationRequest {
                 session_id: requested_session,
             } => {
@@ -243,33 +249,95 @@ async fn handle_connection(
                     send_error(&mut socket, "elevation request session does not match").await?;
                     continue;
                 }
-                match ElevationGrant::request(requested_session, DEFAULT_ELEVATION_TTL) {
-                    Ok(grant) => {
+                let prompt_id = random_token(24)?;
+                pending_prompt = Some(prompt_id.clone());
+                send(
+                    &mut socket,
+                    &AuthFrame::PasswordPrompt {
+                        prompt_id,
+                        action_id: "io.tetra.agent.elevate".into(),
+                        message: "Enter the server administrator password to enable privileged operations.".into(),
+                        expires_at: unix_timestamp().unwrap_or(0) + 300,
+                    },
+                )
+                .await?;
+            }
+            AuthFrame::PasswordResponse {
+                prompt_id,
+                response: password,
+            } => {
+                let Some(expected) = &pending_prompt else {
+                    send_error(&mut socket, "no pending prompt for response").await?;
+                    continue;
+                };
+                if &prompt_id != expected {
+                    send_error(&mut socket, "prompt id does not match pending prompt").await?;
+                    continue;
+                }
+                pending_prompt = None;
+                // Verify against root (or the configured admin user). On most
+                // server installs root is the privileged account; a future
+                // revision can read the admin user from transport config.
+                let username = std::env::var("TETRA_ELEVATION_USER")
+                    .unwrap_or_else(|_| "root".into());
+                match verify_password(&username, &password) {
+                    Ok(true) => {
+                        let grant = HeadlessElevationGrant::new(ELEVATION_TTL);
                         let expires_at = grant
                             .expires_in_seconds()
-                            .map(|seconds| unix_timestamp().unwrap_or(0) + seconds);
+                            .map(|s| unix_timestamp().unwrap_or(0) + s);
                         elevation = Some(grant);
-                        send(&mut socket, &AuthFrame::ElevationStatus {
-                            state: super::protocol::ElevationState::Active,
-                            expires_at,
-                            message: Some("Administrator mode is active. Privileged operations still require typed helper authorization.".into()),
-                        }).await?;
+                        send(
+                            &mut socket,
+                            &AuthFrame::ElevationStatus {
+                                state: super::protocol::ElevationState::Active,
+                                expires_at,
+                                message: Some(
+                                    "Administrator mode is active. Privileged operations may now proceed."
+                                        .into(),
+                                ),
+                            },
+                        )
+                        .await?;
                     }
-                    Err(error) => {
-                        elevation = None;
+                    Ok(false) => {
                         send(
                             &mut socket,
                             &AuthFrame::ElevationStatus {
                                 state: super::protocol::ElevationState::Inactive,
                                 expires_at: None,
-                                message: Some(error.to_string()),
+                                message: Some("Incorrect password.".into()),
+                            },
+                        )
+                        .await?;
+                    }
+                    Err(error) => {
+                        send(
+                            &mut socket,
+                            &AuthFrame::ElevationStatus {
+                                state: super::protocol::ElevationState::Inactive,
+                                expires_at: None,
+                                message: Some(format!("Password verification failed: {error}")),
                             },
                         )
                         .await?;
                     }
                 }
             }
-            #[cfg(feature = "polkit")]
+            AuthFrame::PasswordCancel { prompt_id } => {
+                if pending_prompt.as_ref() == Some(&prompt_id) {
+                    pending_prompt = None;
+                }
+                send(
+                    &mut socket,
+                    &AuthFrame::ElevationStatus {
+                        state: super::protocol::ElevationState::Inactive,
+                        expires_at: None,
+                        message: Some("Elevation prompt was cancelled.".into()),
+                    },
+                )
+                .await?;
+            }
             AuthFrame::ElevationRevoke {
                 session_id: requested_session,
             } => {
@@ -289,19 +357,33 @@ async fn handle_connection(
                 .await?;
             }
             AuthFrame::Command { .. } => {
-                #[cfg(feature = "polkit")]
-                if let Some(grant) = &elevation
-                    && !grant.is_active_for(session.session_id())
-                {
-                    elevation = None;
-                    send(&mut socket, &AuthFrame::ElevationStatus {
-                        state: super::protocol::ElevationState::Inactive,
-                        expires_at: None,
-                        message: Some("Administrator mode expired; request elevation again before a privileged operation.".into()),
-                    }).await?;
-                }
                 let now = unix_timestamp()?;
                 let command = session.accept_command(&frame, now)?.clone();
+
+                // Reject privileged actions when there is no active elevation grant.
+                if let Some(actions) = privileged_actions.get(&command.module) {
+                    if actions.contains(&command.action) {
+                        match &elevation {
+                            Some(grant) if grant.is_active() => {}
+                            _ => {
+                                send_error(&mut socket, "privileged action requires elevation; request elevation first").await?;
+                                continue;
+                            }
+                        }
+                    }
+                }
+
+                if let Some(grant) = &elevation {
+                    if !grant.is_active() {
+                        elevation = None;
+                        send(&mut socket, &AuthFrame::ElevationStatus {
+                            state: super::protocol::ElevationState::Inactive,
+                            expires_at: None,
+                            message: Some("Administrator mode expired; request elevation again before a privileged operation.".into()),
+                        }).await?;
+                    }
+                }
+
                 match queue.dispatch(command).await {
                     Ok(response) => send(&mut socket, &AuthFrame::Response { response }).await?,
                     Err(QueueError::Full) => {
@@ -408,8 +490,46 @@ fn load_tls_config(cert_path: &Path, key_path: &Path) -> Result<rustls::ServerCo
         .context("invalid TLS certificate/private-key pair")
 }
 
-fn random_token(bytes: usize) -> Result<String> {
-    let mut value = vec![0_u8; bytes];
+/// In-memory elevation grant for headless hosts. Verified against a password
+/// provided by the dashboard.
+#[derive(Debug, Clone)]
+struct HeadlessElevationGrant {
+    expires_at: Instant,
+}
+
+impl HeadlessElevationGrant {
+    fn new(ttl: Duration) -> Self {
+        Self {
+            expires_at: Instant::now() + ttl,
+        }
+    }
+
+    fn is_active(&self) -> bool {
+        Instant::now() < self.expires_at
+    }
+
+    fn expires_in_seconds(&self) -> Option<i64> {
+        self.expires_at
+            .checked_duration_since(Instant::now())
+            .map(|d| d.as_secs() as i64)
+    }
+}
+
+fn build_privilege_map(dispatcher: &super::Dispatcher) -> BTreeMap<String, Vec<String>> {
+    dispatcher
+        .capabilities()
+        .into_iter()
+        .map(|info| {
+            (
+                info.name.to_string(),
+                info.privileged_actions.iter().map(|s| s.to_string()).collect(),
+            )
+        })
+        .collect()
+}
+
+fn random_token(len: usize) -> Result<String> {
+    let mut value = vec![0_u8; len];
     rand::rng().fill(&mut value[..]);
     Ok(URL_SAFE_NO_PAD.encode(value))
 }
@@ -471,6 +591,7 @@ mod tests {
                 identity,
                 None,
                 Some("enroll-once".into()),
+                BTreeMap::new(),
             )
             .await
             .unwrap();
@@ -549,6 +670,7 @@ mod tests {
                 identity,
                 Some(controller_key),
                 None,
+                BTreeMap::new(),
             )
             .await
             .unwrap();

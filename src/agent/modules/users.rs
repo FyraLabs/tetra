@@ -23,8 +23,8 @@ use serde_json::{Value, json};
 use crate::agent::{
     AgentModule,
     module_support::{
-        ModuleInfo, ModuleStatus, NamedPayload, handle_metadata, parse_payload, run_command,
-        run_command_or_dry_run, unsupported_action,
+        ModuleInfo, ModuleStatus, NamedPayload, handle_metadata, parse_payload,
+        run_command_for_module, run_command_or_dry_run_for_module, unsupported_action,
     },
 };
 
@@ -48,6 +48,7 @@ const INFO: ModuleInfo = ModuleInfo {
         "set_password",
         "groups",
     ],
+    privileged_actions: &["create", "update", "delete", "set_password", "groups"],
 };
 
 /// Payload for `create`. All optional fields are forwarded to `useradd` only
@@ -109,7 +110,7 @@ impl AgentModule for UsersModule {
             // an existence check via the wrapped command's exit status.
             "status" => {
                 let payload: NamedPayload = parse_payload(payload)?;
-                run_command("id", [&payload.name])
+                run_command_for_module(&INFO, action, "id", [&payload.name])
             }
             "create" => {
                 let payload: CreatePayload = parse_payload(payload)?;
@@ -126,7 +127,7 @@ impl AgentModule for UsersModule {
                     args.extend(["--home-dir".into(), home]);
                 }
                 args.push(payload.name);
-                run_command_or_dry_run("useradd", args, payload.dry_run)
+                run_command_or_dry_run_for_module(&INFO, action, "useradd", args, payload.dry_run)
             }
             "update" => {
                 let payload: UpdatePayload = parse_payload(payload)?;
@@ -142,17 +143,19 @@ impl AgentModule for UsersModule {
                     args.extend(["--groups".into(), groups.join(",")]);
                 }
                 args.push(payload.name);
-                run_command_or_dry_run("usermod", args, payload.dry_run)
+                run_command_or_dry_run_for_module(&INFO, action, "usermod", args, payload.dry_run)
             }
             "delete" => {
                 let payload: NamedPayload = parse_payload(payload)?;
-                run_command_or_dry_run("userdel", [&payload.name], payload.dry_run)
+                run_command_or_dry_run_for_module(&INFO, action, "userdel", [&payload.name], payload.dry_run)
             }
             "set_password" => {
                 let payload: SetPasswordPayload = parse_payload(payload)?;
                 // The hash is passed through verbatim; `usermod --password`
                 // expects the same string `/etc/shadow` would store.
-                run_command_or_dry_run(
+                run_command_or_dry_run_for_module(
+                    &INFO,
+                    action,
                     "usermod",
                     ["--password", &payload.password_hash, &payload.name],
                     payload.dry_run,

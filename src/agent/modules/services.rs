@@ -17,8 +17,8 @@ use serde_json::{Value, json};
 use crate::agent::{
     AgentModule,
     module_support::{
-        ModuleInfo, ModuleStatus, handle_metadata, parse_payload, run_command,
-        run_command_or_dry_run, run_command_output, unsupported_action,
+        ModuleInfo, ModuleStatus, handle_metadata, parse_payload, run_command_for_module,
+        run_command_or_dry_run_for_module, run_command_output_for_module, unsupported_action,
     },
 };
 
@@ -37,6 +37,14 @@ const INFO: ModuleInfo = ModuleInfo {
         "list",
         "status",
         "logs",
+        "daemon_reload",
+        "start",
+        "stop",
+        "restart",
+        "enable",
+        "disable",
+    ],
+    privileged_actions: &[
         "daemon_reload",
         "start",
         "stop",
@@ -109,7 +117,9 @@ impl AgentModule for ServicesModule {
             // return the raw stdout alongside the parsed `services` array so a
             // controller can fall back to the verbatim table if needed.
             "list" => {
-                let result = run_command_output(
+                let result = run_command_output_for_module(
+                    &INFO,
+                    action,
                     "systemctl",
                     [
                         "--no-pager",
@@ -132,7 +142,9 @@ impl AgentModule for ServicesModule {
             }
             "status" => {
                 let payload: ServicePayload = parse_payload(payload)?;
-                run_command(
+                run_command_for_module(
+                    &INFO,
+                    action,
                     "systemctl",
                     systemctl_args(
                         payload.scope,
@@ -145,7 +157,9 @@ impl AgentModule for ServicesModule {
                 // `journalctl -u <unit>` follows the unit's journal across
                 // whatever files it spans; `-n` caps the tail to keep payloads
                 // bounded. `logs` is a read and therefore never dry-run.
-                run_command(
+                run_command_for_module(
+                    &INFO,
+                    action,
                     "journalctl",
                     journalctl_args(
                         payload.scope,
@@ -161,7 +175,9 @@ impl AgentModule for ServicesModule {
             }
             "daemon_reload" => {
                 let payload: DaemonReloadPayload = parse_payload(payload)?;
-                run_command_or_dry_run(
+                run_command_or_dry_run_for_module(
+                    &INFO,
+                    action,
                     "systemctl",
                     systemctl_args(payload.scope, ["daemon-reload"]),
                     payload.dry_run,
@@ -173,7 +189,9 @@ impl AgentModule for ServicesModule {
             // subcommand, which is why it can be forwarded directly.
             "start" | "stop" | "restart" | "enable" | "disable" => {
                 let payload: ServicePayload = parse_payload(payload)?;
-                run_command_or_dry_run(
+                run_command_or_dry_run_for_module(
+                    &INFO,
+                    action,
                     "systemctl",
                     systemctl_args(payload.scope, [action, &payload.service]),
                     payload.dry_run,

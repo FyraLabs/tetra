@@ -2,7 +2,7 @@
 //!
 //! This module intentionally does not enforce signatures yet. Transport
 //! negotiation will select a key and then call these helpers before dispatch.
-//! Keeping canonicalization here prevents HTTP, vsock, and WebSocket paths from
+//! Keeping canonicalization here prevents vsock and WebSocket paths from
 //! accidentally signing different representations of the same command.
 
 use anyhow::{Result, ensure};

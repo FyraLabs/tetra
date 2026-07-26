@@ -1,8 +1,8 @@
 //! Versioned authenticated-session protocol primitives shared by transports.
 //!
 //! WebSocket framing will use these types in the next transport increment. The
-//! validator is transport-neutral so HTTP migration tests, outbound WSS, and
-//! inbound development WSS cannot accidentally implement different replay rules.
+//! validator is transport-neutral so outbound WSS and inbound development WSS
+//! cannot accidentally implement different replay rules.
 
 use std::{
     collections::{HashSet, VecDeque},
@@ -51,21 +51,21 @@ pub enum AuthFrame {
     ElevationRevoke {
         session_id: String,
     },
-    PolkitPrompt {
+    PasswordPrompt {
         prompt_id: String,
         action_id: String,
         message: String,
         expires_at: i64,
     },
-    PolkitPromptCancel {
+    PasswordPromptCancel {
         prompt_id: String,
         reason: String,
     },
-    PolkitResponse {
+    PasswordResponse {
         prompt_id: String,
         response: String,
     },
-    PolkitCancel {
+    PasswordCancel {
         prompt_id: String,
     },
     Command {

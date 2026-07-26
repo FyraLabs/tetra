@@ -3,7 +3,7 @@ use serde_json::Value;
 
 /// A command envelope dispatched to the agent.
 ///
-/// This is the single shape every transport (HTTP, vsock, WSS) and the local
+/// This is the single shape every transport (vsock, WSS) and the local
 /// `agent-dispatch` CLI all accept. The [`Dispatcher`](super::Dispatcher) routes
 /// on `module` + `action` and hands `payload` to the matching module's
 /// `handle` method.

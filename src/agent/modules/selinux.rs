@@ -19,8 +19,8 @@ use serde_json::{Value, json};
 use crate::agent::{
     AgentModule,
     module_support::{
-        ModuleInfo, ModuleStatus, handle_metadata, parse_payload, run_command_or_dry_run,
-        run_command_output, unsupported_action,
+        ModuleInfo, ModuleStatus, handle_metadata, parse_payload,
+        run_command_or_dry_run_for_module, run_command_output_for_module, unsupported_action,
     },
 };
 
@@ -44,6 +44,13 @@ const INFO: ModuleInfo = ModuleInfo {
         "booleans",
         "set_boolean",
         "file_contexts",
+        "add_file_context",
+        "delete_file_context",
+        "restore_context",
+    ],
+    privileged_actions: &[
+        "enforce",
+        "set_boolean",
         "add_file_context",
         "delete_file_context",
         "restore_context",
@@ -131,7 +138,7 @@ impl AgentModule for SelinuxModule {
 
         match action {
             "status" => {
-                let result = run_command_output("sestatus", std::iter::empty::<&str>(), false)?;
+                let result = run_command_output_for_module(&INFO, action, "sestatus", std::iter::empty::<&str>(), false)?;
                 Ok(json!({
                     "command": result.command,
                     "status": result.status,
@@ -142,7 +149,7 @@ impl AgentModule for SelinuxModule {
                 }))
             }
             "enforce" => {
-                let result = run_command_output("getenforce", std::iter::empty::<&str>(), false)?;
+                let result = run_command_output_for_module(&INFO, action, "getenforce", std::iter::empty::<&str>(), false)?;
                 Ok(json!({
                     "command": result.command,
                     "status": result.status,
@@ -153,7 +160,7 @@ impl AgentModule for SelinuxModule {
                 }))
             }
             "booleans" => {
-                let result = run_command_output("getsebool", ["-a"], false)?;
+                let result = run_command_output_for_module(&INFO, action, "getsebool", ["-a"], false)?;
                 Ok(json!({
                     "command": result.command,
                     "status": result.status,
@@ -174,13 +181,13 @@ impl AgentModule for SelinuxModule {
                 }
                 args.push(payload.name);
                 args.push(boolean_value(payload.value).to_string());
-                run_command_or_dry_run("setsebool", args, payload.dry_run)
+                run_command_or_dry_run_for_module(&INFO, action, "setsebool", args, payload.dry_run)
             }
             "file_contexts" => {
                 // `semanage fcontext -l` dumps every fcontext rule the policy
                 // knows about; `parse_semanage_fcontext` below turns the
                 // tabular output into structured JSON.
-                let result = run_command_output("semanage", ["fcontext", "-l"], false)?;
+                let result = run_command_output_for_module(&INFO, action, "semanage", ["fcontext", "-l"], false)?;
                 Ok(json!({
                     "command": result.command,
                     "status": result.status,
@@ -194,7 +201,9 @@ impl AgentModule for SelinuxModule {
                 let payload: FileContextPayload = parse_payload(payload)?;
                 // The pattern is forwarded unchanged; the caller is
                 // responsible for the regex shape (e.g. `/srv(/.*)?`).
-                run_command_or_dry_run(
+                run_command_or_dry_run_for_module(
+                    &INFO,
+                    action,
                     "semanage",
                     [
                         "fcontext",
@@ -208,7 +217,9 @@ impl AgentModule for SelinuxModule {
             }
             "delete_file_context" => {
                 let payload: DeleteFileContextPayload = parse_payload(payload)?;
-                run_command_or_dry_run(
+                run_command_or_dry_run_for_module(
+                    &INFO,
+                    action,
                     "semanage",
                     ["fcontext", "-d", &payload.path_pattern],
                     payload.dry_run,
@@ -225,7 +236,7 @@ impl AgentModule for SelinuxModule {
                 // relabeling run against.
                 args.push("-v".to_string());
                 args.push(payload.path);
-                run_command_or_dry_run("restorecon", args, payload.dry_run)
+                run_command_or_dry_run_for_module(&INFO, action, "restorecon", args, payload.dry_run)
             }
             _ => unsupported_action(INFO.name, action),
         }
