@@ -236,7 +236,7 @@ impl AgentModule for ReverseProxyModule {
 
 /// Serde default for `tls`. Caddy auto-provisions HTTPS, so TLS is the
 /// safe default; callers must explicitly opt out.
-fn default_tls() -> bool {
+const fn default_tls() -> bool {
     true
 }
 
@@ -300,7 +300,7 @@ fn validate_upstream(upstream: &str) -> Result<String> {
         bail!("upstream must include a host and port, such as 127.0.0.1:8080");
     }
 
-    Ok(upstream.to_string())
+    Ok(upstream.to_owned())
 }
 
 /// Map a (validated) domain to a safe on-disk snippet filename.

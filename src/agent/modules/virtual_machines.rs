@@ -28,7 +28,7 @@ use crate::agent::{
     },
 };
 
-/// Marker type for the virtual_machines module. Stateless; all behavior lives
+/// Marker type for the `virtual_machines` module. Stateless; all behavior lives
 /// in the [`AgentModule`] impl and the static [`INFO`] descriptor.
 pub struct VirtualMachinesModule;
 
@@ -210,7 +210,7 @@ impl AgentModule for VirtualMachinesModule {
     }
 }
 
-fn default_log_lines() -> u16 {
+const fn default_log_lines() -> u16 {
     100
 }
 
@@ -259,7 +259,7 @@ fn parse_virsh_dominfo(stdout: &str) -> Value {
         };
         object.insert(
             key.trim().to_lowercase().replace(' ', "_"),
-            Value::String(value.trim().to_string()),
+            Value::String(value.trim().to_owned()),
         );
     }
     Value::Object(object)

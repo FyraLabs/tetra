@@ -57,7 +57,7 @@ impl FromStr for TransportEndpoint {
     fn from_str(value: &str) -> Result<Self> {
         if value.starts_with("wss://") || value.starts_with("ws://") {
             return Ok(Self::WebSocket {
-                url: value.to_string(),
+                url: value.to_owned(),
             });
         }
 

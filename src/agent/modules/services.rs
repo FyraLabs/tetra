@@ -237,7 +237,7 @@ fn journalctl_args<const N: usize>(scope: ServiceScope, args: [&str; N]) -> Vec<
     }
 }
 
-fn default_log_lines() -> u16 {
+const fn default_log_lines() -> u16 {
     100
 }
 

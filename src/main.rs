@@ -128,7 +128,7 @@ struct AgentWsServeCli {
 
 #[derive(Debug, Parser)]
 struct AgentConnectCli {
-    /// JSON transport config containing control_plane_url and optional TLS paths.
+    /// JSON transport config containing `control_plane_url` and optional TLS paths.
     #[arg(short, long, value_name = "FILE")]
     config: PathBuf,
 
@@ -182,16 +182,13 @@ fn render(cli: RenderCli) -> Result<()> {
 async fn agent_dispatch(cli: AgentDispatchCli) -> Result<()> {
     // Read the command envelope from either a path arg or stdin. Stdin lets
     // the agent be driven from a shell pipeline without a temp file.
-    let text = match cli.command {
-        Some(path) => fs::read_to_string(&path)
-            .with_context(|| format!("failed to read command `{}`", path.display()))?,
-        None => {
-            let mut text = String::new();
-            io::stdin()
-                .read_to_string(&mut text)
-                .context("failed to read command from stdin")?;
-            text
-        }
+    let text = if let Some(path) = cli.command { fs::read_to_string(&path)
+    .with_context(|| format!("failed to read command `{}`", path.display()))? } else {
+        let mut text = String::new();
+        io::stdin()
+            .read_to_string(&mut text)
+            .context("failed to read command from stdin")?;
+        text
     };
 
     let command: AgentCommand =

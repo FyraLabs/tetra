@@ -53,6 +53,7 @@ pub struct DispatchQueue {
 }
 
 impl DispatchQueue {
+    #[must_use] 
     pub fn spawn(backend: ActorRef<AgentBackend>, capacity: usize) -> Self {
         assert!(capacity > 0, "dispatch queue capacity must be positive");
         let (sender, mut receiver) = mpsc::channel::<QueuedCommand>(capacity);
@@ -99,6 +100,7 @@ impl DispatchQueue {
         receiver.await.map_err(|_| QueueError::Closed)
     }
 
+    #[must_use] 
     pub fn metrics(&self) -> QueueMetrics {
         QueueMetrics {
             capacity: self.capacity,

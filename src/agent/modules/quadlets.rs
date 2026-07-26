@@ -24,7 +24,7 @@
 //! The split exists because on bootc-style image systems the Quadlet scan
 //! directories may sit on an immutable image layer, while companion content
 //! is mutable app data and must live in a writable data root. Keeping the
-//! two roots separate also lets SELinux policy and config backups apply
+//! two roots separate also lets `SELinux` policy and config backups apply
 //! independently to each.
 //!
 //! Scope is selected per request via `scope: "user" | "system"` (default
@@ -60,7 +60,7 @@ pub struct QuadletsModule;
 /// Static module descriptor advertised to the control plane via
 /// `capabilities`/`plan`. Marked `Available` because this module has no
 /// optional host dependencies — it only touches the filesystem and shells
-/// out for SELinux when explicitly requested.
+/// out for `SELinux` when explicitly requested.
 const INFO: ModuleInfo = ModuleInfo {
     name: "quadlets",
     feature: "quadlets",
@@ -197,7 +197,7 @@ enum QuadletScope {
 /// generically by `handle_metadata` and return early; everything else is
 /// matched below. Mutating actions (`write`, `delete`, `install`) honor
 /// `dry_run`: they skip filesystem side effects but still report the path
-/// and the SELinux commands that *would* have run, so callers can preview a
+/// and the `SELinux` commands that *would* have run, so callers can preview a
 /// real apply.
 impl AgentModule for QuadletsModule {
     fn info(&self) -> ModuleInfo {
@@ -480,7 +480,7 @@ fn quadlet_bundle_name(filename: &str) -> Result<String> {
     if !QUADLET_EXTENSIONS.contains(&extension) || stem.is_empty() {
         bail!("`{filename}` is not a supported Quadlet filename");
     }
-    Ok(stem.to_string())
+    Ok(stem.to_owned())
 }
 
 /// List Quadlet unit files directly under `base_dir` (non-recursive). Only
@@ -505,7 +505,7 @@ fn list_quadlets(base_dir: &Path) -> Result<Vec<QuadletFile>> {
         };
         if is_quadlet_filename(filename) {
             files.push(QuadletFile {
-                filename: filename.to_string(),
+                filename: filename.to_owned(),
                 path,
             });
         }

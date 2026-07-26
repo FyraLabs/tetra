@@ -47,6 +47,7 @@ pub struct Dispatcher {
 }
 
 impl Dispatcher {
+    #[must_use] 
     pub fn new() -> Self {
         Self::default()
     }
@@ -61,13 +62,14 @@ impl Dispatcher {
     /// same name replaces the earlier one.
     pub fn register(&mut self, module: impl AgentModule + 'static) {
         self.modules
-            .insert(module.name().to_string(), Box::new(module));
+            .insert(module.name().to_owned(), Box::new(module));
     }
 
     /// Dispatch one command: route it to the matching module, or to the
     /// built-in `agent.capabilities` action. Any error becomes an
     /// `AgentResponse::error` with the same command `id` — the caller always
     /// gets a well-formed response, never a panic.
+    #[must_use] 
     pub fn dispatch(&self, command: AgentCommand) -> AgentResponse {
         match self.try_dispatch(&command) {
             Ok(payload) => AgentResponse::ok(command.id, payload),
@@ -77,6 +79,7 @@ impl Dispatcher {
 
     /// Snapshot of every module's [`ModuleInfo`]. Used to answer
     /// `agent.capabilities`; also useful for diagnostics and tests.
+    #[must_use] 
     pub fn capabilities(&self) -> Vec<ModuleInfo> {
         self.modules.values().map(|module| module.info()).collect()
     }

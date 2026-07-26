@@ -14,7 +14,7 @@ use serde_json::Value;
 /// `signature` is reserved for future command signing. It is currently only
 /// checked for emptiness (see [`Dispatcher::dispatch`](super::Dispatcher)); a
 /// non-empty value is accepted but not yet verified against a key.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentCommand {
     pub id: String,
     pub module: String,
@@ -33,7 +33,7 @@ pub struct AgentCommand {
 ///
 /// Exactly one of `payload` (success) or `error` (failure) is set; the
 /// `skip_serializing_if` attributes keep the wire format compact.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentResponse {
     pub id: String,
     pub ok: bool,

@@ -1,11 +1,11 @@
-//! SELinux management module.
+//! `SELinux` management module.
 //!
-//! Wraps the userspace SELinux toolchain (`sestatus`, `getenforce`,
+//! Wraps the userspace `SELinux` toolchain (`sestatus`, `getenforce`,
 //! `getsebool`, `setsebool`, `semanage fcontext`, `restorecon`) so the
 //! control plane can inspect and change policy state through the standard
 //! module envelope.
 //!
-//! This module owns *policy-level* SELinux operations: querying mode,
+//! This module owns *policy-level* `SELinux` operations: querying mode,
 //! flipping booleans, and registering or removing file-context rules plus
 //! relabeling. Modules that merely *apply* a label to a path they manage
 //! (storage, samba, nfs, files, quadlets, network) do not call into this
@@ -24,9 +24,9 @@ use crate::agent::{
     },
 };
 
-/// SELinux module entry point registered under feature `selinux`.
+/// `SELinux` module entry point registered under feature `selinux`.
 ///
-/// Stateless: every action is a fresh invocation of an underlying SELinux
+/// Stateless: every action is a fresh invocation of an underlying `SELinux`
 /// tool, so there is nothing to hold across requests.
 pub struct SelinuxModule;
 
@@ -192,10 +192,10 @@ impl AgentModule for SelinuxModule {
                 // survives reboot; without it the change lives only in the
                 // running policy and is lost on the next load.
                 if payload.persistent {
-                    args.push("-P".to_string());
+                    args.push("-P".to_owned());
                 }
                 args.push(payload.name);
-                args.push(boolean_value(payload.value).to_string());
+                args.push(boolean_value(payload.value).to_owned());
                 run_command_or_dry_run_for_module(
                     &INFO,
                     action,
@@ -260,12 +260,12 @@ impl AgentModule for SelinuxModule {
                 let payload: RestoreContextPayload = parse_payload(payload)?;
                 let mut args = Vec::new();
                 if payload.recursive {
-                    args.push("-R".to_string());
+                    args.push("-R".to_owned());
                 }
                 // -v is always on so the response stdout lists every relabeled
                 // path — that listing is what operators expect to audit a
                 // relabeling run against.
-                args.push("-v".to_string());
+                args.push("-v".to_owned());
                 args.push(payload.path);
                 run_command_or_dry_run_for_module(
                     &INFO,
@@ -281,11 +281,11 @@ impl AgentModule for SelinuxModule {
     }
 }
 
-fn default_persistent() -> bool {
+const fn default_persistent() -> bool {
     true
 }
 
-fn boolean_value(value: bool) -> &'static str {
+const fn boolean_value(value: bool) -> &'static str {
     if value { "on" } else { "off" }
 }
 
@@ -298,7 +298,7 @@ fn parse_sestatus(stdout: &str) -> Value {
         let Some((key, value)) = line.split_once(':') else {
             continue;
         };
-        object.insert(normalize_key(key), Value::String(value.trim().to_string()));
+        object.insert(normalize_key(key), Value::String(value.trim().to_owned()));
     }
     Value::Object(object)
 }
@@ -353,7 +353,7 @@ fn parse_semanage_fcontext(stdout: &str) -> Vec<Value> {
         .collect()
 }
 
-/// Pulls the SELinux *type* out of a `user:role:type:level` context string.
+/// Pulls the `SELinux` *type* out of a `user:role:type:level` context string.
 ///
 /// The type is the third colon-separated field — the part callers actually
 /// compare against labels like `container_file_t` or `samba_share_t`.

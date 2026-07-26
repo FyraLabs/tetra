@@ -145,41 +145,38 @@ async fn handle_connection(
         .context("WebSocket handshake failed")?;
     let session_id = random_token(24)?;
     let challenge = random_token(32)?;
-    let controller_key = match controller_key {
-        Some(key) => key,
-        None => {
-            send(
-                &mut socket,
-                &AuthFrame::EnrollmentRequired {
-                    host_fingerprint: public_key_fingerprint(&identity.verifying_key()),
-                },
-            )
-            .await?;
-            let Some(message) = socket.next().await else {
-                bail!("peer disconnected before enrollment")
-            };
-            let AuthFrame::Enroll { token, public_key } = parse_message(message?)? else {
-                send_error(&mut socket, "controller enrollment is required").await?;
-                bail!("peer sent non-enrollment frame to unpaired host")
-            };
-            let expected_token = enrollment_token
-                .as_deref()
-                .ok_or_else(|| anyhow::anyhow!("no enrollment token configured"))?;
-            if token != expected_token {
-                send_error(&mut socket, "invalid enrollment token").await?;
-                bail!("invalid enrollment token")
-            }
-            let key = parse_verifying_key(&public_key).context("invalid enrollment public key")?;
-            identity.enroll_controller_key(&public_key)?;
-            send(
-                &mut socket,
-                &AuthFrame::Response {
-                    response: super::AgentResponse::ok("enrolled", json!({"host_fingerprint": public_key_fingerprint(&identity.verifying_key())})),
-                },
-            )
-            .await?;
-            key
+    let controller_key = if let Some(key) = controller_key { key } else {
+        send(
+            &mut socket,
+            &AuthFrame::EnrollmentRequired {
+                host_fingerprint: public_key_fingerprint(&identity.verifying_key()),
+            },
+        )
+        .await?;
+        let Some(message) = socket.next().await else {
+            bail!("peer disconnected before enrollment")
+        };
+        let AuthFrame::Enroll { token, public_key } = parse_message(message?)? else {
+            send_error(&mut socket, "controller enrollment is required").await?;
+            bail!("peer sent non-enrollment frame to unpaired host")
+        };
+        let expected_token = enrollment_token
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("no enrollment token configured"))?;
+        if token != expected_token {
+            send_error(&mut socket, "invalid enrollment token").await?;
+            bail!("invalid enrollment token")
         }
+        let key = parse_verifying_key(&public_key).context("invalid enrollment public key")?;
+        identity.enroll_controller_key(&public_key)?;
+        send(
+            &mut socket,
+            &AuthFrame::Response {
+                response: super::AgentResponse::ok("enrolled", json!({"host_fingerprint": public_key_fingerprint(&identity.verifying_key())})),
+            },
+        )
+        .await?;
+        key
     };
 
     send(
@@ -364,7 +361,7 @@ async fn handle_connection(
             AuthFrame::Command { .. } => {
                 let now = unix_timestamp()?;
                 let mut command = session.accept_command(&frame, now)?.clone();
-                command.user = session.user().map(|u| u.to_string());
+                command.user = session.user().map(std::borrow::ToOwned::to_owned);
 
                 // Reject privileged actions when there is no active elevation grant.
                 if let Some(actions) = privileged_actions.get(&command.module)
@@ -531,10 +528,10 @@ fn build_privilege_map(dispatcher: &super::Dispatcher) -> BTreeMap<String, Vec<S
         .into_iter()
         .map(|info| {
             (
-                info.name.to_string(),
+                info.name.to_owned(),
                 info.privileged_actions
                     .iter()
-                    .map(|s| s.to_string())
+                    .map(|s| (*s).to_owned())
                     .collect(),
             )
         })

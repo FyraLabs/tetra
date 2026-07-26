@@ -116,7 +116,7 @@ impl AgentModule for UsersModule {
                 let payload: CreatePayload = parse_payload(payload)?;
                 let mut args = Vec::new();
                 if payload.system {
-                    args.push("--system".to_string());
+                    args.push("--system".to_owned());
                 }
                 if let Some(shell) = payload.shell {
                     args.extend(["--shell".into(), shell]);

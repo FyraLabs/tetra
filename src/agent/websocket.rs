@@ -136,10 +136,10 @@ async fn connect_once(
         &TransportFrame::Hello {
             host_id: config.host_id.clone(),
             agent_version: env!("CARGO_PKG_VERSION").to_string(),
-            protocol_version: PROTOCOL_VERSION.to_string(),
+            protocol_version: PROTOCOL_VERSION.to_owned(),
             hostname: hostname(),
-            os: env::consts::OS.to_string(),
-            arch: env::consts::ARCH.to_string(),
+            os: env::consts::OS.to_owned(),
+            arch: env::consts::ARCH.to_owned(),
         },
     )
     .await?;

@@ -71,6 +71,7 @@ pub fn sign_command(
 }
 
 /// Sign a connection challenge during WebSocket authentication.
+#[must_use] 
 pub fn sign_challenge(
     signing_key: &SigningKey,
     protocol_version: &str,
@@ -149,6 +150,7 @@ fn canonicalize(value: Value) -> Value {
 }
 
 /// Return a compact public-key fingerprint for enrollment and logs.
+#[must_use] 
 pub fn public_key_fingerprint(verifying_key: &VerifyingKey) -> String {
     URL_SAFE_NO_PAD.encode(verifying_key.as_bytes())
 }

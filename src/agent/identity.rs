@@ -62,16 +62,20 @@ impl HostIdentity {
         })
     }
 
-    pub fn signing_key(&self) -> &SigningKey {
+    #[must_use] 
+    pub const fn signing_key(&self) -> &SigningKey {
         &self.signing_key
     }
+    #[must_use] 
     pub fn verifying_key(&self) -> VerifyingKey {
         self.signing_key.verifying_key()
     }
+    #[must_use] 
     pub fn path(&self) -> &Path {
         &self.path
     }
 
+    #[must_use] 
     pub fn directory(&self) -> &Path {
         self.path
             .parent()
@@ -85,7 +89,7 @@ impl HostIdentity {
         }
         let value = fs::read_to_string(&path)
             .with_context(|| format!("failed to read controller key `{}`", path.display()))?;
-        let value = value.trim().to_string();
+        let value = value.trim().to_owned();
         ensure!(!value.is_empty(), "controller public key is empty");
         Ok(Some(value))
     }

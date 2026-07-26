@@ -37,7 +37,7 @@ use tera::{Context as TeraContext, Tera};
 /// `description`, `category`, `icon`, and `version` are UI metadata surfaced
 /// to the dashboard. `parameters` become keys in the Tera render context, and
 /// `resources` are the files to produce.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AppRecipe {
     /// Stable identifier the catalog indexes recipes by and templates can
     /// reference via `{{ recipe_id }}`.
@@ -93,7 +93,7 @@ pub enum Requirement {
 /// value. Validation in [`validate_parameter_value`] mirrors `kind` so that a
 /// malformed `values.yaml` fails fast with a clear error instead of producing
 /// a broken unit file.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Parameter {
     /// Context key the template references. Must be unique within a recipe.
     pub key: String,
@@ -161,7 +161,7 @@ pub enum Generator {
 /// `{{ app_id }}.container` is resolved using the same context as the template
 /// body. `condition` allows optional resources (e.g. a Redis sidecar) to be
 /// skipped based on parameter values.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Resource {
     /// What kind of unit/file this is. Renamed from the YAML `type` field.
     /// Determines the Quadlet extension appended in [`resource_extension`].
@@ -398,7 +398,7 @@ fn render_recipe_with_loader(
 ///
 /// `File` returns an empty extension because companion files keep their own
 /// names (e.g. `index.html`) rather than following the Quadlet naming scheme.
-fn resource_extension(resource: &Resource) -> &'static str {
+const fn resource_extension(resource: &Resource) -> &'static str {
     match resource.kind {
         ResourceKind::Container => ".container",
         ResourceKind::Network => ".network",
@@ -419,9 +419,9 @@ fn resource_extension(resource: &Resource) -> &'static str {
 fn resource_name(filename: &str, resource: &Resource) -> String {
     let extension = resource_extension(resource);
     if extension.is_empty() {
-        filename.to_string()
+        filename.to_owned()
     } else {
-        filename.trim_end_matches(extension).to_string()
+        filename.trim_end_matches(extension).to_owned()
     }
 }
 
@@ -611,7 +611,7 @@ fn parse_condition_literal(value: &str) -> Result<JsonValue> {
         other if other.parse::<i64>().is_ok() => {
             Ok(JsonValue::Number(other.parse::<i64>()?.into()))
         }
-        other => Ok(JsonValue::String(other.to_string())),
+        other => Ok(JsonValue::String(other.to_owned())),
     }
 }
 

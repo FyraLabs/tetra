@@ -94,7 +94,7 @@ pub struct ServicePayload {
     pub dry_run: bool,
 }
 
-/// The shared SELinux labeling options accepted by any module that creates or
+/// The shared `SELinux` labeling options accepted by any module that creates or
 /// manages host paths.
 ///
 /// This is the dashboard's single knob for "label this path too" — e.g. a
@@ -151,7 +151,7 @@ where
 
 /// Run a host command that is expected to print JSON to stdout, and return a
 /// composite value that includes the parsed stdout (`data`) alongside the
-/// command metadata (status, raw stdout/stderr, dry_run flag).
+/// command metadata (status, raw stdout/stderr, `dry_run` flag).
 ///
 /// This is the helper for commands like `podman inspect --format json` where
 /// the interesting content is structured — callers get the parsed value
@@ -364,7 +364,7 @@ where
     run_command_output_as(program, args, dry_run, effective_user(info, action, user))
 }
 
-/// Apply SELinux file-context labeling to a path as part of a module action.
+/// Apply `SELinux` file-context labeling to a path as part of a module action.
 ///
 /// Two phases:
 /// 1. If `context_type` is set, run `semanage fcontext -a -t <type>
@@ -431,9 +431,9 @@ pub fn apply_selinux(
     if let Some(path) = path {
         let mut args = Vec::new();
         if options.recursive {
-            args.push("-R".to_string());
+            args.push("-R".to_owned());
         }
-        args.push("-v".to_string());
+        args.push("-v".to_owned());
         args.push(path);
         operations.push(run_command_or_dry_run("restorecon", args, dry_run)?);
     }
@@ -462,8 +462,9 @@ pub fn safe_join(base: &Path, name: &str) -> Result<PathBuf> {
 
 /// Render a command and its args as a single space-joined display string.
 /// Used both for dry-run previews and for error messages (`\`foo bar\` failed`).
+#[must_use] 
 pub fn command_display(program: &str, args: &[String]) -> String {
-    std::iter::once(program.to_string())
+    std::iter::once(program.to_owned())
         .chain(args.iter().cloned())
         .collect::<Vec<_>>()
         .join(" ")
@@ -476,7 +477,7 @@ fn default_fcontext_pattern(path: &str, recursive: bool) -> String {
     if recursive {
         format!("{path}(/.*)?")
     } else {
-        path.to_string()
+        path.to_owned()
     }
 }
 

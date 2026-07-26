@@ -29,18 +29,21 @@ pub struct AgentBackend {
 impl AgentBackend {
     /// Wrap a pre-built dispatcher. Use this when a transport needs a
     /// non-default module set.
-    pub fn new(dispatcher: Dispatcher) -> Self {
+    #[must_use] 
+    pub const fn new(dispatcher: Dispatcher) -> Self {
         Self { dispatcher }
     }
 
     /// Build a backend with the default feature-gated module set
     /// ([`modules::default_dispatcher`]).
+    #[must_use] 
     pub fn with_default_modules() -> Self {
         Self::new(modules::default_dispatcher())
     }
 
     /// Spawn an actor backed by the default module set and return a handle
     /// the caller can `ask` from any async task.
+    #[must_use] 
     pub fn spawn_default() -> ActorRef<Self> {
         Self::spawn(modules::default_dispatcher())
     }

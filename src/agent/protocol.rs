@@ -18,7 +18,7 @@ pub const PROTOCOL_VERSION: &str = "2026-07-auth-v1";
 pub const DEFAULT_CLOCK_SKEW_SECONDS: i64 = 5 * 60;
 pub const DEFAULT_NONCE_LIMIT: usize = 4096;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AuthFrame {
     EnrollmentRequired {
@@ -147,10 +147,12 @@ impl AuthenticatedSession {
         })
     }
 
+    #[must_use] 
     pub fn user(&self) -> Option<&str> {
         self.user.as_deref()
     }
 
+    #[must_use] 
     pub fn session_id(&self) -> &str {
         &self.session_id
     }
@@ -234,6 +236,7 @@ struct SignedChallenge<'a> {
 
 /// Canonical challenge bytes signed during authentication. A struct fixes field
 /// order, avoiding JSON-map implementation differences between Rust and Node.
+#[must_use] 
 pub fn challenge_bytes(protocol_version: &str, session_id: &str, challenge: &str) -> Vec<u8> {
     serde_json::to_vec(&SignedChallenge {
         protocol_version,

@@ -5,7 +5,7 @@
 //! systemd unit (reload/enable/disable). The `set_config` action also accepts
 //! the shared `selinux` payload so a share directory can be labeled
 //! `samba_share_t` in the same request that defines the share — otherwise
-//! SELinux will deny smbd access to the path on enforcing hosts.
+//! `SELinux` will deny smbd access to the path on enforcing hosts.
 
 use std::{fs, path::PathBuf};
 
@@ -184,7 +184,7 @@ fn parse_samba_shares(contents: &str) -> Vec<String> {
         .lines()
         .map(str::trim)
         .filter(|line| line.starts_with('[') && line.ends_with(']'))
-        .map(|line| line.trim_matches(&['[', ']'][..]).to_string())
+        .map(|line| line.trim_matches(&['[', ']'][..]).to_owned())
         .filter(|name| !name.eq_ignore_ascii_case("global"))
         .collect()
 }

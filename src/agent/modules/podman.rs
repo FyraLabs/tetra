@@ -154,7 +154,7 @@ impl AgentModule for PodmanModule {
     }
 }
 
-fn default_log_lines() -> u16 {
+const fn default_log_lines() -> u16 {
     100
 }
 
