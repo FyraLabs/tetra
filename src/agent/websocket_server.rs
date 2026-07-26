@@ -361,31 +361,31 @@ async fn handle_connection(
                 let command = session.accept_command(&frame, now)?.clone();
 
                 // Reject privileged actions when there is no active elevation grant.
-                if let Some(actions) = privileged_actions.get(&command.module) {
-                    if actions.contains(&command.action) {
-                        match &elevation {
-                            Some(grant) if grant.is_active() => {}
-                            _ => {
-                                send_error(
-                                    &mut socket,
-                                    "privileged action requires elevation; request elevation first",
-                                )
-                                .await?;
-                                continue;
-                            }
+                if let Some(actions) = privileged_actions.get(&command.module)
+                    && actions.contains(&command.action)
+                {
+                    match &elevation {
+                        Some(grant) if grant.is_active() => {}
+                        _ => {
+                            send_error(
+                                &mut socket,
+                                "privileged action requires elevation; request elevation first",
+                            )
+                            .await?;
+                            continue;
                         }
                     }
                 }
 
-                if let Some(grant) = &elevation {
-                    if !grant.is_active() {
-                        elevation = None;
-                        send(&mut socket, &AuthFrame::ElevationStatus {
-                            state: super::protocol::ElevationState::Inactive,
-                            expires_at: None,
-                            message: Some("Administrator mode expired; request elevation again before a privileged operation.".into()),
-                        }).await?;
-                    }
+                if let Some(grant) = &elevation
+                    && !grant.is_active()
+                {
+                    elevation = None;
+                    send(&mut socket, &AuthFrame::ElevationStatus {
+                        state: super::protocol::ElevationState::Inactive,
+                        expires_at: None,
+                        message: Some("Administrator mode expired; request elevation again before a privileged operation.".into()),
+                    }).await?;
                 }
 
                 match queue.dispatch(command).await {

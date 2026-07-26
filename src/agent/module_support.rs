@@ -269,12 +269,10 @@ where
 /// actions currently also return `None`; in the future they will derive the
 /// user from the linked Fyra account so non-privileged commands run under that
 /// identity instead of root.
-fn choose_user(info: &ModuleInfo, action: &str) -> Option<&'static str> {
-    if info.is_privileged(action) {
-        None
-    } else {
-        None
-    }
+fn choose_user(_info: &ModuleInfo, _action: &str) -> Option<&'static str> {
+    // Currently runs everything as root. In the future this will derive the
+    // user from the linked Fyra account for non-privileged actions.
+    None
 }
 
 /// Like [`run_command`], but respects [`ModuleInfo::privileged_actions`] and
