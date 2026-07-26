@@ -17,7 +17,7 @@ use crate::agent::{
     AgentModule,
     module_support::{
         ModuleInfo, ModuleStatus, SelinuxOptions, apply_selinux, handle_metadata, parse_payload,
-        run_command_or_dry_run, unsupported_action,
+        run_command_or_dry_run_for_module, unsupported_action,
     },
 };
 
@@ -40,6 +40,7 @@ const INFO: ModuleInfo = ModuleInfo {
         "enable",
         "disable",
     ],
+    privileged_actions: &["set_config", "reload", "enable", "disable"],
 };
 
 /// Payload for read actions (`list_shares`, `get_config`). Defaults to
@@ -126,7 +127,9 @@ impl AgentModule for SambaModule {
             }
             "reload" => {
                 let payload: DryRunPayload = parse_payload(payload)?;
-                run_command_or_dry_run(
+                run_command_or_dry_run_for_module(
+                    &INFO,
+                    action,
                     "systemctl",
                     ["reload-or-restart", "smb.service"],
                     payload.dry_run,
@@ -134,7 +137,9 @@ impl AgentModule for SambaModule {
             }
             "enable" => {
                 let payload: DryRunPayload = parse_payload(payload)?;
-                run_command_or_dry_run(
+                run_command_or_dry_run_for_module(
+                    &INFO,
+                    action,
                     "systemctl",
                     ["enable", "--now", "smb.service"],
                     payload.dry_run,
@@ -142,7 +147,9 @@ impl AgentModule for SambaModule {
             }
             "disable" => {
                 let payload: DryRunPayload = parse_payload(payload)?;
-                run_command_or_dry_run(
+                run_command_or_dry_run_for_module(
+                    &INFO,
+                    action,
                     "systemctl",
                     ["disable", "--now", "smb.service"],
                     payload.dry_run,

@@ -1,8 +1,8 @@
 //! Versioned authenticated-session protocol primitives shared by transports.
 //!
 //! WebSocket framing will use these types in the next transport increment. The
-//! validator is transport-neutral so HTTP migration tests, outbound WSS, and
-//! inbound development WSS cannot accidentally implement different replay rules.
+//! validator is transport-neutral so outbound WSS and inbound development WSS
+//! cannot accidentally implement different replay rules.
 
 use std::{
     collections::{HashSet, VecDeque},
@@ -21,6 +21,13 @@ pub const DEFAULT_NONCE_LIMIT: usize = 4096;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AuthFrame {
+    EnrollmentRequired {
+        host_fingerprint: String,
+    },
+    Enroll {
+        token: String,
+        public_key: String,
+    },
     Challenge {
         protocol_version: String,
         session_id: String,
@@ -32,6 +39,34 @@ pub enum AuthFrame {
         session_id: String,
         public_key: String,
         signature: String,
+    },
+    ElevationStatus {
+        state: ElevationState,
+        expires_at: Option<i64>,
+        message: Option<String>,
+    },
+    ElevationRequest {
+        session_id: String,
+    },
+    ElevationRevoke {
+        session_id: String,
+    },
+    PasswordPrompt {
+        prompt_id: String,
+        action_id: String,
+        message: String,
+        expires_at: i64,
+    },
+    PasswordPromptCancel {
+        prompt_id: String,
+        reason: String,
+    },
+    PasswordResponse {
+        prompt_id: String,
+        response: String,
+    },
+    PasswordCancel {
+        prompt_id: String,
     },
     Command {
         session_id: String,
@@ -46,6 +81,16 @@ pub enum AuthFrame {
     Error {
         error: String,
     },
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ElevationState {
+    Inactive,
+    Pending,
+    Active,
+    ExistingAgent,
+    Unavailable,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -170,14 +215,21 @@ pub fn unix_timestamp() -> Result<i64> {
         .as_secs() as i64)
 }
 
-/// Canonical challenge bytes signed during authentication. Keeping this here
-/// prevents a client and server from accidentally signing different fields.
+#[derive(Serialize)]
+struct SignedChallenge<'a> {
+    protocol_version: &'a str,
+    session_id: &'a str,
+    challenge: &'a str,
+}
+
+/// Canonical challenge bytes signed during authentication. A struct fixes field
+/// order, avoiding JSON-map implementation differences between Rust and Node.
 pub fn challenge_bytes(protocol_version: &str, session_id: &str, challenge: &str) -> Vec<u8> {
-    serde_json::to_vec(&serde_json::json!({
-        "protocol_version": protocol_version,
-        "session_id": session_id,
-        "challenge": challenge,
-    }))
+    serde_json::to_vec(&SignedChallenge {
+        protocol_version,
+        session_id,
+        challenge,
+    })
     .expect("challenge fields are always serializable")
 }
 

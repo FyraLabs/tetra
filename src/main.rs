@@ -7,13 +7,14 @@ use std::{
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
+
 use tetra::{
     agent::{
         AgentCommand, backend,
-        http::{self, HttpAgentConfig},
         transport::TransportConfig,
         vsock::{self, VsockAgentConfig},
         websocket::{self, WebSocketAgentConfig},
+        websocket_server::{self, WebSocketServerConfig},
     },
     catalog::{self, RenderOptions},
 };
@@ -23,17 +24,18 @@ use tetra::{
 /// The binary has two broad modes, exposed as subcommands:
 ///
 /// - **Recipe rendering** (`render`) — pure local tooling that turns a YAML
-///   recipe + Tera templates into Quadlet and companion files. No agent
+///   recipe + Tera templates into container unit and companion files. No agent
 ///   backend, no transport.
-/// - **Agent** (`agent-dispatch`, `agent-serve`, `agent-vsock-serve`,
-///   `agent-connect`) — the same Kameo-backed dispatcher exposed through four
-///   different surfaces: a one-shot CLI, a dev HTTP API, a vsock smoke-test
-///   listener, and the production outbound WSS control-plane connection.
+/// - **Agent** (`agent-dispatch`, `agent-vsock-serve`, `agent-connect`,
+///   `agent-ws-serve`) — the same Kameo-backed dispatcher exposed through
+///   different surfaces: a one-shot CLI, a vsock smoke-test listener, an
+///   outbound WSS control-plane connection, and an authenticated inbound
+///   WebSocket for the dashboard.
 #[derive(Debug, Parser)]
 #[command(
     author,
     version,
-    about = "Tetra agent and recipe tooling for generating Podman Quadlets"
+    about = "Tetra agent and recipe tooling for managing hosts"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -42,20 +44,20 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Commands {
-    /// Render a Tetra app recipe into Quadlet files with Tera templates.
+    /// Render a Tetra app recipe into container unit files with Tera templates.
     Render(RenderCli),
 
     /// Dispatch one signed agent command envelope locally.
     AgentDispatch(AgentDispatchCli),
-
-    /// Serve the local agent backend over a small HTTP API.
-    AgentServe(AgentServeCli),
 
     /// Serve the local agent backend over a Linux virtio-vsock listener.
     AgentVsockServe(AgentVsockServeCli),
 
     /// Connect the local agent backend to an outbound WSS control plane.
     AgentConnect(AgentConnectCli),
+
+    /// Serve an authenticated WebSocket for a dashboard client.
+    AgentWsServe(AgentWsServeCli),
 }
 
 #[derive(Debug, Parser)]
@@ -71,7 +73,7 @@ struct RenderCli {
     #[arg(short, long, value_name = "DIR")]
     templates_dir: PathBuf,
 
-    /// Directory where rendered Quadlet files should be written.
+    /// Directory where rendered files should be written.
     #[arg(short, long, value_name = "DIR")]
     output_dir: Option<PathBuf>,
 
@@ -87,17 +89,6 @@ struct AgentDispatchCli {
 }
 
 #[derive(Debug, Parser)]
-struct AgentServeCli {
-    /// Address for the test HTTP agent API to listen on.
-    #[arg(long, default_value = "127.0.0.1:7777")]
-    listen: SocketAddr,
-
-    /// Optional bearer token required by browser clients.
-    #[arg(long, env = "TETRA_AGENT_TOKEN")]
-    bearer_token: Option<String>,
-}
-
-#[derive(Debug, Parser)]
 struct AgentVsockServeCli {
     /// Vsock port to listen on inside the VM guest.
     #[arg(long, default_value_t = 2048)]
@@ -106,6 +97,33 @@ struct AgentVsockServeCli {
     /// Maximum accepted command JSON body size in bytes.
     #[arg(long, default_value_t = 1024 * 1024)]
     max_command_bytes: usize,
+}
+
+#[derive(Debug, Parser)]
+struct AgentWsServeCli {
+    /// Loopback address for the WebSocket listener.
+    #[arg(long, default_value = "127.0.0.1:7780")]
+    listen: SocketAddr,
+
+    /// URL-safe base64 Ed25519 public key enrolled for the dashboard controller.
+    #[arg(long, env = "TETRA_CONTROLLER_PUBLIC_KEY")]
+    controller_public_key: Option<String>,
+
+    /// One-time token accepted to enroll a controller while no key is stored.
+    #[arg(long, env = "TETRA_ENROLLMENT_TOKEN")]
+    enrollment_token: Option<String>,
+
+    /// Mutable identity directory. Defaults to /var/lib/tetra/identity.
+    #[arg(long, default_value = "/var/lib/tetra/identity")]
+    identity_dir: PathBuf,
+
+    /// PEM certificate for WSS. Required with --tls-key for non-loopback binds.
+    #[arg(long)]
+    tls_cert: Option<PathBuf>,
+
+    /// PEM private key for WSS. Required with --tls-cert for non-loopback binds.
+    #[arg(long)]
+    tls_key: Option<PathBuf>,
 }
 
 #[derive(Debug, Parser)]
@@ -130,9 +148,9 @@ async fn main() -> Result<()> {
     match cli.command {
         Commands::Render(cli) => render(cli),
         Commands::AgentDispatch(cli) => agent_dispatch(cli).await,
-        Commands::AgentServe(cli) => agent_serve(cli).await,
         Commands::AgentVsockServe(cli) => agent_vsock_serve(cli),
         Commands::AgentConnect(cli) => agent_connect(cli).await,
+        Commands::AgentWsServe(cli) => agent_ws_serve(cli).await,
     }
 }
 
@@ -186,17 +204,14 @@ async fn agent_dispatch(cli: AgentDispatchCli) -> Result<()> {
     Ok(())
 }
 
-async fn agent_serve(cli: AgentServeCli) -> Result<()> {
-    eprintln!("serving Tetra agent API on http://{}", cli.listen);
-    if cli.bearer_token.is_some() {
-        eprintln!("bearer token authentication is enabled");
-    } else {
-        eprintln!("bearer token authentication is disabled");
-    }
-
-    http::serve(HttpAgentConfig {
+async fn agent_ws_serve(cli: AgentWsServeCli) -> Result<()> {
+    websocket_server::serve(WebSocketServerConfig {
         listen: cli.listen,
-        bearer_token: cli.bearer_token,
+        controller_public_key: cli.controller_public_key,
+        enrollment_token: cli.enrollment_token,
+        identity_dir: cli.identity_dir,
+        tls_cert_path: cli.tls_cert,
+        tls_key_path: cli.tls_key,
     })
     .await
 }

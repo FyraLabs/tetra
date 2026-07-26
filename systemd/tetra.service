@@ -1,0 +1,15 @@
+[Unit]
+Description=Tetra Host Agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment="RUST_LOG=info"
+Environment="TETRA_IDENTITY_DIR=/var/lib/tetra/identity"
+ExecStart=/usr/bin/tetra agent-connect --config /etc/tetra/transport.json --host-id %H
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -31,6 +31,7 @@ const INFO: ModuleInfo = ModuleInfo {
     description: "Read and write host files for managed configuration.",
     status: ModuleStatus::Available,
     actions: &["capabilities", "read", "write"],
+    privileged_actions: &["write"],
 };
 
 /// Payload for the `read` action: just the path to read from the host.

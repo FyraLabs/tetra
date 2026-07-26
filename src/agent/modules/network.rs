@@ -25,7 +25,7 @@ use crate::agent::{
     AgentModule,
     module_support::{
         ModuleInfo, ModuleStatus, SelinuxOptions, apply_selinux, handle_metadata, parse_payload,
-        run_command_json, run_command_or_dry_run, unsupported_action,
+        run_command_json_for_module, run_command_or_dry_run_for_module, unsupported_action,
     },
 };
 
@@ -47,6 +47,7 @@ const INFO: ModuleInfo = ModuleInfo {
         "set_config",
         "reload",
     ],
+    privileged_actions: &["set_config", "reload"],
 };
 
 /// Payload for `status`; the optional interface name narrows `ip addr show`
@@ -108,7 +109,7 @@ impl AgentModule for NetworkModule {
                     args.push("dev".into());
                     args.push(interface);
                 }
-                run_command_json("ip", args)
+                run_command_json_for_module(&INFO, action, "ip", args)
             }
             "get_config" => {
                 let payload: ConfigPayload = parse_payload(payload)?;
@@ -140,7 +141,9 @@ impl AgentModule for NetworkModule {
                 let payload: DryRunPayload = parse_payload(payload)?;
                 // `reload-or-restart` applies new keyfiles without dropping
                 // active connections when possible, falling back to a restart.
-                run_command_or_dry_run(
+                run_command_or_dry_run_for_module(
+                    &INFO,
+                    action,
                     "systemctl",
                     ["reload-or-restart", "NetworkManager.service"],
                     payload.dry_run,

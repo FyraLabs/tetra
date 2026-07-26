@@ -128,6 +128,7 @@ mod tests {
                 description: "Test echo module",
                 status: super::super::module_support::ModuleStatus::Available,
                 actions: &["ping"],
+                privileged_actions: &[],
             }
         }
 

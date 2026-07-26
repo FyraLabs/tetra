@@ -1,7 +1,7 @@
 //! Kameo actor wrapping the [`Dispatcher`] so transports can handle commands
 //! concurrently without exposing a `&mut`.
 //!
-//! The actor is the unit of concurrency: each transport (HTTP, vsock, WSS)
+//! The actor is the unit of concurrency: each transport (vsock, WSS)
 //! owns an [`ActorRef<AgentBackend>`] and sends [`DispatchCommand`]s to it.
 //! Kameo serializes `handle` calls on the actor's task, so the dispatcher's
 //! `&self`-only API stays sound no matter how many in-flight requests arrive.

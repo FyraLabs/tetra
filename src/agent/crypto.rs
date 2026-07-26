@@ -2,7 +2,7 @@
 //!
 //! This module intentionally does not enforce signatures yet. Transport
 //! negotiation will select a key and then call these helpers before dispatch.
-//! Keeping canonicalization here prevents HTTP, vsock, and WebSocket paths from
+//! Keeping canonicalization here prevents vsock and WebSocket paths from
 //! accidentally signing different representations of the same command.
 
 use anyhow::{Result, ensure};
@@ -68,6 +68,45 @@ pub fn sign_command(
 ) -> Result<String> {
     let bytes = canonical_command_bytes(command, session_id, sequence, timestamp, nonce)?;
     Ok(URL_SAFE_NO_PAD.encode(signing_key.sign(&bytes).to_bytes()))
+}
+
+/// Sign a connection challenge during WebSocket authentication.
+pub fn sign_challenge(
+    signing_key: &SigningKey,
+    protocol_version: &str,
+    session_id: &str,
+    challenge: &str,
+) -> String {
+    URL_SAFE_NO_PAD.encode(
+        signing_key
+            .sign(&crate::agent::protocol::challenge_bytes(
+                protocol_version,
+                session_id,
+                challenge,
+            ))
+            .to_bytes(),
+    )
+}
+
+/// Verify a dashboard signature over a connection challenge.
+pub fn verify_challenge_signature(
+    verifying_key: &VerifyingKey,
+    signature: &str,
+    protocol_version: &str,
+    session_id: &str,
+    challenge: &str,
+) -> Result<()> {
+    let encoded = URL_SAFE_NO_PAD
+        .decode(signature)
+        .map_err(|_| anyhow::anyhow!("challenge signature is not valid base64url"))?;
+    let signature = Signature::from_slice(&encoded)
+        .map_err(|_| anyhow::anyhow!("challenge signature has invalid length"))?;
+    verifying_key
+        .verify(
+            &crate::agent::protocol::challenge_bytes(protocol_version, session_id, challenge),
+            &signature,
+        )
+        .map_err(|_| anyhow::anyhow!("challenge signature verification failed"))
 }
 
 /// Verify an URL-safe base64 Ed25519 signature.

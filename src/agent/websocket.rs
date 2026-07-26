@@ -2,7 +2,7 @@ use std::{env, time::Duration};
 
 use anyhow::{Context as _, Result, bail};
 use futures_util::{SinkExt, StreamExt};
-use kameo::actor::ActorRef;
+
 use rand::RngExt;
 use serde::{Deserialize, Serialize};
 #[cfg(test)]
@@ -11,7 +11,8 @@ use tokio::time::sleep;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 use super::{
-    AgentBackend, AgentCommand, AgentResponse, DispatchCommand,
+    AgentBackend, AgentCommand, AgentResponse,
+    queue::{DEFAULT_QUEUE_CAPACITY, DispatchQueue, QueueError},
     transport::{TransportConfig, TransportEndpoint},
 };
 
@@ -87,11 +88,11 @@ pub async fn run(config: WebSocketAgentConfig) -> Result<()> {
 
     validate_tls_config(&url, &config.transport)?;
 
-    let backend = AgentBackend::spawn_default();
+    let queue = DispatchQueue::spawn(AgentBackend::spawn_default(), DEFAULT_QUEUE_CAPACITY);
     let mut attempt = 0_u32;
 
     loop {
-        match connect_once(&url, &config, backend.clone()).await {
+        match connect_once(&url, &config, queue.clone()).await {
             Ok(()) => {
                 if !config.reconnect {
                     return Ok(());
@@ -120,7 +121,7 @@ pub async fn run(config: WebSocketAgentConfig) -> Result<()> {
 async fn connect_once(
     url: &str,
     config: &WebSocketAgentConfig,
-    backend: ActorRef<AgentBackend>,
+    queue: DispatchQueue,
 ) -> Result<()> {
     let (mut socket, response) = connect_async(url)
         .await
@@ -148,12 +149,12 @@ async fn connect_once(
             Message::Text(text) => {
                 let frame: TransportFrame =
                     serde_json::from_str(&text).context("invalid websocket frame JSON")?;
-                handle_frame(&mut socket, backend.clone(), frame).await?;
+                handle_frame(&mut socket, queue.clone(), frame).await?;
             }
             Message::Binary(bytes) => {
                 let frame: TransportFrame =
                     serde_json::from_slice(&bytes).context("invalid websocket frame JSON")?;
-                handle_frame(&mut socket, backend.clone(), frame).await?;
+                handle_frame(&mut socket, queue.clone(), frame).await?;
             }
             // tungstenite handles Ping/Pong at the protocol layer; we just echo.
             Message::Ping(bytes) => socket.send(Message::Pong(bytes)).await?,
@@ -177,26 +178,34 @@ async fn connect_once(
 /// `Pong`; anything else (including `Hello`, `Response`, `Pong`, `Error`) is
 /// rejected with an `Error` frame — the control plane should never send those
 /// to an agent.
-async fn handle_frame<S>(
-    socket: &mut S,
-    backend: ActorRef<AgentBackend>,
-    frame: TransportFrame,
-) -> Result<()>
+async fn handle_frame<S>(socket: &mut S, queue: DispatchQueue, frame: TransportFrame) -> Result<()>
 where
     S: SinkExt<Message> + Unpin,
     <S as futures_util::Sink<Message>>::Error: std::error::Error + Send + Sync + 'static,
 {
     match frame {
-        TransportFrame::Command { command } => {
-            let response = match backend.ask(DispatchCommand(command)).await {
-                Ok(response) => response,
-                // The actor itself failed (panicked or stopped), not the
-                // command — synthesize an error response so the control plane
-                // sees a well-formed envelope with the right id.
-                Err(error) => AgentResponse::error("dispatch-error", error.to_string()),
-            };
-            send_frame(socket, &TransportFrame::Response { response }).await?;
-        }
+        TransportFrame::Command { command } => match queue.dispatch(command).await {
+            Ok(response) => send_frame(socket, &TransportFrame::Response { response }).await?,
+            Err(QueueError::Full) => {
+                send_frame(
+                    socket,
+                    &TransportFrame::Error {
+                        error: "Tetra command queue is full; retry after backoff".into(),
+                    },
+                )
+                .await?;
+            }
+            Err(QueueError::Closed) => {
+                send_frame(
+                    socket,
+                    &TransportFrame::Error {
+                        error: "Tetra command queue is unavailable".into(),
+                    },
+                )
+                .await?;
+                bail!("dispatch queue closed")
+            }
+        },
         TransportFrame::Ping { id, sent_at } => {
             send_frame(socket, &TransportFrame::Pong { id, sent_at }).await?;
         }
@@ -231,20 +240,23 @@ where
         .context("failed to send websocket frame")
 }
 
-/// Warn (but don't fail) when a `wss://` URL is missing the full set of mTLS
-/// paths. The session will still attempt to connect using the platform's root
-/// CA store, which is almost certainly not what a production mTLS setup wants.
+/// Reject production WSS configurations until the transport has enough TLS
+/// material for explicit mutual authentication. The current connector still
+/// needs a custom rustls client setup to consume these files; failing closed is
+/// safer than silently using platform roots and ignoring the configured mTLS
+/// paths.
 fn validate_tls_config(url: &str, config: &TransportConfig) -> Result<()> {
-    if url.starts_with("wss://")
-        && (config.client_cert_path.is_none()
-            || config.client_key_path.is_none()
-            || config.server_ca_path.is_none())
-    {
-        eprintln!(
-            "warning: wss endpoint configured without full mTLS paths; using platform root validation for this session"
-        );
+    if url.starts_with("ws://") {
+        bail!("outbound production transport requires wss://; ws:// is development-only")
     }
-
+    if config.client_cert_path.is_none()
+        || config.client_key_path.is_none()
+        || config.server_ca_path.is_none()
+    {
+        bail!(
+            "wss control-plane transport requires client_cert_path, client_key_path, and server_ca_path"
+        )
+    }
     Ok(())
 }
 
@@ -277,6 +289,25 @@ mod tests {
     #[test]
     fn reconnect_delay_is_capped() {
         assert!(reconnect_delay(10) <= MAX_RECONNECT_DELAY + Duration::from_secs(1));
+    }
+
+    #[test]
+    fn rejects_incomplete_or_plaintext_outbound_tls_configuration() {
+        let incomplete = TransportConfig {
+            control_plane_url: "wss://dashboard.example.test/tetra".into(),
+            client_cert_path: None,
+            client_key_path: None,
+            server_ca_path: None,
+        };
+        assert!(validate_tls_config(&incomplete.control_plane_url, &incomplete).is_err());
+
+        let plaintext = TransportConfig {
+            control_plane_url: "ws://127.0.0.1:7780".into(),
+            client_cert_path: Some("client.crt".into()),
+            client_key_path: Some("client.key".into()),
+            server_ca_path: Some("ca.crt".into()),
+        };
+        assert!(validate_tls_config(&plaintext.control_plane_url, &plaintext).is_err());
     }
 
     #[test]

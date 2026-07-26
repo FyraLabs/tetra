@@ -37,6 +37,17 @@ pub struct ModuleInfo {
     pub description: &'static str,
     pub status: ModuleStatus,
     pub actions: &'static [&'static str],
+    /// Actions that require root privileges and an active elevation grant on
+    /// headless hosts. The dashboard uses this to request elevation proactively.
+    pub privileged_actions: &'static [&'static str],
+}
+
+impl ModuleInfo {
+    /// Whether `action` is listed in [`privileged_actions`].
+    #[must_use]
+    pub fn is_privileged(&self, action: &str) -> bool {
+        self.privileged_actions.contains(&action)
+    }
 }
 
 /// Handle the shared `capabilities` and `plan` meta-actions that every
@@ -111,6 +122,11 @@ pub fn parse_payload<T: for<'de> Deserialize<'de>>(payload: Value) -> Result<T> 
     serde_json::from_value(payload).context("invalid command payload")
 }
 
+/// Whether the module supports running non-privileged actions as a non-root
+/// user via `runuser`. When `true`, safe actions can be executed unprivileged
+/// by passing a user to the `_for_module` helpers.
+pub const DEFAULT_USER_SUPPORT: bool = cfg!(target_os = "linux");
+
 /// Run a host command and return its [`CommandResult`] as JSON, executing
 /// unconditionally (no dry-run support).
 pub fn run_command<I, S>(program: &str, args: I) -> Result<Value>
@@ -130,7 +146,7 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
 {
-    Ok(json!(run_command_output(program, args, dry_run)?))
+    Ok(json!(run_command_output_as(program, args, dry_run, None)?))
 }
 
 /// Run a host command that is expected to print JSON to stdout, and return a
@@ -145,7 +161,7 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
 {
-    let result = run_command_output(program, args, false)?;
+    let result = run_command_output_as(program, args, false, None)?;
     let data: Value =
         serde_json::from_str(&result.stdout).context("failed to parse command stdout as JSON")?;
     Ok(json!({
@@ -167,7 +183,31 @@ where
 ///
 /// On a real run, a non-zero exit status is converted to an error with the
 /// trimmed stderr in the message — modules don't need to re-check exit codes.
+/// Run a host command (or fake it for a dry run) and return a structured
+/// [`CommandResult`].  When `default_user` is set and the action is not
+/// privileged, the command is executed via `runuser` so it runs under the
+/// configured unprivileged account rather than root.
 pub fn run_command_output<I, S>(program: &str, args: I, dry_run: bool) -> Result<CommandResult>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    run_command_output_as(program, args, dry_run, None)
+}
+
+/// Run a host command, optionally impersonating `default_user`.
+///
+/// When `default_user` is `Some`, the command is wrapped in
+/// `runuser -u <user> -- <program> <args>`.  This lets Tetra run as root
+/// while executing day-to-day operations (podman inspect, reading configs)
+/// with unprivileged credentials.  Privileged actions bypass this wrapper
+/// by passing `default_user: None`.
+pub fn run_command_output_as<I, S>(
+    program: &str,
+    args: I,
+    dry_run: bool,
+    default_user: Option<&str>,
+) -> Result<CommandResult>
 where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
@@ -188,10 +228,17 @@ where
         });
     }
 
-    let output = Command::new(program)
-        .args(&args)
-        .output()
-        .with_context(|| format!("failed to run `{program}`"))?;
+    let output = match default_user {
+        Some(user) if DEFAULT_USER_SUPPORT => Command::new("runuser")
+            .args(["-u", user, "--", program])
+            .args(&args)
+            .output()
+            .with_context(|| format!("failed to run `{program}` as `{user}`")),
+        _ => Command::new(program)
+            .args(&args)
+            .output()
+            .with_context(|| format!("failed to run `{program}`")),
+    }?;
 
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
@@ -213,6 +260,101 @@ where
         stderr,
         dry_run: false,
     })
+}
+
+/// Choose the user context for a command based on whether the action is
+/// privileged in the module descriptor.
+///
+/// Privileged actions always return `None` so they run as root.  Unprivileged
+/// actions currently also return `None`; in the future they will derive the
+/// user from the linked Fyra account so non-privileged commands run under that
+/// identity instead of root.
+fn choose_user(_info: &ModuleInfo, _action: &str) -> Option<&'static str> {
+    // Currently runs everything as root. In the future this will derive the
+    // user from the linked Fyra account for non-privileged actions.
+    None
+}
+
+/// Like [`run_command`], but respects [`ModuleInfo::privileged_actions`] and
+/// runs unprivileged actions as the linked user when available.
+pub fn run_command_for_module<I, S>(
+    info: &ModuleInfo,
+    action: &str,
+    program: &str,
+    args: I,
+) -> Result<Value>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    Ok(json!(run_command_output_as(
+        program,
+        args,
+        false,
+        choose_user(info, action)
+    )?))
+}
+
+/// Like [`run_command_or_dry_run`], but respects [`ModuleInfo::privileged_actions`]
+/// and [`DEFAULT_USER`].
+pub fn run_command_or_dry_run_for_module<I, S>(
+    info: &ModuleInfo,
+    action: &str,
+    program: &str,
+    args: I,
+    dry_run: bool,
+) -> Result<Value>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    Ok(json!(run_command_output_as(
+        program,
+        args,
+        dry_run,
+        choose_user(info, action)
+    )?))
+}
+
+/// Like [`run_command_json`], but respects [`ModuleInfo::privileged_actions`] and
+/// [`DEFAULT_USER`].
+pub fn run_command_json_for_module<I, S>(
+    info: &ModuleInfo,
+    action: &str,
+    program: &str,
+    args: I,
+) -> Result<Value>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    let result = run_command_output_as(program, args, false, choose_user(info, action))?;
+    let data: Value =
+        serde_json::from_str(&result.stdout).context("failed to parse command stdout as JSON")?;
+    Ok(json!({
+        "command": result.command,
+        "status": result.status,
+        "stdout": result.stdout,
+        "stderr": result.stderr,
+        "dry_run": result.dry_run,
+        "data": data,
+    }))
+}
+
+/// Like [`run_command_output`], but respects [`ModuleInfo::privileged_actions`] and
+/// [`DEFAULT_USER`].
+pub fn run_command_output_for_module<I, S>(
+    info: &ModuleInfo,
+    action: &str,
+    program: &str,
+    args: I,
+    dry_run: bool,
+) -> Result<CommandResult>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    run_command_output_as(program, args, dry_run, choose_user(info, action))
 }
 
 /// Apply SELinux file-context labeling to a path as part of a module action.

@@ -8,9 +8,7 @@ use super::{AgentCommand, AgentResponse};
 /// The byte-stream contract a transport must implement to carry commands and
 /// responses between the control plane and the agent.
 ///
-/// Each concrete transport (WSS, vsock) adapts this trait to its own
-/// framing. The HTTP transport doesn't implement `Transport` because it's
-/// request/response by nature — it routes directly to the backend actor.
+/// Each concrete transport (WSS, vsock) adapts this trait to its own framing.
 pub trait Transport {
     fn connect(&mut self) -> Result<()>;
     fn receive(&mut self) -> Result<Option<AgentCommand>>;

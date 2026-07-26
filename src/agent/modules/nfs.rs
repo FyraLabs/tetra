@@ -17,7 +17,7 @@ use crate::agent::{
     AgentModule,
     module_support::{
         ModuleInfo, ModuleStatus, SelinuxOptions, apply_selinux, handle_metadata, parse_payload,
-        run_command_or_dry_run, unsupported_action,
+        run_command_or_dry_run_for_module, unsupported_action,
     },
 };
 
@@ -40,6 +40,7 @@ const INFO: ModuleInfo = ModuleInfo {
         "enable",
         "disable",
     ],
+    privileged_actions: &["set_config", "reload", "enable", "disable"],
 };
 
 /// Payload for read actions (`list_exports`, `get_config`). Defaults to
@@ -129,11 +130,19 @@ impl AgentModule for NfsModule {
                 // place, without bouncing nfs-server — that avoids dropping
                 // existing clients mid-reload.
                 let payload: DryRunPayload = parse_payload(payload)?;
-                run_command_or_dry_run("exportfs", ["-ra"], payload.dry_run)
+                run_command_or_dry_run_for_module(
+                    &INFO,
+                    action,
+                    "exportfs",
+                    ["-ra"],
+                    payload.dry_run,
+                )
             }
             "enable" => {
                 let payload: DryRunPayload = parse_payload(payload)?;
-                run_command_or_dry_run(
+                run_command_or_dry_run_for_module(
+                    &INFO,
+                    action,
                     "systemctl",
                     ["enable", "--now", "nfs-server.service"],
                     payload.dry_run,
@@ -141,7 +150,9 @@ impl AgentModule for NfsModule {
             }
             "disable" => {
                 let payload: DryRunPayload = parse_payload(payload)?;
-                run_command_or_dry_run(
+                run_command_or_dry_run_for_module(
+                    &INFO,
+                    action,
                     "systemctl",
                     ["disable", "--now", "nfs-server.service"],
                     payload.dry_run,

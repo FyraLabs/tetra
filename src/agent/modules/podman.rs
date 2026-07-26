@@ -16,8 +16,9 @@ use serde_json::Value;
 use crate::agent::{
     AgentModule,
     module_support::{
-        ModuleInfo, ModuleStatus, NamedPayload, handle_metadata, parse_payload, run_command,
-        run_command_json, run_command_or_dry_run, unsupported_action,
+        ModuleInfo, ModuleStatus, NamedPayload, handle_metadata, parse_payload,
+        run_command_for_module, run_command_json_for_module, run_command_or_dry_run_for_module,
+        unsupported_action,
     },
 };
 
@@ -44,6 +45,7 @@ const INFO: ModuleInfo = ModuleInfo {
         "restart",
         "remove",
     ],
+    privileged_actions: &["start", "stop", "restart", "remove"],
 };
 
 /// Payload for `logs`: which container to tail and how many trailing lines to
@@ -70,21 +72,40 @@ impl AgentModule for PodmanModule {
             // Listing actions lean on podman's own `--format json`, which emits
             // a JSON array directly. `run_command_json` parses that stdout and
             // exposes it as `data`, alongside the raw command/result fields.
-            "containers" => run_command_json("podman", ["ps", "--all", "--format", "json"]),
+            "containers" => run_command_json_for_module(
+                &INFO,
+                action,
+                "podman",
+                ["ps", "--all", "--format", "json"],
+            ),
             // `inspect` returns a rich JSON document for a single container (or
             // image/volume/network when qualified). It is passed through as-is.
             "inspect" => {
                 let payload: NamedPayload = parse_payload(payload)?;
-                run_command_json("podman", ["inspect", &payload.name])
+                run_command_json_for_module(&INFO, action, "podman", ["inspect", &payload.name])
             }
-            "images" => run_command_json("podman", ["images", "--format", "json"]),
-            "volumes" => run_command_json("podman", ["volume", "ls", "--format", "json"]),
-            "networks" => run_command_json("podman", ["network", "ls", "--format", "json"]),
+            "images" => {
+                run_command_json_for_module(&INFO, action, "podman", ["images", "--format", "json"])
+            }
+            "volumes" => run_command_json_for_module(
+                &INFO,
+                action,
+                "podman",
+                ["volume", "ls", "--format", "json"],
+            ),
+            "networks" => run_command_json_for_module(
+                &INFO,
+                action,
+                "podman",
+                ["network", "ls", "--format", "json"],
+            ),
             "logs" => {
                 let payload: LogsPayload = parse_payload(payload)?;
                 // `--tail` bounds the response; `logs` is a read and therefore
                 // never dry-run.
-                run_command(
+                run_command_for_module(
+                    &INFO,
+                    action,
                     "podman",
                     ["logs", "--tail", &payload.lines.to_string(), &payload.name],
                 )
@@ -93,12 +114,24 @@ impl AgentModule for PodmanModule {
             // the action string is forwarded directly as the subcommand.
             "start" | "stop" | "restart" => {
                 let payload: NamedPayload = parse_payload(payload)?;
-                run_command_or_dry_run("podman", [action, &payload.name], payload.dry_run)
+                run_command_or_dry_run_for_module(
+                    &INFO,
+                    action,
+                    "podman",
+                    [action, &payload.name],
+                    payload.dry_run,
+                )
             }
             // Protocol verb is `remove`; the podman subcommand is `rm`.
             "remove" => {
                 let payload: NamedPayload = parse_payload(payload)?;
-                run_command_or_dry_run("podman", ["rm", &payload.name], payload.dry_run)
+                run_command_or_dry_run_for_module(
+                    &INFO,
+                    action,
+                    "podman",
+                    ["rm", &payload.name],
+                    payload.dry_run,
+                )
             }
             _ => unsupported_action(INFO.name, action),
         }

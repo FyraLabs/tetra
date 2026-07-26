@@ -51,6 +51,7 @@ const INFO: ModuleInfo = ModuleInfo {
         "context",
         "context_inline",
     ],
+    privileged_actions: &[],
 };
 
 /// Payload for `render`: render a recipe already on the host's filesystem.

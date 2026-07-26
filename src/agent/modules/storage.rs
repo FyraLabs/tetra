@@ -17,7 +17,7 @@ use crate::agent::{
     AgentModule,
     module_support::{
         ModuleInfo, ModuleStatus, SelinuxOptions, apply_selinux, handle_metadata, parse_payload,
-        run_command, run_command_or_dry_run, unsupported_action,
+        run_command_for_module, run_command_or_dry_run_for_module, unsupported_action,
     },
 };
 
@@ -39,6 +39,7 @@ const INFO: ModuleInfo = ModuleInfo {
         "unmount",
         "configure",
     ],
+    privileged_actions: &["mount", "unmount", "configure"],
 };
 
 /// Payload carrying a single path, used by `status` (the `df` target) and
@@ -111,7 +112,12 @@ impl AgentModule for StorageModule {
             })),
             "status" => {
                 let payload: PathPayload = parse_payload(payload)?;
-                run_command("df", ["-h", payload.path.to_string_lossy().as_ref()])
+                run_command_for_module(
+                    &INFO,
+                    action,
+                    "df",
+                    ["-h", payload.path.to_string_lossy().as_ref()],
+                )
             }
             "mount" => {
                 let payload: MountPayload = parse_payload(payload)?;
@@ -128,7 +134,13 @@ impl AgentModule for StorageModule {
                 // clone it into a PathBuf first.
                 let target = PathBuf::from(&payload.target);
                 args.extend([payload.source, payload.target]);
-                let mount = run_command_or_dry_run("mount", args, payload.dry_run)?;
+                let mount = run_command_or_dry_run_for_module(
+                    &INFO,
+                    action,
+                    "mount",
+                    args,
+                    payload.dry_run,
+                )?;
                 // Label the freshly mounted target as part of the same action;
                 // see `apply_selinux` in module_support.rs for the option
                 // resolution rules.
@@ -138,7 +150,9 @@ impl AgentModule for StorageModule {
             }
             "unmount" => {
                 let payload: PathPayload = parse_payload(payload)?;
-                run_command_or_dry_run(
+                run_command_or_dry_run_for_module(
+                    &INFO,
+                    action,
                     "umount",
                     [payload.path.to_string_lossy().as_ref()],
                     payload.dry_run,

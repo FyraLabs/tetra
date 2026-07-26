@@ -77,6 +77,7 @@ const INFO: ModuleInfo = ModuleInfo {
         "install",
         "list_files",
     ],
+    privileged_actions: &["write", "delete", "install"],
 };
 
 /// File extensions Podman recognizes as Quadlet units. Used both to validate
