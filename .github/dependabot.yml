@@ -1,13 +1,16 @@
 version: 2
+
+multi-ecosystem-groups:
+  dependencies:
+    schedule:
+      interval: "weekly"
+
 updates:
   - package-ecosystem: "cargo"
     directory: "/"
-    schedule:
-      interval: "weekly"
+    multi-ecosystem-group: "dependencies"
+    patterns: ["*"]
   - package-ecosystem: "github-actions"
     directory: "/"
-    schedule:
-      interval: "weekly"
-    groups:
-      actions:
-        patterns: ["*"]
+    multi-ecosystem-group: "dependencies"
+    patterns: ["*"]
