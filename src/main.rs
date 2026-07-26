@@ -16,7 +16,7 @@ use tetra::{
         websocket::{self, WebSocketAgentConfig},
         websocket_server::{self, WebSocketServerConfig},
     },
-    catalog::{self, RenderOptions},
+    catalog::{RenderOptions, RenderedResource},
 };
 
 /// Tetra CLI entry point.
@@ -155,7 +155,7 @@ async fn main() -> Result<()> {
 }
 
 fn render(cli: RenderCli) -> Result<()> {
-    let resources = catalog::render_from_files(&RenderOptions {
+    let resources = RenderedResource::from_files(&RenderOptions {
         recipe_path: cli.recipe,
         values_path: cli.values,
         templates_dir: cli.templates_dir,
@@ -182,8 +182,10 @@ fn render(cli: RenderCli) -> Result<()> {
 async fn agent_dispatch(cli: AgentDispatchCli) -> Result<()> {
     // Read the command envelope from either a path arg or stdin. Stdin lets
     // the agent be driven from a shell pipeline without a temp file.
-    let text = if let Some(path) = cli.command { fs::read_to_string(&path)
-    .with_context(|| format!("failed to read command `{}`", path.display()))? } else {
+    let text = if let Some(path) = cli.command {
+        fs::read_to_string(&path)
+            .with_context(|| format!("failed to read command `{}`", path.display()))?
+    } else {
         let mut text = String::new();
         io::stdin()
             .read_to_string(&mut text)
