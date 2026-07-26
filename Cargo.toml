@@ -36,9 +36,9 @@ virtual-machines = []
 
 [dependencies]
 anyhow = "1"
-base64 = "0.22"
+base64 = "0.23"
 clap = { version = "4.5", features = ["derive", "env"] }
-ed25519-dalek = { version = "2.1", features = ["rand_core"] }
+ed25519-dalek = { version = "3.0", features = ["rand_core"] }
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 kameo = "0.22"
 rand = "0.10"
