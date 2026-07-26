@@ -129,7 +129,7 @@ impl AgentModule for SelinuxModule {
         INFO
     }
 
-    fn handle(&self, action: &str, payload: Value) -> Result<Value> {
+    fn handle(&self, action: &str, payload: Value, user: Option<&str>) -> Result<Value> {
         // Standard metadata fast-path: `capabilities` and `plan` are answered
         // from `INFO` without touching the system.
         if let Some(response) = handle_metadata(INFO, action, payload.clone())? {
@@ -144,6 +144,7 @@ impl AgentModule for SelinuxModule {
                     "sestatus",
                     std::iter::empty::<&str>(),
                     false,
+                    user,
                 )?;
                 Ok(json!({
                     "command": result.command,
@@ -161,6 +162,7 @@ impl AgentModule for SelinuxModule {
                     "getenforce",
                     std::iter::empty::<&str>(),
                     false,
+                    user,
                 )?;
                 Ok(json!({
                     "command": result.command,
@@ -173,7 +175,7 @@ impl AgentModule for SelinuxModule {
             }
             "booleans" => {
                 let result =
-                    run_command_output_for_module(&INFO, action, "getsebool", ["-a"], false)?;
+                    run_command_output_for_module(&INFO, action, "getsebool", ["-a"], false, user)?;
                 Ok(json!({
                     "command": result.command,
                     "status": result.status,
@@ -194,7 +196,7 @@ impl AgentModule for SelinuxModule {
                 }
                 args.push(payload.name);
                 args.push(boolean_value(payload.value).to_string());
-                run_command_or_dry_run_for_module(&INFO, action, "setsebool", args, payload.dry_run)
+                run_command_or_dry_run_for_module(&INFO, action, "setsebool", args, payload.dry_run, user)
             }
             "file_contexts" => {
                 // `semanage fcontext -l` dumps every fcontext rule the policy
@@ -206,6 +208,7 @@ impl AgentModule for SelinuxModule {
                     "semanage",
                     ["fcontext", "-l"],
                     false,
+                    user,
                 )?;
                 Ok(json!({
                     "command": result.command,
@@ -232,6 +235,7 @@ impl AgentModule for SelinuxModule {
                         &payload.path_pattern,
                     ],
                     payload.dry_run,
+                    user,
                 )
             }
             "delete_file_context" => {
@@ -242,6 +246,7 @@ impl AgentModule for SelinuxModule {
                     "semanage",
                     ["fcontext", "-d", &payload.path_pattern],
                     payload.dry_run,
+                    user,
                 )
             }
             "restore_context" => {
@@ -261,6 +266,7 @@ impl AgentModule for SelinuxModule {
                     "restorecon",
                     args,
                     payload.dry_run,
+                    user,
                 )
             }
             _ => unsupported_action(INFO.name, action),
@@ -396,6 +402,7 @@ mod tests {
             .handle(
                 "set_boolean",
                 json!({ "name": "virt_use_nfs", "value": true, "dry_run": true }),
+                None,
             )
             .unwrap();
 
@@ -410,6 +417,7 @@ mod tests {
             .handle(
                 "restore_context",
                 json!({ "path": "/srv/tetra", "recursive": true, "dry_run": true }),
+                None,
             )
             .unwrap();
 

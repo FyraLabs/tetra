@@ -202,6 +202,7 @@ async fn handle_connection(
         session_id: received_session,
         public_key,
         signature,
+        user,
     } = frame
     else {
         send_error(&mut socket, "authentication is required before commands").await?;
@@ -224,7 +225,7 @@ async fn handle_connection(
         &challenge,
     )?;
     let mut session =
-        AuthenticatedSession::new(session_id.clone(), controller_key, SessionPolicy::default())?;
+        AuthenticatedSession::new(session_id.clone(), controller_key, user.clone(), SessionPolicy::default())?;
     send(
         &mut socket,
         &AuthFrame::Response {
@@ -358,7 +359,8 @@ async fn handle_connection(
             }
             AuthFrame::Command { .. } => {
                 let now = unix_timestamp()?;
-                let command = session.accept_command(&frame, now)?.clone();
+                let mut command = session.accept_command(&frame, now)?.clone();
+                command.user = session.user().map(|u| u.to_string());
 
                 // Reject privileged actions when there is no active elevation grant.
                 if let Some(actions) = privileged_actions.get(&command.module)
@@ -636,6 +638,7 @@ mod tests {
             session_id: session_id.clone(),
             public_key: controller_public_key,
             signature: sign_challenge(&controller, &protocol_version, &session_id, &challenge),
+            user: None,
         };
         socket
             .send(Message::Text(
@@ -701,6 +704,7 @@ mod tests {
             session_id: session_id.clone(),
             public_key,
             signature: sign_challenge(&controller, &protocol_version, &session_id, &challenge),
+            user: None,
         };
         socket
             .send(Message::Text(
@@ -719,6 +723,7 @@ mod tests {
             action: "get_system".into(),
             payload: json!({}),
             signature: None,
+            user: None,
         };
         command.signature =
             Some(sign_command(&controller, &command, &session_id, 0, timestamp, &nonce).unwrap());

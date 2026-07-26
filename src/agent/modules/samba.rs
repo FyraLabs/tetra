@@ -83,7 +83,7 @@ impl AgentModule for SambaModule {
         INFO
     }
 
-    fn handle(&self, action: &str, payload: Value) -> Result<Value> {
+    fn handle(&self, action: &str, payload: Value, user: Option<&str>) -> Result<Value> {
         // Standard metadata fast-path: `capabilities` and `plan` are answered
         // from `INFO` without touching the system.
         if let Some(response) = handle_metadata(INFO, action, payload.clone())? {
@@ -133,6 +133,7 @@ impl AgentModule for SambaModule {
                     "systemctl",
                     ["reload-or-restart", "smb.service"],
                     payload.dry_run,
+                    user,
                 )
             }
             "enable" => {
@@ -143,6 +144,7 @@ impl AgentModule for SambaModule {
                     "systemctl",
                     ["enable", "--now", "smb.service"],
                     payload.dry_run,
+                    user,
                 )
             }
             "disable" => {
@@ -153,6 +155,7 @@ impl AgentModule for SambaModule {
                     "systemctl",
                     ["disable", "--now", "smb.service"],
                     payload.dry_run,
+                    user,
                 )
             }
             _ => unsupported_action(INFO.name, action),
@@ -206,6 +209,7 @@ mod tests {
             .handle(
                 "set_config",
                 json!({ "path": path, "contents": "[media]\n", "dry_run": true }),
+                None,
             )
             .unwrap();
 
@@ -233,6 +237,7 @@ mod tests {
                         "recursive": true
                     }
                 }),
+                None,
             )
             .unwrap();
 

@@ -262,26 +262,26 @@ where
     })
 }
 
-/// Choose the user context for a command based on whether the action is
-/// privileged in the module descriptor.
+/// Compute the effective OS user for a module action.
 ///
-/// Privileged actions always return `None` so they run as root.  Unprivileged
-/// actions currently also return `None`; in the future they will derive the
-/// user from the linked Fyra account so non-privileged commands run under that
-/// identity instead of root.
-fn choose_user(_info: &ModuleInfo, _action: &str) -> Option<&'static str> {
-    // Currently runs everything as root. In the future this will derive the
-    // user from the linked Fyra account for non-privileged actions.
-    None
+/// Privileged actions always run as root (`None`). Unprivileged actions run as
+/// the supplied `user` when it is present, otherwise they fall back to root.
+fn effective_user<'a>(info: &'a ModuleInfo, action: &'a str, user: Option<&'a str>) -> Option<&'a str> {
+    if info.privileged_actions.contains(&action) {
+        None
+    } else {
+        user
+    }
 }
 
 /// Like [`run_command`], but respects [`ModuleInfo::privileged_actions`] and
-/// runs unprivileged actions as the linked user when available.
+/// runs unprivileged actions as the supplied `user` when available.
 pub fn run_command_for_module<I, S>(
     info: &ModuleInfo,
     action: &str,
     program: &str,
     args: I,
+    user: Option<&str>,
 ) -> Result<Value>
 where
     I: IntoIterator<Item = S>,
@@ -291,18 +291,19 @@ where
         program,
         args,
         false,
-        choose_user(info, action)
+        effective_user(info, action, user)
     )?))
 }
 
 /// Like [`run_command_or_dry_run`], but respects [`ModuleInfo::privileged_actions`]
-/// and [`DEFAULT_USER`].
+/// and runs unprivileged actions as the supplied `user` when available.
 pub fn run_command_or_dry_run_for_module<I, S>(
     info: &ModuleInfo,
     action: &str,
     program: &str,
     args: I,
     dry_run: bool,
+    user: Option<&str>,
 ) -> Result<Value>
 where
     I: IntoIterator<Item = S>,
@@ -312,23 +313,24 @@ where
         program,
         args,
         dry_run,
-        choose_user(info, action)
+        effective_user(info, action, user)
     )?))
 }
 
 /// Like [`run_command_json`], but respects [`ModuleInfo::privileged_actions`] and
-/// [`DEFAULT_USER`].
+/// runs unprivileged actions as the supplied `user` when available.
 pub fn run_command_json_for_module<I, S>(
     info: &ModuleInfo,
     action: &str,
     program: &str,
     args: I,
+    user: Option<&str>,
 ) -> Result<Value>
 where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
 {
-    let result = run_command_output_as(program, args, false, choose_user(info, action))?;
+    let result = run_command_output_as(program, args, false, effective_user(info, action, user))?;
     let data: Value =
         serde_json::from_str(&result.stdout).context("failed to parse command stdout as JSON")?;
     Ok(json!({
@@ -342,19 +344,20 @@ where
 }
 
 /// Like [`run_command_output`], but respects [`ModuleInfo::privileged_actions`] and
-/// [`DEFAULT_USER`].
+/// runs unprivileged actions as the supplied `user` when available.
 pub fn run_command_output_for_module<I, S>(
     info: &ModuleInfo,
     action: &str,
     program: &str,
     args: I,
     dry_run: bool,
+    user: Option<&str>,
 ) -> Result<CommandResult>
 where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
 {
-    run_command_output_as(program, args, dry_run, choose_user(info, action))
+    run_command_output_as(program, args, dry_run, effective_user(info, action, user))
 }
 
 /// Apply SELinux file-context labeling to a path as part of a module action.

@@ -46,7 +46,7 @@ impl AgentModule for SettingsModule {
         INFO
     }
 
-    fn handle(&self, action: &str, payload: Value) -> Result<Value> {
+    fn handle(&self, action: &str, payload: Value, user: Option<&str>) -> Result<Value> {
         // Delegate the cross-module metadata actions (`capabilities`, `plan`)
         // first. When matched, the early return skips the action match below;
         // otherwise the payload is forwarded to the module-specific handlers.
@@ -71,6 +71,7 @@ impl AgentModule for SettingsModule {
                     "hostnamectl",
                     ["set-hostname", &payload.hostname],
                     payload.dry_run,
+                    user,
                 )
             }
             _ => unsupported_action(INFO.name, action),

@@ -95,7 +95,7 @@ impl AgentModule for StorageModule {
         INFO
     }
 
-    fn handle(&self, action: &str, payload: Value) -> Result<Value> {
+    fn handle(&self, action: &str, payload: Value, user: Option<&str>) -> Result<Value> {
         // Standard metadata fast-path: `capabilities` and `plan` are answered
         // from `INFO` without touching the system.
         if let Some(response) = handle_metadata(INFO, action, payload.clone())? {
@@ -117,6 +117,7 @@ impl AgentModule for StorageModule {
                     action,
                     "df",
                     ["-h", payload.path.to_string_lossy().as_ref()],
+                    user,
                 )
             }
             "mount" => {
@@ -140,6 +141,7 @@ impl AgentModule for StorageModule {
                     "mount",
                     args,
                     payload.dry_run,
+                    user,
                 )?;
                 // Label the freshly mounted target as part of the same action;
                 // see `apply_selinux` in module_support.rs for the option
@@ -156,6 +158,7 @@ impl AgentModule for StorageModule {
                     "umount",
                     [payload.path.to_string_lossy().as_ref()],
                     payload.dry_run,
+                    user,
                 )
             }
             "configure" => {
@@ -322,6 +325,7 @@ mod tests {
                     "entry": "/dev/sdb1 /data ext4 defaults 0 2",
                     "dry_run": true
                 }),
+                None,
             )
             .unwrap();
 
@@ -342,6 +346,7 @@ mod tests {
                     "target": "/mnt/example",
                     "dry_run": true
                 }),
+                None,
             )
             .unwrap();
 
@@ -367,6 +372,7 @@ mod tests {
                         "recursive": true
                     }
                 }),
+                None,
             )
             .unwrap();
 

@@ -89,7 +89,7 @@ impl AgentModule for NetworkModule {
         INFO
     }
 
-    fn handle(&self, action: &str, payload: Value) -> Result<Value> {
+    fn handle(&self, action: &str, payload: Value, user: Option<&str>) -> Result<Value> {
         // Delegate `capabilities`/`plan` to the shared metadata handler first.
         if let Some(response) = handle_metadata(INFO, action, payload.clone())? {
             return Ok(response);
@@ -109,7 +109,7 @@ impl AgentModule for NetworkModule {
                     args.push("dev".into());
                     args.push(interface);
                 }
-                run_command_json_for_module(&INFO, action, "ip", args)
+                run_command_json_for_module(&INFO, action, "ip", args, user)
             }
             "get_config" => {
                 let payload: ConfigPayload = parse_payload(payload)?;
@@ -147,6 +147,7 @@ impl AgentModule for NetworkModule {
                     "systemctl",
                     ["reload-or-restart", "NetworkManager.service"],
                     payload.dry_run,
+                    user,
                 )
             }
             _ => unsupported_action(INFO.name, action),
@@ -203,6 +204,7 @@ mod tests {
                     "contents": "[connection]\nid=new\n",
                     "dry_run": true
                 }),
+                None,
             )
             .unwrap();
 
@@ -229,6 +231,7 @@ mod tests {
                         "context_type": "NetworkManager_etc_t"
                     }
                 }),
+                None,
             )
             .unwrap();
 

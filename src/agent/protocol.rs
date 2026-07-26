@@ -39,6 +39,9 @@ pub enum AuthFrame {
         session_id: String,
         public_key: String,
         signature: String,
+        /// Host user that unprivileged actions should run as.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        user: Option<String>,
     },
     ElevationStatus {
         state: ElevationState,
@@ -112,6 +115,7 @@ impl Default for SessionPolicy {
 pub struct AuthenticatedSession {
     session_id: String,
     verifying_key: VerifyingKey,
+    user: Option<String>,
     next_sequence: u64,
     nonces: HashSet<String>,
     nonce_order: VecDeque<String>,
@@ -122,6 +126,7 @@ impl AuthenticatedSession {
     pub fn new(
         session_id: impl Into<String>,
         verifying_key: VerifyingKey,
+        user: Option<String>,
         policy: SessionPolicy,
     ) -> Result<Self> {
         let session_id = session_id.into();
@@ -134,11 +139,16 @@ impl AuthenticatedSession {
         Ok(Self {
             session_id,
             verifying_key,
+            user,
             next_sequence: 0,
             nonces: HashSet::new(),
             nonce_order: VecDeque::new(),
             policy,
         })
+    }
+
+    pub fn user(&self) -> Option<&str> {
+        self.user.as_deref()
     }
 
     pub fn session_id(&self) -> &str {
@@ -247,6 +257,7 @@ mod tests {
             action: "get_system".into(),
             payload: json!({"b": 2, "a": 1}),
             signature: None,
+            user: None,
         };
         command.signature =
             Some(sign_command(key, &command, "session-1", sequence, timestamp, nonce).unwrap());
@@ -265,6 +276,7 @@ mod tests {
         let mut session = AuthenticatedSession::new(
             "session-1",
             key.verifying_key(),
+            None,
             SessionPolicy {
                 clock_skew_seconds: 300,
                 nonce_limit: 2,
@@ -283,7 +295,7 @@ mod tests {
     fn rejects_replay_wrong_sequence_and_stale_timestamp() {
         let key = SigningKey::from_bytes(&[4_u8; 32]);
         let mut session =
-            AuthenticatedSession::new("session-1", key.verifying_key(), SessionPolicy::default())
+            AuthenticatedSession::new("session-1", key.verifying_key(), None, SessionPolicy::default())
                 .unwrap();
         let first = signed_frame(&key, 0, 1000, "nonce-000000000001");
         session.accept_command(&first, 1000).unwrap();
@@ -306,6 +318,7 @@ mod tests {
         let mut session = AuthenticatedSession::new(
             "session-1",
             key.verifying_key(),
+            None,
             SessionPolicy {
                 clock_skew_seconds: 300,
                 nonce_limit: 1,

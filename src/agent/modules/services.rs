@@ -103,7 +103,7 @@ impl AgentModule for ServicesModule {
         INFO
     }
 
-    fn handle(&self, action: &str, payload: Value) -> Result<Value> {
+    fn handle(&self, action: &str, payload: Value, user: Option<&str>) -> Result<Value> {
         // Delegate `capabilities`/`plan` to the shared metadata handler first.
         if let Some(response) = handle_metadata(INFO, action, payload.clone())? {
             return Ok(response);
@@ -130,6 +130,7 @@ impl AgentModule for ServicesModule {
                         "--all",
                     ],
                     false,
+                    user,
                 )?;
                 Ok(json!({
                     "command": result.command,
@@ -150,6 +151,7 @@ impl AgentModule for ServicesModule {
                         payload.scope,
                         ["--no-pager", "--plain", "status", &payload.service],
                     ),
+                    user,
                 )
             }
             "logs" => {
@@ -171,6 +173,7 @@ impl AgentModule for ServicesModule {
                             &payload.lines.to_string(),
                         ],
                     ),
+                    user,
                 )
             }
             "daemon_reload" => {
@@ -181,6 +184,7 @@ impl AgentModule for ServicesModule {
                     "systemctl",
                     systemctl_args(payload.scope, ["daemon-reload"]),
                     payload.dry_run,
+                    user,
                 )
             }
             // The five single-service mutations share one arm because their
@@ -195,6 +199,7 @@ impl AgentModule for ServicesModule {
                     "systemctl",
                     systemctl_args(payload.scope, [action, &payload.service]),
                     payload.dry_run,
+                    user,
                 )
             }
             _ => unsupported_action(INFO.name, action),
@@ -282,6 +287,7 @@ mod tests {
             .handle(
                 "start",
                 json!({ "service": "sshd.service", "dry_run": true }),
+                None,
             )
             .unwrap();
 
@@ -293,7 +299,7 @@ mod tests {
     #[test]
     fn daemon_reload_supports_dry_run() {
         let response = ServicesModule
-            .handle("daemon_reload", json!({ "dry_run": true }))
+            .handle("daemon_reload", json!({ "dry_run": true }), None)
             .unwrap();
 
         assert_eq!(response["command"], "systemctl daemon-reload");
@@ -307,6 +313,7 @@ mod tests {
             .handle(
                 "start",
                 json!({ "service": "tetra-demo.service", "scope": "user", "dry_run": true }),
+                None,
             )
             .unwrap();
 

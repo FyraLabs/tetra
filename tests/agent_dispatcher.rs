@@ -9,6 +9,7 @@ fn dispatch(module: &str, action: &str, payload: Value) -> tetra::agent::AgentRe
         action: action.into(),
         payload,
         signature: None,
+        user: None,
     })
 }
 
@@ -47,6 +48,7 @@ async fn kameo_backend_dispatches_commands() {
         action: "get_system".into(),
         payload: json!({}),
         signature: None,
+        user: None,
     })
     .await
     .unwrap();
@@ -69,6 +71,7 @@ fn dispatcher_rejects_unknown_modules_and_empty_signatures() {
         action: "get_system".into(),
         payload: json!({}),
         signature: Some(String::new()),
+        user: None,
     });
     assert!(!empty_signature.ok);
     assert!(

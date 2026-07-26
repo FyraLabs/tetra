@@ -75,7 +75,7 @@ impl AgentModule for VirtualMachinesModule {
         INFO
     }
 
-    fn handle(&self, action: &str, payload: Value) -> Result<Value> {
+    fn handle(&self, action: &str, payload: Value, user: Option<&str>) -> Result<Value> {
         // Delegate `capabilities`/`plan` to the shared metadata handler first.
         if let Some(response) = handle_metadata(INFO, action, payload.clone())? {
             return Ok(response);
@@ -91,6 +91,7 @@ impl AgentModule for VirtualMachinesModule {
                     "virsh",
                     ["list", "--all"],
                     false,
+                    user,
                 )?;
                 let domains = parse_virsh_list(&result.stdout);
                 Ok(json!({
@@ -112,6 +113,7 @@ impl AgentModule for VirtualMachinesModule {
                     "virsh",
                     ["dominfo", &payload.name],
                     false,
+                    user,
                 )?;
                 let info = parse_virsh_dominfo(&result.stdout);
                 Ok(json!({
@@ -138,6 +140,7 @@ impl AgentModule for VirtualMachinesModule {
                         "-n",
                         &payload.lines.to_string(),
                     ],
+                    user,
                 )
             }
             "start" => {
@@ -148,6 +151,7 @@ impl AgentModule for VirtualMachinesModule {
                     "virsh",
                     ["start", &payload.name],
                     payload.dry_run,
+                    user,
                 )
             }
             // `stop` uses `shutdown` for a graceful guest-initiated shutdown
@@ -160,6 +164,7 @@ impl AgentModule for VirtualMachinesModule {
                     "virsh",
                     ["shutdown", &payload.name],
                     payload.dry_run,
+                    user,
                 )
             }
             // `restart` uses `reboot`, the guest-graceful equivalent.
@@ -171,6 +176,7 @@ impl AgentModule for VirtualMachinesModule {
                     "virsh",
                     ["reboot", &payload.name],
                     payload.dry_run,
+                    user,
                 )
             }
             // `create` maps to `define`: register a persistent domain from the
@@ -183,6 +189,7 @@ impl AgentModule for VirtualMachinesModule {
                     "virsh",
                     ["define", &payload.xml_path],
                     payload.dry_run,
+                    user,
                 )
             }
             // `delete` maps to `undefine`: remove the domain registration. It
@@ -195,6 +202,7 @@ impl AgentModule for VirtualMachinesModule {
                     "virsh",
                     ["undefine", &payload.name],
                     payload.dry_run,
+                    user,
                 )
             }
             _ => unsupported_action(INFO.name, action),
@@ -267,7 +275,7 @@ mod tests {
     #[test]
     fn dry_run_start_does_not_call_virsh() {
         let response = VirtualMachinesModule
-            .handle("start", json!({ "name": "vm1", "dry_run": true }))
+            .handle("start", json!({ "name": "vm1", "dry_run": true }), None)
             .unwrap();
 
         assert_eq!(response["command"], "virsh start vm1");

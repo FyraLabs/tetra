@@ -129,6 +129,7 @@ mod tests {
                     action: "get_system".into(),
                     payload: json!({}),
                     signature: None,
+                    user: None,
                 },
                 reply,
             })
@@ -140,6 +141,7 @@ mod tests {
                 action: "get_system".into(),
                 payload: json!({}),
                 signature: None,
+                user: None,
             })
             .await;
         assert_eq!(result, Err(QueueError::Full));
@@ -159,6 +161,7 @@ mod tests {
                 action: "get_system".into(),
                 payload: json!({}),
                 signature: None,
+                user: None,
             })
             .await
             .unwrap();

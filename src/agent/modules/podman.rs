@@ -62,7 +62,7 @@ impl AgentModule for PodmanModule {
         INFO
     }
 
-    fn handle(&self, action: &str, payload: Value) -> Result<Value> {
+    fn handle(&self, action: &str, payload: Value, user: Option<&str>) -> Result<Value> {
         // Delegate `capabilities`/`plan` to the shared metadata handler first.
         if let Some(response) = handle_metadata(INFO, action, payload.clone())? {
             return Ok(response);
@@ -77,27 +77,30 @@ impl AgentModule for PodmanModule {
                 action,
                 "podman",
                 ["ps", "--all", "--format", "json"],
+                user,
             ),
             // `inspect` returns a rich JSON document for a single container (or
             // image/volume/network when qualified). It is passed through as-is.
             "inspect" => {
                 let payload: NamedPayload = parse_payload(payload)?;
-                run_command_json_for_module(&INFO, action, "podman", ["inspect", &payload.name])
+                run_command_json_for_module(&INFO, action, "podman", ["inspect", &payload.name], user)
             }
             "images" => {
-                run_command_json_for_module(&INFO, action, "podman", ["images", "--format", "json"])
+                run_command_json_for_module(&INFO, action, "podman", ["images", "--format", "json"], user)
             }
             "volumes" => run_command_json_for_module(
                 &INFO,
                 action,
                 "podman",
                 ["volume", "ls", "--format", "json"],
+                user,
             ),
             "networks" => run_command_json_for_module(
                 &INFO,
                 action,
                 "podman",
                 ["network", "ls", "--format", "json"],
+                user,
             ),
             "logs" => {
                 let payload: LogsPayload = parse_payload(payload)?;
@@ -108,6 +111,7 @@ impl AgentModule for PodmanModule {
                     action,
                     "podman",
                     ["logs", "--tail", &payload.lines.to_string(), &payload.name],
+                    user,
                 )
             }
             // Lifecycle verbs share the trivial `podman <verb> <name>` shape, so
@@ -120,6 +124,7 @@ impl AgentModule for PodmanModule {
                     "podman",
                     [action, &payload.name],
                     payload.dry_run,
+                    user,
                 )
             }
             // Protocol verb is `remove`; the podman subcommand is `rm`.
@@ -131,6 +136,7 @@ impl AgentModule for PodmanModule {
                     "podman",
                     ["rm", &payload.name],
                     payload.dry_run,
+                    user,
                 )
             }
             _ => unsupported_action(INFO.name, action),
@@ -152,7 +158,7 @@ mod tests {
     #[test]
     fn dry_run_remove_does_not_call_podman() {
         let response = PodmanModule
-            .handle("remove", json!({ "name": "app", "dry_run": true }))
+            .handle("remove", json!({ "name": "app", "dry_run": true }), None)
             .unwrap();
 
         assert_eq!(response["command"], "podman rm app");
@@ -162,7 +168,7 @@ mod tests {
 
     #[test]
     fn inspect_requires_name_payload() {
-        let response = PodmanModule.handle("inspect", json!({})).unwrap_err();
+        let response = PodmanModule.handle("inspect", json!({}), None).unwrap_err();
         assert!(response.to_string().contains("invalid command payload"));
     }
 }

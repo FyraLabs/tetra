@@ -319,6 +319,7 @@ mod tests {
                 action: "get_system".into(),
                 payload: json!({}),
                 signature: None,
+                user: None,
             },
         };
 

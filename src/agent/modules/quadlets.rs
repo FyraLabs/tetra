@@ -204,7 +204,7 @@ impl AgentModule for QuadletsModule {
         INFO
     }
 
-    fn handle(&self, action: &str, payload: Value) -> Result<Value> {
+    fn handle(&self, action: &str, payload: Value, _user: Option<&str>) -> Result<Value> {
         if let Some(response) = handle_metadata(INFO, action, payload.clone())? {
             return Ok(response);
         }
@@ -677,6 +677,7 @@ mod tests {
                     "contents": "[Container]\nImage=example\n",
                     "dry_run": true
                 }),
+                None,
             )
             .unwrap();
 
@@ -705,6 +706,7 @@ mod tests {
                         "recursive": true
                     }
                 }),
+                None,
             )
             .unwrap();
 
@@ -750,6 +752,7 @@ mod tests {
                         }
                     ]
                 }),
+                None,
             )
             .unwrap();
 
@@ -790,6 +793,7 @@ mod tests {
             .handle(
                 "list_files",
                 json!({ "base_dir": quadlet_dir.path(), "files_base_dir": files_dir.path() }),
+                None,
             )
             .unwrap();
         let files = response["files"].as_array().unwrap();
@@ -815,6 +819,7 @@ mod tests {
                     "filename": "site/index.html",
                     "companion": true
                 }),
+                None,
             )
             .unwrap();
 

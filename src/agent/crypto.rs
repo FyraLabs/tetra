@@ -177,6 +177,7 @@ mod tests {
             action: "get_system".into(),
             payload,
             signature: None,
+            user: None,
         }
     }
 

@@ -31,7 +31,7 @@ pub trait AgentModule: Send + Sync {
     /// Implementations conventionally start with
     /// [`handle_metadata`](super::module_support::handle_metadata) to serve the
     /// shared `capabilities`/`plan` meta-actions, then match on `action`.
-    fn handle(&self, action: &str, payload: Value) -> Result<Value>;
+    fn handle(&self, action: &str, payload: Value, user: Option<&str>) -> Result<Value>;
 }
 
 /// Registry of modules that the dispatcher routes commands to.
@@ -94,7 +94,7 @@ impl Dispatcher {
             bail!("unknown module `{}`", command.module);
         };
 
-        module.handle(&command.action, command.payload.clone())
+        module.handle(&command.action, command.payload.clone(), command.user.as_deref())
     }
 }
 
@@ -132,7 +132,7 @@ mod tests {
             }
         }
 
-        fn handle(&self, action: &str, payload: Value) -> Result<Value> {
+        fn handle(&self, action: &str, payload: Value, _user: Option<&str>) -> Result<Value> {
             Ok(json!({ "action": action, "payload": payload }))
         }
     }
@@ -146,6 +146,7 @@ mod tests {
             action: "ping".into(),
             payload: json!({ "value": 42 }),
             signature: None,
+            user: None,
         });
 
         assert!(response.ok);

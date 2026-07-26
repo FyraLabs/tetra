@@ -23,6 +23,10 @@ pub struct AgentCommand {
     pub payload: Value,
     #[serde(default)]
     pub signature: Option<String>,
+    /// The host user to run unprivileged actions as. Set by the transport
+    /// after session authentication; not part of the signed wire format.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user: Option<String>,
 }
 
 /// The response to an [`AgentCommand`].

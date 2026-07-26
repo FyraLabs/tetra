@@ -94,7 +94,7 @@ impl AgentModule for UsersModule {
         INFO
     }
 
-    fn handle(&self, action: &str, payload: Value) -> Result<Value> {
+    fn handle(&self, action: &str, payload: Value, user: Option<&str>) -> Result<Value> {
         // Delegate `capabilities`/`plan` to the shared metadata handler first.
         if let Some(response) = handle_metadata(INFO, action, payload.clone())? {
             return Ok(response);
@@ -110,7 +110,7 @@ impl AgentModule for UsersModule {
             // an existence check via the wrapped command's exit status.
             "status" => {
                 let payload: NamedPayload = parse_payload(payload)?;
-                run_command_for_module(&INFO, action, "id", [&payload.name])
+                run_command_for_module(&INFO, action, "id", [&payload.name], user)
             }
             "create" => {
                 let payload: CreatePayload = parse_payload(payload)?;
@@ -127,7 +127,7 @@ impl AgentModule for UsersModule {
                     args.extend(["--home-dir".into(), home]);
                 }
                 args.push(payload.name);
-                run_command_or_dry_run_for_module(&INFO, action, "useradd", args, payload.dry_run)
+                run_command_or_dry_run_for_module(&INFO, action, "useradd", args, payload.dry_run, user)
             }
             "update" => {
                 let payload: UpdatePayload = parse_payload(payload)?;
@@ -143,7 +143,7 @@ impl AgentModule for UsersModule {
                     args.extend(["--groups".into(), groups.join(",")]);
                 }
                 args.push(payload.name);
-                run_command_or_dry_run_for_module(&INFO, action, "usermod", args, payload.dry_run)
+                run_command_or_dry_run_for_module(&INFO, action, "usermod", args, payload.dry_run, user)
             }
             "delete" => {
                 let payload: NamedPayload = parse_payload(payload)?;
@@ -153,6 +153,7 @@ impl AgentModule for UsersModule {
                     "userdel",
                     [&payload.name],
                     payload.dry_run,
+                    user,
                 )
             }
             "set_password" => {
@@ -165,6 +166,7 @@ impl AgentModule for UsersModule {
                     "usermod",
                     ["--password", &payload.password_hash, &payload.name],
                     payload.dry_run,
+                    user,
                 )
             }
             _ => unsupported_action(INFO.name, action),
@@ -246,7 +248,7 @@ mod tests {
     #[test]
     fn dry_run_create_does_not_call_useradd() {
         let response = UsersModule
-            .handle("create", json!({ "name": "testuser", "dry_run": true }))
+            .handle("create", json!({ "name": "testuser", "dry_run": true }), None)
             .unwrap();
 
         assert_eq!(response["command"], "useradd testuser");

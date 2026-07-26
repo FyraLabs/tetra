@@ -58,7 +58,7 @@ impl AgentModule for FileModule {
         INFO
     }
 
-    fn handle(&self, action: &str, payload: Value) -> Result<Value> {
+    fn handle(&self, action: &str, payload: Value, _user: Option<&str>) -> Result<Value> {
         // Delegate `capabilities`/`plan` to the shared metadata handler first.
         if let Some(response) = handle_metadata(INFO, action, payload.clone())? {
             return Ok(response);
@@ -113,6 +113,7 @@ mod tests {
             .handle(
                 "write",
                 json!({ "path": path, "contents": "enabled=true\n", "dry_run": true }),
+                None,
             )
             .unwrap();
 
@@ -136,6 +137,7 @@ mod tests {
                         "context_type": "container_file_t"
                     }
                 }),
+                None,
             )
             .unwrap();
 
