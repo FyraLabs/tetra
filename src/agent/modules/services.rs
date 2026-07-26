@@ -147,7 +147,7 @@ impl AgentModule for ServicesModule {
                     &INFO,
                     action,
                     "systemctl",
-                    systemctl_args(
+                    &systemctl_args(
                         payload.scope,
                         ["--no-pager", "--plain", "status", &payload.service],
                     ),
@@ -163,7 +163,7 @@ impl AgentModule for ServicesModule {
                     &INFO,
                     action,
                     "journalctl",
-                    journalctl_args(
+                    &journalctl_args(
                         payload.scope,
                         [
                             "--no-pager",
@@ -182,7 +182,7 @@ impl AgentModule for ServicesModule {
                     &INFO,
                     action,
                     "systemctl",
-                    systemctl_args(payload.scope, ["daemon-reload"]),
+                    &systemctl_args(payload.scope, ["daemon-reload"]),
                     payload.dry_run,
                     user,
                 )
@@ -197,7 +197,7 @@ impl AgentModule for ServicesModule {
                     &INFO,
                     action,
                     "systemctl",
-                    systemctl_args(payload.scope, [action, &payload.service]),
+                    &systemctl_args(payload.scope, [action, &payload.service]),
                     payload.dry_run,
                     user,
                 )

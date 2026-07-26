@@ -5,6 +5,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
+use itertools::Itertools;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -62,6 +63,7 @@ impl ModuleInfo {
 /// Returns `Ok(None)` when the action isn't one of these meta-actions, so the
 /// caller can fall through to its own match.
 pub fn handle_metadata(info: ModuleInfo, action: &str, payload: Value) -> Result<Option<Value>> {
+    // NOTE: why do you need Result<_> and Ok()?
     match action {
         "capabilities" => Ok(Some(json!(info))),
         "plan" => Ok(Some(json!({
@@ -127,12 +129,99 @@ pub fn parse_payload<T: for<'de> Deserialize<'de>>(payload: Value) -> Result<T> 
 /// by passing a user to the `_for_module` helpers.
 pub const DEFAULT_USER_SUPPORT: bool = cfg!(target_os = "linux");
 
+/// Execute commands. Wrapper around [`run_command_output_as`].
+///
+/// # Usage
+/// - prefix `DRY_RUN` or `DRY_RUN(bool_expr)` to set dry run
+/// - prefix `{ &INFO, action, user }` to set default user
+/// - then add your program name (any expression)
+/// - add `=> args` for your arguments (`args` need to be `Copy`!)
+/// - add `; json` to wrap it around [`serde_json::json!`]
+/// - add `; JSON` to obtain json in the following format:
+/// ```ts
+/// {
+///     "command": result.command,
+///     "status": result.status,
+///     "stdout": result.stdout,
+///     "stderr": result.stderr,
+///     "dry_run": result.dry_run,
+///     "data": stdout,
+/// }
+/// ```
+///
+/// For aesthetic/formatting purposes, the macro partially accepts usages with elided `;` or `=>`.
+#[macro_export]
+macro_rules! cmd {
+    ($($idk:tt)+) => {
+        $crate::__cmd_inner!((false, None) $($idk)+)
+    };
+}
+
+#[macro_export]
+macro_rules! __cmd_inner {
+    (($dry_run:expr, $default_user:expr) DRY_RUN($dry:expr) $($idk:tt)+) => {
+        $crate::__cmd_inner!(($dry, $default_user) $($idk)+)
+    };
+    (($dry_run:expr, $default_user:expr) DRY_RUN $($idk:tt)+) => {
+        $crate::__cmd_inner!((true, $default_user) $($idk)+)
+    };
+    (($dry_run:expr, $default_user:expr) { $info:expr, $act:expr, $user:expr } $($idk:tt)+) => {{
+        let default_user = $crate::agent::module_support::effective_user($info, $act, $user);
+        $crate::__cmd_inner!(($dry_run, default_user) $($idk)+)
+    }};
+    (($dry_run:expr, $default_user:expr) $program:literal $args:expr $(; $($idk:tt)*)?) => {
+        $crate::__cmd_inner!(
+            @{$($($idk)*)?}
+            $crate::agent::module_support::run_command_output_as($program, $args, $dry_run, $default_user)
+        )
+    };
+    (($dry_run:expr, $default_user:expr) $program:literal [$($args:tt)+] $($idk:tt)*) => {
+        $crate::__cmd_inner!(
+            @{$($idk)*}
+            $crate::agent::module_support::run_command_output_as($program, [$($args)+], $dry_run, $default_user)
+        )
+    };
+    (($dry_run:expr, $default_user:expr) $program:expr $(; $($idk:tt)*)?) => {
+        $crate::__cmd_inner!(
+            @{$($($idk)*)?}
+            $crate::agent::module_support::run_command_output_as($program, &[""; 0], $dry_run, $default_user)
+        )
+    };
+    (($dry_run:expr, $default_user:expr) $program:expr => $args:expr $(; $($idk:tt)*)?) => {
+        $crate::__cmd_inner!(
+            @{$($($idk)*)?}
+            $crate::agent::module_support::run_command_output_as($program, $args, $dry_run, $default_user)
+        )
+    };
+    (($dry_run:expr, $default_user:expr) $program:expr => [$($args:tt)+] $($idk:tt)*) => {
+        $crate::__cmd_inner!(
+            @{$($idk)*}
+            $crate::agent::module_support::run_command_output_as($program, [$($args)+], $dry_run, $default_user)
+        )
+    };
+    (@{}$final:expr) => { $final };
+    (@{json}$final:expr) => { $final.map(|obj| ::serde_json::json!(obj)) };
+    (@{JSON}$final:expr) => { $final.and_then(|result| {
+        let data: ::serde_json::Value =
+            ::serde_json::from_str(&result.stdout).context("failed to parse command stdout as JSON")?;
+        Ok(::serde_json::json!({
+            "command": result.command,
+            "status": result.status,
+            "stdout": result.stdout,
+            "stderr": result.stderr,
+            "dry_run": result.dry_run,
+            "data": data,
+        }))
+    }) };
+}
+
 /// Run a host command and return its [`CommandResult`] as JSON, executing
 /// unconditionally (no dry-run support).
+#[deprecated = "use crate::cmd!() instead"]
 pub fn run_command<I, S>(program: &str, args: I) -> Result<Value>
 where
-    I: IntoIterator<Item = S>,
-    S: AsRef<OsStr>,
+    I: IntoIterator<Item = S> + Copy,
+    S: AsRef<OsStr> + std::fmt::Display,
 {
     Ok(json!(run_command_output(program, args, false)?))
 }
@@ -141,10 +230,11 @@ where
 /// run without executing it. The returned JSON always carries `dry_run` so the
 /// caller can distinguish a preview from a real result by inspecting the
 /// payload, not just by remembering what it asked for.
+#[deprecated = "use crate::cmd!() instead"]
 pub fn run_command_or_dry_run<I, S>(program: &str, args: I, dry_run: bool) -> Result<Value>
 where
-    I: IntoIterator<Item = S>,
-    S: AsRef<OsStr>,
+    I: IntoIterator<Item = S> + Copy,
+    S: AsRef<OsStr> + std::fmt::Display,
 {
     Ok(json!(run_command_output_as(program, args, dry_run, None)?))
 }
@@ -156,10 +246,11 @@ where
 /// This is the helper for commands like `podman inspect --format json` where
 /// the interesting content is structured — callers get the parsed value
 /// directly rather than re-parsing `stdout` themselves.
+#[deprecated = "use crate::cmd!() instead"]
 pub fn run_command_json<I, S>(program: &str, args: I) -> Result<Value>
 where
-    I: IntoIterator<Item = S>,
-    S: AsRef<OsStr>,
+    I: IntoIterator<Item = S> + Copy,
+    S: AsRef<OsStr> + std::fmt::Display,
 {
     let result = run_command_output_as(program, args, false, None)?;
     let data: Value =
@@ -187,10 +278,11 @@ where
 /// [`CommandResult`].  When `default_user` is set and the action is not
 /// privileged, the command is executed via `runuser` so it runs under the
 /// configured unprivileged account rather than root.
+#[deprecated = "use crate::cmd!() instead"]
 pub fn run_command_output<I, S>(program: &str, args: I, dry_run: bool) -> Result<CommandResult>
 where
-    I: IntoIterator<Item = S>,
-    S: AsRef<OsStr>,
+    I: IntoIterator<Item = S> + Copy,
+    S: AsRef<OsStr> + std::fmt::Display,
 {
     run_command_output_as(program, args, dry_run, None)
 }
@@ -209,14 +301,10 @@ pub fn run_command_output_as<I, S>(
     default_user: Option<&str>,
 ) -> Result<CommandResult>
 where
-    I: IntoIterator<Item = S>,
-    S: AsRef<OsStr>,
+    I: IntoIterator<Item = S> + Copy,
+    S: AsRef<OsStr> + std::fmt::Display,
 {
-    let args: Vec<String> = args
-        .into_iter()
-        .map(|arg| arg.as_ref().to_string_lossy().into_owned())
-        .collect();
-    let command = command_display(program, &args);
+    let command = command_display(program, args);
 
     if dry_run {
         return Ok(CommandResult {
@@ -231,11 +319,11 @@ where
     let output = match default_user {
         Some(user) if DEFAULT_USER_SUPPORT => Command::new("runuser")
             .args(["-u", user, "--", program])
-            .args(&args)
+            .args(args)
             .output()
             .with_context(|| format!("failed to run `{program}` as `{user}`")),
         _ => Command::new(program)
-            .args(&args)
+            .args(args)
             .output()
             .with_context(|| format!("failed to run `{program}`")),
     }?;
@@ -266,7 +354,8 @@ where
 ///
 /// Privileged actions always run as root (`None`). Unprivileged actions run as
 /// the supplied `user` when it is present, otherwise they fall back to root.
-fn effective_user<'a>(
+#[inline]
+pub fn effective_user<'a>(
     info: &'a ModuleInfo,
     action: &'a str,
     user: Option<&'a str>,
@@ -280,6 +369,7 @@ fn effective_user<'a>(
 
 /// Like [`run_command`], but respects [`ModuleInfo::privileged_actions`] and
 /// runs unprivileged actions as the supplied `user` when available.
+#[deprecated = "use crate::cmd!() instead"]
 pub fn run_command_for_module<I, S>(
     info: &ModuleInfo,
     action: &str,
@@ -288,8 +378,8 @@ pub fn run_command_for_module<I, S>(
     user: Option<&str>,
 ) -> Result<Value>
 where
-    I: IntoIterator<Item = S>,
-    S: AsRef<OsStr>,
+    I: IntoIterator<Item = S> + Copy,
+    S: AsRef<OsStr> + std::fmt::Display,
 {
     Ok(json!(run_command_output_as(
         program,
@@ -301,6 +391,7 @@ where
 
 /// Like [`run_command_or_dry_run`], but respects [`ModuleInfo::privileged_actions`]
 /// and runs unprivileged actions as the supplied `user` when available.
+#[deprecated = "use crate::cmd!() instead"]
 pub fn run_command_or_dry_run_for_module<I, S>(
     info: &ModuleInfo,
     action: &str,
@@ -310,8 +401,8 @@ pub fn run_command_or_dry_run_for_module<I, S>(
     user: Option<&str>,
 ) -> Result<Value>
 where
-    I: IntoIterator<Item = S>,
-    S: AsRef<OsStr>,
+    I: IntoIterator<Item = S> + Copy,
+    S: AsRef<OsStr> + std::fmt::Display,
 {
     Ok(json!(run_command_output_as(
         program,
@@ -323,6 +414,7 @@ where
 
 /// Like [`run_command_json`], but respects [`ModuleInfo::privileged_actions`] and
 /// runs unprivileged actions as the supplied `user` when available.
+#[deprecated = "use crate::cmd!() instead"]
 pub fn run_command_json_for_module<I, S>(
     info: &ModuleInfo,
     action: &str,
@@ -331,8 +423,8 @@ pub fn run_command_json_for_module<I, S>(
     user: Option<&str>,
 ) -> Result<Value>
 where
-    I: IntoIterator<Item = S>,
-    S: AsRef<OsStr>,
+    I: IntoIterator<Item = S> + Copy,
+    S: AsRef<OsStr> + std::fmt::Display,
 {
     let result = run_command_output_as(program, args, false, effective_user(info, action, user))?;
     let data: Value =
@@ -349,6 +441,7 @@ where
 
 /// Like [`run_command_output`], but respects [`ModuleInfo::privileged_actions`] and
 /// runs unprivileged actions as the supplied `user` when available.
+#[deprecated = "use crate::cmd!() instead"]
 pub fn run_command_output_for_module<I, S>(
     info: &ModuleInfo,
     action: &str,
@@ -358,8 +451,8 @@ pub fn run_command_output_for_module<I, S>(
     user: Option<&str>,
 ) -> Result<CommandResult>
 where
-    I: IntoIterator<Item = S>,
-    S: AsRef<OsStr>,
+    I: IntoIterator<Item = S> + Copy,
+    S: AsRef<OsStr> + std::fmt::Display,
 {
     run_command_output_as(program, args, dry_run, effective_user(info, action, user))
 }
@@ -421,11 +514,7 @@ pub fn apply_selinux(
                     .map(|path| default_fcontext_pattern(path, options.recursive))
             })
             .context("SELinux context_type requires path, path_pattern, or default path")?;
-        operations.push(run_command_or_dry_run(
-            "semanage",
-            ["fcontext", "-a", "-t", context_type, &pattern],
-            dry_run,
-        )?);
+        operations.push(cmd!(DRY_RUN(dry_run) "semanage" ["fcontext", "-a", "-t", context_type, &pattern]; json)?);
     }
 
     if let Some(path) = path {
@@ -435,7 +524,7 @@ pub fn apply_selinux(
         }
         args.push("-v".to_owned());
         args.push(path);
-        operations.push(run_command_or_dry_run("restorecon", args, dry_run)?);
+        operations.push(cmd!(DRY_RUN(dry_run) "restorecon" &args ; json)?);
     }
 
     Ok(operations)
@@ -463,11 +552,17 @@ pub fn safe_join(base: &Path, name: &str) -> Result<PathBuf> {
 /// Render a command and its args as a single space-joined display string.
 /// Used both for dry-run previews and for error messages (`\`foo bar\` failed`).
 #[must_use]
-pub fn command_display(program: &str, args: &[String]) -> String {
-    std::iter::once(program.to_owned())
-        .chain(args.iter().cloned())
-        .collect::<Vec<_>>()
-        .join(" ")
+pub fn command_display<
+    's,
+    I: IntoIterator<Item = S>,
+    S: std::fmt::Display,
+    P: std::fmt::Display,
+>(
+    program: P,
+    args: I,
+) -> String {
+    let args = (args.into_iter()).map(|arg| Box::new(arg) as Box<dyn std::fmt::Display>);
+    (std::iter::once(Box::new(program) as Box<dyn std::fmt::Display>).chain(args)).join(" ")
 }
 
 /// Build the default `semanage fcontext` pattern for `path`. Recursive
@@ -538,7 +633,7 @@ mod tests {
     #[test]
     fn formats_command_display() {
         assert_eq!(
-            command_display("systemctl", &["status".into(), "nginx.service".into()]),
+            command_display("systemctl", &["status", "nginx.service"]),
             "systemctl status nginx.service"
         );
     }
