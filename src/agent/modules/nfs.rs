@@ -130,7 +130,13 @@ impl AgentModule for NfsModule {
                 // place, without bouncing nfs-server — that avoids dropping
                 // existing clients mid-reload.
                 let payload: DryRunPayload = parse_payload(payload)?;
-                run_command_or_dry_run_for_module(&INFO, action, "exportfs", ["-ra"], payload.dry_run)
+                run_command_or_dry_run_for_module(
+                    &INFO,
+                    action,
+                    "exportfs",
+                    ["-ra"],
+                    payload.dry_run,
+                )
             }
             "enable" => {
                 let payload: DryRunPayload = parse_payload(payload)?;

@@ -147,7 +147,13 @@ impl AgentModule for UsersModule {
             }
             "delete" => {
                 let payload: NamedPayload = parse_payload(payload)?;
-                run_command_or_dry_run_for_module(&INFO, action, "userdel", [&payload.name], payload.dry_run)
+                run_command_or_dry_run_for_module(
+                    &INFO,
+                    action,
+                    "userdel",
+                    [&payload.name],
+                    payload.dry_run,
+                )
             }
             "set_password" => {
                 let payload: SetPasswordPayload = parse_payload(payload)?;

@@ -112,7 +112,12 @@ impl AgentModule for StorageModule {
             })),
             "status" => {
                 let payload: PathPayload = parse_payload(payload)?;
-                run_command_for_module(&INFO, action, "df", ["-h", payload.path.to_string_lossy().as_ref()])
+                run_command_for_module(
+                    &INFO,
+                    action,
+                    "df",
+                    ["-h", payload.path.to_string_lossy().as_ref()],
+                )
             }
             "mount" => {
                 let payload: MountPayload = parse_payload(payload)?;
@@ -129,7 +134,13 @@ impl AgentModule for StorageModule {
                 // clone it into a PathBuf first.
                 let target = PathBuf::from(&payload.target);
                 args.extend([payload.source, payload.target]);
-                let mount = run_command_or_dry_run_for_module(&INFO, action, "mount", args, payload.dry_run)?;
+                let mount = run_command_or_dry_run_for_module(
+                    &INFO,
+                    action,
+                    "mount",
+                    args,
+                    payload.dry_run,
+                )?;
                 // Label the freshly mounted target as part of the same action;
                 // see `apply_selinux` in module_support.rs for the option
                 // resolution rules.

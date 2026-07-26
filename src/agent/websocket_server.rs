@@ -278,8 +278,8 @@ async fn handle_connection(
                 // Verify against root (or the configured admin user). On most
                 // server installs root is the privileged account; a future
                 // revision can read the admin user from transport config.
-                let username = std::env::var("TETRA_ELEVATION_USER")
-                    .unwrap_or_else(|_| "root".into());
+                let username =
+                    std::env::var("TETRA_ELEVATION_USER").unwrap_or_else(|_| "root".into());
                 match verify_password(&username, &password) {
                     Ok(true) => {
                         let grant = HeadlessElevationGrant::new(ELEVATION_TTL);
@@ -366,7 +366,11 @@ async fn handle_connection(
                         match &elevation {
                             Some(grant) if grant.is_active() => {}
                             _ => {
-                                send_error(&mut socket, "privileged action requires elevation; request elevation first").await?;
+                                send_error(
+                                    &mut socket,
+                                    "privileged action requires elevation; request elevation first",
+                                )
+                                .await?;
                                 continue;
                             }
                         }
@@ -522,7 +526,10 @@ fn build_privilege_map(dispatcher: &super::Dispatcher) -> BTreeMap<String, Vec<S
         .map(|info| {
             (
                 info.name.to_string(),
-                info.privileged_actions.iter().map(|s| s.to_string()).collect(),
+                info.privileged_actions
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect(),
             )
         })
         .collect()

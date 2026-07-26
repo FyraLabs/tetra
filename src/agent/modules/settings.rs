@@ -11,7 +11,10 @@ use serde_json::{Value, json};
 
 use crate::agent::{
     AgentModule,
-    module_support::{ModuleInfo, ModuleStatus, handle_metadata, parse_payload, run_command_or_dry_run_for_module, unsupported_action},
+    module_support::{
+        ModuleInfo, ModuleStatus, handle_metadata, parse_payload,
+        run_command_or_dry_run_for_module, unsupported_action,
+    },
 };
 
 /// Marker type for the always-on settings module. It carries no state: all
@@ -62,7 +65,13 @@ impl AgentModule for SettingsModule {
             })),
             "set_hostname" => {
                 let payload: SetHostnamePayload = parse_payload(payload)?;
-                run_command_or_dry_run_for_module(&INFO, action, "hostnamectl", ["set-hostname", &payload.hostname], payload.dry_run)
+                run_command_or_dry_run_for_module(
+                    &INFO,
+                    action,
+                    "hostnamectl",
+                    ["set-hostname", &payload.hostname],
+                    payload.dry_run,
+                )
             }
             _ => unsupported_action(INFO.name, action),
         }

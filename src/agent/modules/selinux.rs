@@ -138,7 +138,13 @@ impl AgentModule for SelinuxModule {
 
         match action {
             "status" => {
-                let result = run_command_output_for_module(&INFO, action, "sestatus", std::iter::empty::<&str>(), false)?;
+                let result = run_command_output_for_module(
+                    &INFO,
+                    action,
+                    "sestatus",
+                    std::iter::empty::<&str>(),
+                    false,
+                )?;
                 Ok(json!({
                     "command": result.command,
                     "status": result.status,
@@ -149,7 +155,13 @@ impl AgentModule for SelinuxModule {
                 }))
             }
             "enforce" => {
-                let result = run_command_output_for_module(&INFO, action, "getenforce", std::iter::empty::<&str>(), false)?;
+                let result = run_command_output_for_module(
+                    &INFO,
+                    action,
+                    "getenforce",
+                    std::iter::empty::<&str>(),
+                    false,
+                )?;
                 Ok(json!({
                     "command": result.command,
                     "status": result.status,
@@ -160,7 +172,8 @@ impl AgentModule for SelinuxModule {
                 }))
             }
             "booleans" => {
-                let result = run_command_output_for_module(&INFO, action, "getsebool", ["-a"], false)?;
+                let result =
+                    run_command_output_for_module(&INFO, action, "getsebool", ["-a"], false)?;
                 Ok(json!({
                     "command": result.command,
                     "status": result.status,
@@ -187,7 +200,13 @@ impl AgentModule for SelinuxModule {
                 // `semanage fcontext -l` dumps every fcontext rule the policy
                 // knows about; `parse_semanage_fcontext` below turns the
                 // tabular output into structured JSON.
-                let result = run_command_output_for_module(&INFO, action, "semanage", ["fcontext", "-l"], false)?;
+                let result = run_command_output_for_module(
+                    &INFO,
+                    action,
+                    "semanage",
+                    ["fcontext", "-l"],
+                    false,
+                )?;
                 Ok(json!({
                     "command": result.command,
                     "status": result.status,
@@ -236,7 +255,13 @@ impl AgentModule for SelinuxModule {
                 // relabeling run against.
                 args.push("-v".to_string());
                 args.push(payload.path);
-                run_command_or_dry_run_for_module(&INFO, action, "restorecon", args, payload.dry_run)
+                run_command_or_dry_run_for_module(
+                    &INFO,
+                    action,
+                    "restorecon",
+                    args,
+                    payload.dry_run,
+                )
             }
             _ => unsupported_action(INFO.name, action),
         }

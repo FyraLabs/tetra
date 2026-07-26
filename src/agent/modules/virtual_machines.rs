@@ -85,7 +85,13 @@ impl AgentModule for VirtualMachinesModule {
             // `list --all` includes powered-off domains, not just running ones.
             // `list` is a read and therefore never dry-run.
             "list" => {
-                let result = run_command_output_for_module(&INFO, action, "virsh", ["list", "--all"], false)?;
+                let result = run_command_output_for_module(
+                    &INFO,
+                    action,
+                    "virsh",
+                    ["list", "--all"],
+                    false,
+                )?;
                 let domains = parse_virsh_list(&result.stdout);
                 Ok(json!({
                     "command": result.command,
@@ -100,7 +106,13 @@ impl AgentModule for VirtualMachinesModule {
             // collapses them into a single JSON object under `domain`.
             "status" => {
                 let payload: NamedPayload = parse_payload(payload)?;
-                let result = run_command_output_for_module(&INFO, action, "virsh", ["dominfo", &payload.name], false)?;
+                let result = run_command_output_for_module(
+                    &INFO,
+                    action,
+                    "virsh",
+                    ["dominfo", &payload.name],
+                    false,
+                )?;
                 let info = parse_virsh_dominfo(&result.stdout);
                 Ok(json!({
                     "command": result.command,
@@ -130,30 +142,60 @@ impl AgentModule for VirtualMachinesModule {
             }
             "start" => {
                 let payload: NamedPayload = parse_payload(payload)?;
-                run_command_or_dry_run_for_module(&INFO, action, "virsh", ["start", &payload.name], payload.dry_run)
+                run_command_or_dry_run_for_module(
+                    &INFO,
+                    action,
+                    "virsh",
+                    ["start", &payload.name],
+                    payload.dry_run,
+                )
             }
             // `stop` uses `shutdown` for a graceful guest-initiated shutdown
             // rather than `destroy` (hard power-off).
             "stop" => {
                 let payload: NamedPayload = parse_payload(payload)?;
-                run_command_or_dry_run_for_module(&INFO, action, "virsh", ["shutdown", &payload.name], payload.dry_run)
+                run_command_or_dry_run_for_module(
+                    &INFO,
+                    action,
+                    "virsh",
+                    ["shutdown", &payload.name],
+                    payload.dry_run,
+                )
             }
             // `restart` uses `reboot`, the guest-graceful equivalent.
             "restart" => {
                 let payload: NamedPayload = parse_payload(payload)?;
-                run_command_or_dry_run_for_module(&INFO, action, "virsh", ["reboot", &payload.name], payload.dry_run)
+                run_command_or_dry_run_for_module(
+                    &INFO,
+                    action,
+                    "virsh",
+                    ["reboot", &payload.name],
+                    payload.dry_run,
+                )
             }
             // `create` maps to `define`: register a persistent domain from the
             // given XML file. See the module docs for why we avoid `virsh create`.
             "create" => {
                 let payload: CreatePayload = parse_payload(payload)?;
-                run_command_or_dry_run_for_module(&INFO, action, "virsh", ["define", &payload.xml_path], payload.dry_run)
+                run_command_or_dry_run_for_module(
+                    &INFO,
+                    action,
+                    "virsh",
+                    ["define", &payload.xml_path],
+                    payload.dry_run,
+                )
             }
             // `delete` maps to `undefine`: remove the domain registration. It
             // does not delete disk images by default.
             "delete" => {
                 let payload: NamedPayload = parse_payload(payload)?;
-                run_command_or_dry_run_for_module(&INFO, action, "virsh", ["undefine", &payload.name], payload.dry_run)
+                run_command_or_dry_run_for_module(
+                    &INFO,
+                    action,
+                    "virsh",
+                    ["undefine", &payload.name],
+                    payload.dry_run,
+                )
             }
             _ => unsupported_action(INFO.name, action),
         }
