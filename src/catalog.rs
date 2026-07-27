@@ -134,9 +134,8 @@ impl Parameter {
         let value = value.or(self.generate.map(Into::into).map(YamlValue::String));
         if value.is_none() && self.required {
             bail!("missing required parameter `{}`", self.key);
-        } else {
-            Ok(value.unwrap_or(YamlValue::Null))
         }
+        Ok(value.unwrap_or(YamlValue::Null))
     }
     pub fn json_value(&self, values: &BTreeMap<String, YamlValue>) -> Result<JsonValue> {
         let value = values.get(&self.key).or(self.default.as_ref()).cloned();

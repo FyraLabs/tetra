@@ -26,11 +26,13 @@ pub trait AgentModule: Send + Sync {
         self.info().name
     }
 
-    /// Handle one action. `action` is the command's `action` field; `payload`
-    /// is the command's `payload` (already parsed from JSON by the transport).
-    /// Implementations conventionally start with
-    /// [`handle_metadata`](super::module_support::handle_metadata) to serve the
-    /// shared `capabilities`/`plan` meta-actions, then match on `action`.
+    /// Handle one action.
+    ///
+    /// - `action` is the command's `action` field
+    /// - `payload` is the command's `payload` (already parsed from JSON by the transport)
+    ///
+    /// Implementations conventionally start with [`super::module_support::handle_metadata`] to
+    /// serve the shared `capabilities`/`plan` meta-actions, then match on `action`.
     fn handle(&self, action: &str, payload: Value, user: Option<&str>) -> Result<Value>;
 }
 

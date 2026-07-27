@@ -501,8 +501,8 @@ fn quadlet_files_base_dir(
 /// (`app.container` -> `app`). This is also the first line of defense
 /// against path-traversal in filenames: it rejects absolute paths and any
 /// `..`/`Prefix` component before `safe_join` runs at write time.
-fn quadlet_bundle_name(filename: &str) -> Result<String> {
-    let path = Path::new(filename);
+fn quadlet_bundle_name(pathstr: &str) -> Result<String> {
+    let path = Path::new(pathstr);
     // Reject absolute paths and `..`/`Prefix` components up front so the
     // derived bundle name can't be used to escape the data root later.
     // `Prefix` covers Windows drive roots and is harmless to reject on Linux.
@@ -514,7 +514,7 @@ fn quadlet_bundle_name(filename: &str) -> Result<String> {
             )
         })
     {
-        bail!("path `{filename}` must be relative and stay within the base directory");
+        bail!("path `{pathstr}` must be relative and stay within the base directory");
     }
 
     let file_name = path
@@ -522,10 +522,10 @@ fn quadlet_bundle_name(filename: &str) -> Result<String> {
         .and_then(|name| name.to_str())
         .context("Quadlet filename must include a file name")?;
     let Some((stem, extension)) = file_name.rsplit_once('.') else {
-        bail!("`{filename}` is not a supported Quadlet filename");
+        bail!("`{pathstr}` is not a supported Quadlet filename");
     };
     if !QUADLET_EXTENSIONS.contains(&extension) || stem.is_empty() {
-        bail!("`{filename}` is not a supported Quadlet filename");
+        bail!("`{pathstr}` is not a supported Quadlet filename");
     }
     Ok(stem.to_owned())
 }
