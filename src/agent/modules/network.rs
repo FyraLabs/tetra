@@ -1,15 +1,15 @@
-//! Network interface inspection and NetworkManager keyfile management.
+//! Network interface inspection and `NetworkManager` keyfile management.
 //!
 //! This module splits host networking into two concerns:
 //!
 //! - *Live state* (`interfaces`, `status`) is read from `/sys/class/net` sysfs
 //!   and `ip -json addr show`, so callers can see what is currently up.
 //! - *Persistent configuration* (`get_config`/`set_config`) is managed as
-//!   NetworkManager *keyfiles*: INI-style `.nmconnection` profiles under
+//!   `NetworkManager` *keyfiles*: INI-style `.nmconnection` profiles under
 //!   `/etc/NetworkManager/system-connections/`. The agent reads and writes
 //!   those files directly rather than driving `nmcli`, which keeps the wire
 //!   format transparent and lets the control plane template profiles. After a
-//!   write, callers invoke `reload` to tell NetworkManager to pick up the new
+//!   write, callers invoke `reload` to tell `NetworkManager` to pick up the new
 //!   profile via `systemctl reload-or-restart NetworkManager.service`.
 //!
 //! `set_config` supports the shared `selinux` options so written keyfiles can
@@ -96,7 +96,7 @@ impl AgentModule for NetworkModule {
                 let payload: InterfacePayload = parse_payload(payload)?;
                 // `ip -json addr show` returns structured JSON we can pass
                 // through verbatim; an optional `dev <name>` narrows the scope.
-                let mut args = vec!["-json".to_string(), "addr".to_string(), "show".to_string()];
+                let mut args = vec!["-json".to_owned(), "addr".to_owned(), "show".to_owned()];
                 if let Some(interface) = payload.interface {
                     args.push("dev".into());
                     args.push(interface);
@@ -154,12 +154,10 @@ fn read_interfaces() -> Result<Vec<Value>> {
         let name = entry.file_name().to_string_lossy().into_owned();
         let operstate = fs::read_to_string(entry.path().join("operstate"))
             .unwrap_or_default()
-            .trim()
-            .to_string();
+            .trim().to_owned();
         let address = fs::read_to_string(entry.path().join("address"))
             .unwrap_or_default()
-            .trim()
-            .to_string();
+            .trim().to_owned();
         interfaces.push(jsonf! { name, operstate, "mac": address });
     }
     interfaces.sort_by(|left, right| left["name"].as_str().cmp(&right["name"].as_str()));

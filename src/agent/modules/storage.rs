@@ -110,10 +110,10 @@ impl AgentModule for StorageModule {
                 let payload: MountPayload = parse_payload(payload)?;
                 let mut args = Vec::new();
                 if let Some(fstype) = payload.fstype {
-                    args.extend(["-t".to_string(), fstype]);
+                    args.extend(["-t".to_owned(), fstype]);
                 }
                 if let Some(options) = payload.options {
-                    args.extend(["-o".to_string(), options]);
+                    args.extend(["-o".to_owned(), options]);
                 }
                 // The target is captured separately so it can be used as the
                 // default relabel path for the shared SELinux options below;
