@@ -154,10 +154,12 @@ fn read_interfaces() -> Result<Vec<Value>> {
         let name = entry.file_name().to_string_lossy().into_owned();
         let operstate = fs::read_to_string(entry.path().join("operstate"))
             .unwrap_or_default()
-            .trim().to_owned();
+            .trim()
+            .to_owned();
         let address = fs::read_to_string(entry.path().join("address"))
             .unwrap_or_default()
-            .trim().to_owned();
+            .trim()
+            .to_owned();
         interfaces.push(jsonf! { name, operstate, "mac": address });
     }
     interfaces.sort_by(|left, right| left["name"].as_str().cmp(&right["name"].as_str()));

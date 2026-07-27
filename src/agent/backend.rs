@@ -56,10 +56,7 @@ impl Actor for AgentBackend {
     type Args = Dispatcher;
     type Error = Infallible;
 
-    async fn on_start(
-        args: Self::Args,
-        _actor_ref: ActorRef<Self>,
-    ) -> Result<Self, Self::Error> {
+    async fn on_start(args: Self::Args, _actor_ref: ActorRef<Self>) -> Result<Self, Self::Error> {
         Ok(Self::new(args))
     }
 }

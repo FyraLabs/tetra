@@ -120,10 +120,7 @@ impl TransportFrame {
             Self::Ping { id, sent_at } => {
                 Self::Pong { id, sent_at }.send(socket).await?;
             }
-            Self::Hello { .. }
-            | Self::Response { .. }
-            | Self::Pong { .. }
-            | Self::Error { .. } => {
+            Self::Hello { .. } | Self::Response { .. } | Self::Pong { .. } | Self::Error { .. } => {
                 Self::Error {
                     error: "unsupported frame from control plane".into(),
                 }

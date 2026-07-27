@@ -306,9 +306,11 @@ mod tests {
         session.accept_command(&first, 1000).unwrap();
         session.accept_command(&first, 1000).unwrap_err();
         session
-                .accept_command(&signed_frame(&key, 2, 1000, "nonce-000000000002"), 1000).unwrap_err();
+            .accept_command(&signed_frame(&key, 2, 1000, "nonce-000000000002"), 1000)
+            .unwrap_err();
         session
-                .accept_command(&signed_frame(&key, 1, 0, "nonce-000000000003"), 1000).unwrap_err();
+            .accept_command(&signed_frame(&key, 1, 0, "nonce-000000000003"), 1000)
+            .unwrap_err();
     }
 
     #[test]

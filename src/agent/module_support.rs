@@ -423,11 +423,7 @@ pub fn safe_join(base: &Path, name: &str) -> Result<PathBuf> {
 /// Render a command and its args as a single space-joined display string.
 /// Used both for dry-run previews and for error messages (`` `foo bar` failed ``).
 #[must_use]
-pub fn command_display<
-    I: IntoIterator<Item = S>,
-    S: std::fmt::Display,
-    P: std::fmt::Display,
->(
+pub fn command_display<I: IntoIterator<Item = S>, S: std::fmt::Display, P: std::fmt::Display>(
     program: P,
     args: I,
 ) -> String {
