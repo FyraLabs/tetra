@@ -203,13 +203,26 @@ async fn agent_dispatch(cli: AgentDispatchCli) -> Result<()> {
     Ok(())
 }
 
-async fn agent_ws_serve(cli: AgentWsServeCli) -> Result<()> {
+async fn agent_ws_serve(
+    AgentWsServeCli {
+        listen,
+        controller_public_key,
+        enrollment_token,
+        identity_dir,
+        tls_cert,
+        tls_key,
+    }: AgentWsServeCli,
+) -> Result<()> {
+    anyhow::ensure!(
+        tls_cert.as_ref().xor(tls_key.as_ref()).is_none(),
+        "--tls-cert and --tls-key must be supplied together"
+    );
     websocket_server::WebSocketServerConfig::serve(WebSocketServerConfig {
-        listen: cli.listen,
-        controller_public_key: cli.controller_public_key,
-        enrollment_token: cli.enrollment_token,
-        identity_dir: cli.identity_dir,
-        tls_cert_key_path: cli.tls_cert.zip(cli.tls_key),
+        listen,
+        controller_public_key,
+        enrollment_token,
+        identity_dir,
+        tls_cert_key_path: tls_cert.zip(tls_key),
     })
     .await
 }
