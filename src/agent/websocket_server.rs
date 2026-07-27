@@ -183,8 +183,8 @@ async fn handle_connection(
     let mut socket = accept_async(stream)
         .await
         .context("WebSocket handshake failed")?;
-    let session_id = random_token(24)?;
-    let challenge = random_token(32)?;
+    let session_id = random_token(24);
+    let challenge = random_token(32);
     let controller_key = if let Some(key) = controller_key {
         key
     } else {
@@ -208,7 +208,7 @@ async fn handle_connection(
                     send_error(&mut socket, "elevation request session does not match").await?;
                     continue;
                 }
-                let prompt_id = random_token(24)?;
+                let prompt_id = random_token(24);
                 pending_prompt = Some(prompt_id.clone());
                 send(
                     &mut socket,
@@ -568,10 +568,10 @@ fn build_privilege_map(dispatcher: &super::Dispatcher) -> BTreeMap<String, Vec<S
         .collect()
 }
 
-fn random_token(len: usize) -> Result<String> {
+fn random_token(len: usize) -> String {
     let mut value = vec![0_u8; len];
     rand::rng().fill(&mut value[..]);
-    Ok(URL_SAFE_NO_PAD.encode(value))
+    URL_SAFE_NO_PAD.encode(value)
 }
 
 #[cfg(test)]
@@ -599,8 +599,8 @@ mod tests {
 
     #[test]
     fn random_tokens_are_non_empty_and_different() {
-        let first = random_token(16).unwrap();
-        let second = random_token(16).unwrap();
+        let first = random_token(16);
+        let second = random_token(16);
         assert!(!first.is_empty());
         assert_ne!(first, second);
     }

@@ -115,8 +115,8 @@ pub struct AuthenticatedSession {
 }
 
 impl AuthenticatedSession {
-    pub fn new(
-        session_id: impl Into<String>,
+    pub fn new<S: Into<String>>(
+        session_id: S,
         verifying_key: VerifyingKey,
         user: Option<String>,
         policy: SessionPolicy,

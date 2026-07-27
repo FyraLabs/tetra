@@ -191,7 +191,7 @@ async fn connect_once(
 
     TransportFrame::Hello {
         host_id: config.host_id.clone(),
-        agent_version: env!("CARGO_PKG_VERSION").to_string(),
+        agent_version: env!("CARGO_PKG_VERSION").to_owned(),
         protocol_version: PROTOCOL_VERSION.to_owned(),
         hostname: hostname(),
         os: env::consts::OS.to_owned(),
@@ -214,15 +214,13 @@ async fn connect_once(
             }
             // tungstenite handles Ping/Pong at the protocol layer; we just echo.
             Message::Ping(bytes) => socket.send(Message::Pong(bytes)).await?,
-            Message::Pong(_) => {}
+            Message::Pong(_) | Message::Frame(_) => {}
             Message::Close(frame) => {
                 eprintln!("control plane closed websocket: {frame:?}");
                 return Ok(());
-            }
-            // Raw frames only appear when the underlying codec is in a state we
-            // don't model; tungstenite normally decodes these for us, so this
-            // is a defensive no-op.
-            Message::Frame(_) => {}
+            } // Raw frames only appear when the underlying codec is in a state we
+              // don't model; tungstenite normally decodes these for us, so this
+              // is a defensive no-op.
         }
     }
 
