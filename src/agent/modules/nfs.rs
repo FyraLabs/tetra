@@ -4,7 +4,7 @@
 //! file, and manages the `nfs-server.service` systemd unit plus `exportfs -ra`
 //! to re-export. The `set_config` action accepts the shared `selinux` payload
 //! so an export directory can be labeled (typically `public_content_t` /
-//! `public_content_rw_t`) in the same request — otherwise `SELinux` denies nfsd
+//! `public_content_rw_t`) in the same request — otherwise SELinux denies nfsd
 //! access to the path on enforcing hosts.
 
 use std::{fs, path::PathBuf};

@@ -5,7 +5,7 @@
 //! systemd unit (reload/enable/disable). The `set_config` action also accepts
 //! the shared `selinux` payload so a share directory can be labeled
 //! `samba_share_t` in the same request that defines the share — otherwise
-//! `SELinux` will deny smbd access to the path on enforcing hosts.
+//! SELinux will deny smbd access to the path on enforcing hosts.
 
 use std::{fs, path::PathBuf};
 

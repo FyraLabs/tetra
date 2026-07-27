@@ -2,8 +2,8 @@
 //!
 //! `files` is the lowest-level persistence module: it lets the control plane
 //! read an arbitrary path and write contents to it, optionally relabeling the
-//! result with `SELinux` via the shared `apply_selinux` helper. Other modules
-//! (network, quadlets, samba, nfs, storage) reuse the same write + `SELinux`
+//! result with SELinux via the shared `apply_selinux` helper. Other modules
+//! (network, quadlets, samba, nfs, storage) reuse the same write + SELinux
 //! pattern but scope writes to their own managed paths; this module is the
 //! general-purpose escape hatch.
 

@@ -104,8 +104,6 @@ impl DispatchQueue {
         self.pending.fetch_add(1, Ordering::Release);
         (self.sender.try_send(queued))
             .inspect_err(|_| _ = self.pending.fetch_sub(1, Ordering::Release))?;
-        // NOTE: I refactored the original logic. in the happy route,
-        // self.pending is never decremented. is this intentional?
         receiver.await.map_err(|_| QueueError::Closed)
     }
 

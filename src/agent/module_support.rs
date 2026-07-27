@@ -96,7 +96,7 @@ pub struct ServicePayload {
     pub dry_run: bool,
 }
 
-/// The shared `SELinux` labeling options accepted by any module that creates or
+/// The shared SELinux labeling options accepted by any module that creates or
 /// manages host paths.
 ///
 /// This is the dashboard's single knob for "label this path too" — e.g. a
@@ -460,7 +460,7 @@ where
     run_command_output_as(program, args, dry_run, effective_user(info, action, user))
 }
 
-/// Apply `SELinux` file-context labeling to a path as part of a module action.
+/// Apply SELinux file-context labeling to a path as part of a module action.
 ///
 /// Two phases:
 /// 1. If `context_type` is set, run `semanage fcontext -a -t <type>

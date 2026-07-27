@@ -1,11 +1,11 @@
-//! `SELinux` management module.
+//! SELinux management module.
 //!
-//! Wraps the userspace `SELinux` toolchain (`sestatus`, `getenforce`,
+//! Wraps the userspace SELinux toolchain (`sestatus`, `getenforce`,
 //! `getsebool`, `setsebool`, `semanage fcontext`, `restorecon`) so the
 //! control plane can inspect and change policy state through the standard
 //! module envelope.
 //!
-//! This module owns *policy-level* `SELinux` operations: querying mode,
+//! This module owns *policy-level* SELinux operations: querying mode,
 //! flipping booleans, and registering or removing file-context rules plus
 //! relabeling. Modules that merely *apply* a label to a path they manage
 //! (storage, samba, nfs, files, quadlets, network) do not call into this
@@ -24,9 +24,9 @@ use crate::agent::{
     },
 };
 
-/// `SELinux` module entry point registered under feature `selinux`.
+/// SELinux module entry point registered under feature `selinux`.
 ///
-/// Stateless: every action is a fresh invocation of an underlying `SELinux`
+/// Stateless: every action is a fresh invocation of an underlying SELinux
 /// tool, so there is nothing to hold across requests.
 pub struct SelinuxModule;
 
@@ -295,7 +295,7 @@ fn parse_semanage_fcontext(stdout: &str) -> Vec<Value> {
         .collect()
 }
 
-/// Pulls the `SELinux` *type* out of a `user:role:type:level` context string.
+/// Pulls the SELinux *type* out of a `user:role:type:level` context string.
 ///
 /// The type is the third colon-separated field — the part callers actually
 /// compare against labels like `container_file_t` or `samba_share_t`.

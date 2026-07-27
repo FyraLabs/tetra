@@ -212,10 +212,10 @@ impl AuthenticatedSession {
         // NOTE: why do you need two lists of nonces?
         self.nonces.insert(nonce.clone());
         self.nonce_order.push_back(nonce.clone());
-        let excess = self.nonce_order.len().saturating_sub(self.policy.nonce_limit);
-		if excess > 0 {
-    		let olds = self.nonce_order.drain(..excess);
-    		olds.for_each(|old| { self.nonces.remove(&old); });
+        let nounces = self.nonce_order.len();
+        if let excess @ 1.. = nounces.saturating_sub(self.policy.nonce_limit) {
+            (self.nonce_order.drain(..excess)).for_each(|old| _ = self.nonces.remove(&old));
+        }
         Ok(command)
     }
 }
