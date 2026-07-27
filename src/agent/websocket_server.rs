@@ -523,7 +523,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> AsyncReadWrite for T {}
 #[inline]
 fn validate_listener_security(listen: &SocketAddr, tls_enabled: bool) -> Result<()> {
     ensure!(
-        !listen.ip().is_loopback() && !tls_enabled,
+        listen.ip().is_loopback() || tls_enabled,
         "non-loopback WebSocket listeners require --tls-cert and --tls-key"
     );
     Ok(())
