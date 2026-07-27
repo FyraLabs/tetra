@@ -211,8 +211,7 @@ mod tests {
         let verifying_key = signing_key.verifying_key();
         let command = command(json!({"value": 42}));
         let nonce = format!("nonce-{}", 1);
-        let signature =
-            sign_command(&signing_key, &command, "session-1", 1, 100, &nonce).unwrap();
+        let signature = sign_command(&signing_key, &command, "session-1", 1, 100, &nonce).unwrap();
 
         verify_command_signature(
             &verifying_key,
