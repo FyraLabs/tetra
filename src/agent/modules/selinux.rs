@@ -211,7 +211,7 @@ impl AgentModule for SelinuxModule {
             }
             "delete_file_context" => {
                 let payload: DeleteFileContextPayload = parse_payload(payload)?;
-                crate::cmd!((payload.dry_run){&INFO, action, user} "semange" ["fcontext", "-d", &payload.path_pattern] json)
+                crate::cmd!((payload.dry_run){&INFO, action, user} "semanage" ["fcontext", "-d", &payload.path_pattern] json)
             }
             "restore_context" => {
                 let payload: RestoreContextPayload = parse_payload(payload)?;
