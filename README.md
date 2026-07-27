@@ -1,67 +1,83 @@
 # Tetra
 
-Tetra is a modular host agent and recipe renderer for a web control plane. The
-agent is organized around one dispatcher with independent feature-gated modules
-for settings, services, files, recipes, SELinux, storage, Samba, NFS,
-networking, Podman, Quadlets, users, and virtual machines.
+Tetra is a modular host agent and recipe renderer for the Ultramarine Server
+web control plane. It is organized around a single dispatcher with independent,
+feature-gated modules for files, recipes, SELinux, services, Quadlets,
+reverse-proxy, Podman, Samba, NFS, users, and virtual machines. The `settings`
+module is always compiled so the control plane can discover basic host facts.
 
-The intended production transport is an outbound WSS connection with mTLS, or a
-virtio-vsock stream when the agent is running inside a VM. Both transports carry
-the same signed command envelopes. The local `agent-dispatch` command accepts
-the same command envelope shape that the transport will receive from the web UI.
-See [docs/agent-protocol.md](docs/agent-protocol.md) for the controller-facing
-API, connection negotiation, and agent protocol reference.
+The production transport is an outbound WSS connection to the dashboard/control
+plane (`agent-connect`), using mTLS for transport identity and carrying signed
+command envelopes. When the agent runs inside a VM, the same JSON frame
+protocol can be carried over a virtio-vsock stream.
 
-Recipes stay in YAML, and Quadlet generation uses Tera templates. A recipe
-declares metadata, UI parameters, requirements, and a list of resources to
-render.
+For development and dashboard testing, the inbound authenticated WebSocket
+listener (`agent-ws-serve`) accepts Ed25519-signed command frames from a
+controller client.
+
+The local `agent-dispatch` command accepts the same command envelope shape for
+one-shot debugging. See [docs/agent-protocol.md](docs/agent-protocol.md) for
+the controller-facing API, connection negotiation, and agent protocol reference.
+
+Recipes are declared in YAML, and Quadlet generation uses Tera templates. A
+recipe declares metadata, UI parameters, requirements, and a list of resources
+to render.
 
 ## Feature Flags
 
-Default build features include `files`, `recipes`, `selinux`, `services`, and
-`quadlets`. Other host-management surfaces are optional so users can install
-only what they want enabled:
+Default build features:
 
-- `storage`
+- `files`
+- `recipes`
+- `selinux`
+- `services`
+- `quadlets`
+- `reverse-proxy`
+- `podman`
 - `samba`
 - `nfs`
-- `network`
-- `podman`
 - `users`
 - `virtual-machines`
 
-Example with every module compiled in:
+Additional optional features:
+
+- `storage`
+- `network`
+
+Build with every module:
 
 ```sh
 cargo build --all-features
 ```
 
-Example with only recipe rendering and Quadlet management:
+Build with only recipe rendering and Quadlet management:
 
 ```sh
 cargo build --no-default-features --features recipes,quadlets
 ```
 
-## Render Quadlets
+## Render Recipes
+
+Render a recipe into container unit files and companion files:
 
 ```sh
 cargo run -- render schema.yaml --templates-dir ./templates --output-dir ./quadlets
 ```
 
-To preview rendered files without writing them:
+Preview without writing:
 
 ```sh
 cargo run -- render schema.yaml --templates-dir ./templates --dry-run
 ```
 
-Parameter values can be supplied as a simple YAML map:
+Parameter values are supplied as a simple YAML map:
 
 ```yaml
 domain: cloud.example.com
 enable_redis: true
 ```
 
-Then pass it with:
+Pass them with:
 
 ```sh
 cargo run -- render schema.yaml --values values.yaml --templates-dir ./templates --output-dir ./quadlets
@@ -69,7 +85,9 @@ cargo run -- render schema.yaml --values values.yaml --templates-dir ./templates
 
 ## Agent Commands
 
-The local dispatcher accepts commands like:
+### Local dispatch
+
+The one-shot CLI accepts the same JSON command envelope used by transports:
 
 ```json
 {
@@ -80,23 +98,64 @@ The local dispatcher accepts commands like:
 }
 ```
 
-Run it locally with:
+Run it:
 
 ```sh
 cargo run -- agent-dispatch examples/settings.command.json
 ```
 
-## Vsock Agent Smoke Test
+### Inbound WebSocket server (development)
 
-For a VM guest with virtio-vsock enabled, run Tetra inside the guest as a small
-host-initiated test listener:
+`agent-ws-serve` runs an authenticated WebSocket for dashboard clients. It
+requires an enrolled controller Ed25519 public key before accepting commands.
+The host identity is automatically generated under `/var/lib/tetra/identity`:
+
+```sh
+cargo run -- agent-ws-serve \
+  --listen 127.0.0.1:7780 \
+  --controller-public-key "$TETRA_CONTROLLER_PUBLIC_KEY"
+```
+
+For non-loopback addresses, TLS is required:
+
+```sh
+cargo run -- agent-ws-serve \
+  --listen 0.0.0.0:7780 \
+  --tls-cert /etc/tetra/tetra.crt \
+  --tls-key /etc/tetra/tetra.key
+```
+
+### Outbound WSS control plane (production)
+
+`agent-connect` dials out to the dashboard/control plane and maintains a
+persistent connection:
+
+```sh
+cargo run -- agent-connect --config examples/transport.json --host-id myhost
+```
+
+The transport config JSON contains:
+
+```json
+{
+  "control_plane_url": "wss://dashboard.example.com/tetra/agent",
+  "client_cert_path": "/var/lib/tetra/identity/agent.crt",
+  "client_key_path": "/var/lib/tetra/identity/agent.key",
+  "server_ca_path": "/var/lib/tetra/identity/dashboard-ca.crt"
+}
+```
+
+### Vsock smoke test
+
+For a VM guest with virtio-vsock enabled, run Tetra as a small test listener
+inside the guest:
 
 ```sh
 cargo run --all-features -- agent-vsock-serve --port 2048
 ```
 
-From the VM host, connect to the guest CID and send one command JSON object. For
-libvirt guests, find the CID with `virsh dumpxml VM_NAME | grep -A4 -i vsock`.
+From the VM host, connect to the guest CID and send one command JSON object.
+For libvirt guests, find the CID with `virsh dumpxml VM_NAME | grep -A4 -i vsock`.
 
 ```sh
 printf '%s' '{"id":"cmd-1","module":"settings","action":"get_system","payload":{}}' \
@@ -105,35 +164,26 @@ printf '%s' '{"id":"cmd-1","module":"settings","action":"get_system","payload":{
 
 The listener reads one command per connection and writes one `AgentResponse`
 JSON object. This is a development smoke test for host-to-guest command
-dispatch over vsock; the production control-plane transport is still described
-in [docs/agent-protocol.md](docs/agent-protocol.md).
+dispatch over vsock.
 
-For browser-based hardware testing on a private network, run the development
-HTTP agent API on the host:
+## Systemd
 
-```sh
-cargo run --all-features -- agent-serve \
-  --listen 100.x.y.z:7777 \
-  --bearer-token "$TETRA_AGENT_TOKEN"
-```
+A sample systemd unit is provided in `systemd/tetra.service`. It runs
+`agent-connect` with a transport config and persists identity under
+`/var/lib/tetra/identity`.
 
-Use the server's Tailscale IP or MagicDNS name for `100.x.y.z`. Then open
-`ui/agent-test.html` on your workstation and set the agent URL to
-`http://100.x.y.z:7777`. The test UI can check health, load capabilities, and
-submit command envelopes to `/dispatch`.
+## Authentication and Elevation
 
-The test UI includes a Demo Quadlet panel that writes `tetra-demo.container`,
-runs `systemctl daemon-reload`, starts `tetra-demo.service`, and shows
-`journalctl` output for the unit. Use `System` scope with a root-run agent for
-`/etc/containers/systemd`, or `User` scope with an agent running as your login
-user for `~/.config/containers/systemd`.
+Tetra uses Ed25519 asymmetric key authentication for inbound WebSocket
+sessions. The dashboard stores the private key server-side; Tetra stores only
+the controller public key. Outbound WSS uses mTLS for transport identity.
 
-The HTTP API is a development harness around the same Kameo-backed agent
-backend. Keep it on Tailscale or localhost, use a bearer token, and prefer
-`"dry_run": true` before testing mutating host actions.
+Mutating host actions execute by default. Privileged actions require an
+in-memory, session-bound elevation grant obtained by verifying the
+administrator password against the host shadow database. The grant expires
+after a configurable TTL (default 30 minutes).
 
-To let the web UI discover enabled modules and actions, call dispatcher-level
-capabilities:
+To discover enabled modules and actions, send:
 
 ```json
 {
@@ -146,11 +196,11 @@ capabilities:
 
 Each module also supports its own `capabilities` action.
 
-Mutating host actions execute by default and accept `"dry_run": true` in their
-payload to return the command or write plan without changing the host. Fedora
-and SELinux-oriented installs can use the `selinux` module to inspect SELinux
-status, list and set booleans, manage file-context rules with `semanage
-fcontext`, and run `restorecon` after managed file changes.
+## SELinux
+
+Fedora and SELinux-oriented installs can use the `selinux` module to inspect
+SELinux status, list and set booleans, manage file-context rules with
+`semanage fcontext`, and run `restorecon` after managed file changes.
 
 Modules that create or manage paths also accept a shared `selinux` payload to
 apply file-context rules and relabel paths as part of the same action. For
