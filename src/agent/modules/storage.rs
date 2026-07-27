@@ -7,18 +7,10 @@
 //! on SELinux-enabled hosts where an unlabeled mount point would be denied
 //! access to its intended service.
 
-use std::{fs, path::PathBuf};
+use crate::prelude::*;
 
-use anyhow::{Context, Result};
-use serde::Deserialize;
-use serde_json::{Value, json};
-
-use crate::agent::{
-    AgentModule,
-    module_support::{
-        ModuleInfo, ModuleStatus, SelinuxOptions, apply_selinux, handle_metadata, parse_payload,
-        run_command_for_module, run_command_or_dry_run_for_module, unsupported_action,
-    },
+use crate::agent::module_support::{
+    SelinuxOptions, apply_selinux, handle_metadata, parse_payload, unsupported_action,
 };
 
 /// Storage module entry point registered under feature `storage`.
@@ -98,27 +90,21 @@ impl AgentModule for StorageModule {
     fn handle(&self, action: &str, payload: Value, user: Option<&str>) -> Result<Value> {
         // Standard metadata fast-path: `capabilities` and `plan` are answered
         // from `INFO` without touching the system.
-        if let Some(response) = handle_metadata(INFO, action, payload.clone())? {
+        if let Some(response) = handle_metadata(INFO, action, payload.clone()) {
             return Ok(response);
         }
 
         match action {
-            "list" => Ok(json!({
+            "list" => Ok(jsonf! {
                 // unwrap_or_default swallows read/parse errors and yields an
                 // empty list — `list` is best-effort inventory, not a health
                 // probe, so a missing `/proc/*` file should not fail the call.
                 "mounts": read_mounts("/proc/mounts").unwrap_or_default(),
                 "partitions": read_partitions("/proc/partitions").unwrap_or_default(),
-            })),
+            }),
             "status" => {
                 let payload: PathPayload = parse_payload(payload)?;
-                run_command_for_module(
-                    &INFO,
-                    action,
-                    "df",
-                    ["-h", payload.path.to_string_lossy().as_ref()],
-                    user,
-                )
+                crate::cmd!({ &INFO, action, user } "df" ["-h", payload.path.to_string_lossy().as_ref()] ; json)
             }
             "mount" => {
                 let payload: MountPayload = parse_payload(payload)?;
@@ -135,31 +121,18 @@ impl AgentModule for StorageModule {
                 // clone it into a PathBuf first.
                 let target = PathBuf::from(&payload.target);
                 args.extend([payload.source, payload.target]);
-                let mount = run_command_or_dry_run_for_module(
-                    &INFO,
-                    action,
-                    "mount",
-                    args,
-                    payload.dry_run,
-                    user,
-                )?;
+                let mount =
+                    crate::cmd!((payload.dry_run) { &INFO, action, user } "mount" => &args ; json)?;
                 // Label the freshly mounted target as part of the same action;
                 // see `apply_selinux` in module_support.rs for the option
                 // resolution rules.
                 let selinux =
                     apply_selinux(payload.selinux.as_ref(), Some(&target), payload.dry_run)?;
-                Ok(json!({ "mount": mount, "selinux": selinux }))
+                Ok(jsonf! { mount, selinux })
             }
             "unmount" => {
                 let payload: PathPayload = parse_payload(payload)?;
-                run_command_or_dry_run_for_module(
-                    &INFO,
-                    action,
-                    "umount",
-                    [payload.path.to_string_lossy().as_ref()],
-                    payload.dry_run,
-                    user,
-                )
+                crate::cmd!((payload.dry_run) { &INFO, action, user } "umount" [payload.path.to_string_lossy().as_ref()] ; json)
             }
             "configure" => {
                 let payload: ConfigurePayload = parse_payload(payload)?;
@@ -174,12 +147,12 @@ impl AgentModule for StorageModule {
                     Some(&payload.fstab_path),
                     payload.dry_run,
                 )?;
-                Ok(json!({
-                    "fstab_path": payload.fstab_path,
+                Ok(jsonf! {
+                    payload.fstab_path,
                     "configured": !payload.dry_run,
-                    "dry_run": payload.dry_run,
-                    "selinux": selinux,
-                }))
+                    payload.dry_run,
+                    selinux,
+                })
             }
             _ => unsupported_action(INFO.name, action),
         }
@@ -205,12 +178,12 @@ fn read_mounts(path: impl Into<PathBuf>) -> Result<Vec<Value>> {
         .filter_map(|line| {
             let fields: Vec<_> = line.split_whitespace().collect();
             (fields.len() >= 4).then(|| {
-                json!({
+                jsonf! {
                     "source": fields[0],
                     "target": fields[1],
                     "filesystem": fields[2],
                     "options": fields[3],
-                })
+                }
             })
         })
         .collect())
@@ -230,12 +203,12 @@ fn read_partitions(path: impl Into<PathBuf>) -> Result<Vec<Value>> {
         .filter_map(|line| {
             let fields: Vec<_> = line.split_whitespace().collect();
             (fields.len() == 4).then(|| {
-                json!({
+                jsonf! {
                     "major": fields[0],
                     "minor": fields[1],
                     "blocks": fields[2],
                     "name": fields[3],
-                })
+                }
             })
         })
         .collect())
