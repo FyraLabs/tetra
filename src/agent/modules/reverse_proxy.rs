@@ -103,6 +103,30 @@ struct SiteMetadata {
     upstream: String,
     tls: bool,
 }
+impl SiteMetadata {
+    fn new(domain: &str, upstream: &str, tls: bool) -> Result<Self> {
+        Ok(Self {
+            domain: validate_domain(domain)?,
+            upstream: validate_upstream(upstream)?,
+            tls,
+        })
+    }
+
+    /// Render a single site snippet.
+    ///
+    /// The `# tetra: {metadata}` line embeds `SiteMetadata` as JSON so
+    /// `list_sites` can round-trip the original parameters. TLS off emits
+    /// `auto_https off` to disable Caddy's automatic certificate provisioning
+    /// for this site.
+    fn render(&self) -> Result<String> {
+        let metadata = serde_json::to_string(self)?;
+        let tls = if self.tls { "" } else { "\n\tauto_https off" };
+        Ok(format!(
+            "{MANAGED_HEADER}\n# tetra: {metadata}\n{} {{{tls}\n\treverse_proxy {}\n}}\n",
+            self.domain, self.upstream
+        ))
+    }
+}
 
 /// Dispatches reverse-proxy actions. Mutating actions persist `*.caddy`
 /// files under `config_dir` and optionally reload Caddy.
@@ -111,9 +135,9 @@ impl AgentModule for ReverseProxyModule {
         INFO
     }
 
-    fn handle(&self, action: &str, payload: Value, _user: Option<&str>) -> Result<Value> {
+    fn handle(&self, action: &str, payload: Value, user: Option<&str>) -> Result<Value> {
         // Answer the shared `capabilities`/`plan` metadata actions first.
-        if let Some(response) = handle_metadata(INFO, action, payload.clone()) {
+        if let Some(response) = handle_metadata(INFO, action, &payload) {
             return Ok(response);
         }
 
@@ -127,23 +151,26 @@ impl AgentModule for ReverseProxyModule {
             // Use `write` to persist (and optionally reload).
             "render" => {
                 let payload: SitePayload = parse_payload(payload)?;
-                let site = validated_site(payload.domain, payload.upstream, payload.tls)?;
+                let site = SiteMetadata::new(&payload.domain, &payload.upstream, payload.tls)?;
                 Ok(jsonf! {
                     "filename": site_filename(&site.domain),
-                    "contents": render_site(&site)?,
+                    "contents": site.render()?,
                      site,
                 })
             }
             "write" => {
                 let payload: SitePayload = parse_payload(payload)?;
                 let config_dir = config_dir(payload.config_dir);
-                let site = validated_site(payload.domain, payload.upstream, payload.tls)?;
+                let site = SiteMetadata::new(&payload.domain, &payload.upstream, payload.tls)?;
                 let filename = site_filename(&site.domain);
                 // `safe_join` rejects absolute paths and `..` traversal, so
                 // even a hostile domain (already blocked by `validate_domain`)
                 // cannot escape `config_dir` — defense in depth.
                 let path = safe_join(&config_dir, &filename)?;
-                let contents = render_site(&site)?;
+                let contents = {
+                    let site: &SiteMetadata = &site;
+                    site.render()
+                }?;
 
                 if !payload.dry_run {
                     fs::create_dir_all(&config_dir)
@@ -159,7 +186,7 @@ impl AgentModule for ReverseProxyModule {
                 // though the managed file was written successfully, so preserve
                 // the write result and report reload failure as structured data.
                 let (reload, reload_error) = if payload.reload {
-                    match reload_caddy(action, payload.dry_run, _user) {
+                    match reload_caddy(action, payload.dry_run, user) {
                         Ok(result) => (Some(result), None),
                         Err(error) => (None, Some(error.to_string())),
                     }
@@ -191,7 +218,7 @@ impl AgentModule for ReverseProxyModule {
                 // is removed. A missing systemd bus is returned as a reload
                 // warning instead of making the persisted deletion look failed.
                 let (reload, reload_error) = if payload.reload {
-                    match reload_caddy(action, payload.dry_run, _user) {
+                    match reload_caddy(action, payload.dry_run, user) {
                         Ok(result) => (Some(result), None),
                         Err(error) => (None, Some(error.to_string())),
                     }
@@ -207,7 +234,7 @@ impl AgentModule for ReverseProxyModule {
             }
             "reload" => {
                 let payload: ReloadPayload = parse_payload(payload)?;
-                reload_caddy(action, payload.dry_run, _user)
+                reload_caddy(action, payload.dry_run, user)
             }
             _ => unsupported_action(INFO.name, action),
         }
@@ -222,14 +249,6 @@ const fn default_tls() -> bool {
 
 fn config_dir(path: Option<PathBuf>) -> PathBuf {
     path.unwrap_or_else(|| PathBuf::from(DEFAULT_CONFIG_DIR))
-}
-
-fn validated_site(domain: String, upstream: String, tls: bool) -> Result<SiteMetadata> {
-    Ok(SiteMetadata {
-        domain: validate_domain(&domain)?,
-        upstream: validate_upstream(&upstream)?,
-        tls,
-    })
 }
 
 /// Normalize and validate a DNS domain for use as a Caddy site label.
@@ -293,21 +312,6 @@ fn site_filename(domain: &str) -> String {
         "{}.caddy",
         domain.replace('*', "wildcard").replace('.', "_")
     )
-}
-
-/// Render a single site snippet.
-///
-/// The `# tetra: {metadata}` line embeds `SiteMetadata` as JSON so
-/// `list_sites` can round-trip the original parameters. TLS off emits
-/// `auto_https off` to disable Caddy's automatic certificate provisioning
-/// for this site.
-fn render_site(site: &SiteMetadata) -> Result<String> {
-    let metadata = serde_json::to_string(site)?;
-    let tls = if site.tls { "" } else { "\n\tauto_https off" };
-    Ok(format!(
-        "{MANAGED_HEADER}\n# tetra: {metadata}\n{} {{{tls}\n\treverse_proxy {}\n}}\n",
-        site.domain, site.upstream
-    ))
 }
 
 /// List Tetra-managed sites in `config_dir`.

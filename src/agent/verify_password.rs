@@ -16,6 +16,8 @@ use anyhow::{Context, Result, bail};
 /// the helper directly.
 ///
 /// Returns `true` when the password is correct, `false` otherwise.
+///
+/// # Errors
 /// Errors only on spawn failure or missing helper.
 pub fn verify_password(username: &str, password: &str) -> Result<bool> {
     if username.is_empty() || password.is_empty() {

@@ -99,17 +99,17 @@ impl TransportFrame {
         <S as futures_util::Sink<Message>>::Error: std::error::Error + Send + Sync + 'static,
     {
         match self {
-            TransportFrame::Command { command } => match queue.dispatch(command).await {
-                Ok(response) => TransportFrame::Response { response }.send(socket).await?,
+            Self::Command { command } => match queue.dispatch(command).await {
+                Ok(response) => Self::Response { response }.send(socket).await?,
                 Err(QueueError::Full) => {
-                    TransportFrame::Error {
+                    Self::Error {
                         error: "Tetra command queue is full; retry after backoff".into(),
                     }
                     .send(socket)
                     .await?;
                 }
                 Err(QueueError::Closed) => {
-                    TransportFrame::Error {
+                    Self::Error {
                         error: "Tetra command queue is unavailable".into(),
                     }
                     .send(socket)
@@ -117,18 +117,15 @@ impl TransportFrame {
                     bail!("dispatch queue closed")
                 }
             },
-            TransportFrame::Ping { id, sent_at } => {
-                TransportFrame::Pong { id, sent_at }.send(socket).await?;
+            Self::Ping { id, sent_at } => {
+                Self::Pong { id, sent_at }.send(socket).await?;
             }
-            TransportFrame::Hello { .. }
-            | TransportFrame::Response { .. }
-            | TransportFrame::Pong { .. }
-            | TransportFrame::Error { .. } => {
-                TransportFrame::Error {
+            Self::Hello { .. } | Self::Response { .. } | Self::Pong { .. } | Self::Error { .. } => {
+                Self::Error {
                     error: "unsupported frame from control plane".into(),
                 }
                 .send(socket)
-                .await?
+                .await?;
             }
         }
 

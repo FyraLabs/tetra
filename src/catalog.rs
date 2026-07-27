@@ -591,7 +591,7 @@ impl AppRecipe {
                 .with_context(|| format!("failed to render template `{}`", resource.template))?;
 
             rendered.push(RenderedResource {
-                kind: resource.kind.clone(),
+                kind: resource.kind,
                 filename,
                 contents,
             });

@@ -48,14 +48,15 @@ impl ModuleInfo {
 /// module supports.
 ///
 /// Convention: each module's `handle` method calls this first and returns
-/// `Ok(Some(...))` if it matched, then matches on its own module-specific
+/// `Some(...)` if it matched, then matches on its own module-specific
 /// actions. `plan` is a lightweight "what would you do with this payload?"
 /// endpoint — it returns the module metadata plus the echoed payload, so
 /// the dashboard can show a preview without committing to a dry run.
 ///
-/// Returns `Ok(None)` when the action isn't one of these meta-actions, so the
+/// Returns `None` when the action isn't one of these meta-actions, so the
 /// caller can fall through to its own match.
-pub fn handle_metadata(info: ModuleInfo, action: &str, payload: Value) -> Option<Value> {
+#[must_use]
+pub fn handle_metadata(info: ModuleInfo, action: &str, payload: &Value) -> Option<Value> {
     match action {
         "capabilities" => Some(json!(info)),
         "plan" => Some(jsonf! {
@@ -70,6 +71,7 @@ pub fn handle_metadata(info: ModuleInfo, action: &str, payload: Value) -> Option
 
 /// Bail with a consistent "unknown action" error message. Centralizing this
 /// keeps the error format uniform across modules.
+#[allow(clippy::missing_errors_doc)]
 pub fn unsupported_action(module: &str, action: &str) -> Result<Value> {
     bail!("unsupported {module} action `{action}`")
 }
@@ -112,6 +114,9 @@ pub struct SelinuxOptions {
 /// Deserialize a typed payload from a [`serde_json::Value`] with a consistent
 /// "invalid command payload" error message. Centralizing this keeps the
 /// per-module error surface uniform.
+///
+/// # Errors
+/// An error is returned if the payload cannot be deserialized.
 pub fn parse_payload<T: for<'de> Deserialize<'de>>(payload: Value) -> Result<T> {
     serde_json::from_value(payload).context("invalid command payload")
 }
@@ -210,6 +215,9 @@ macro_rules! __cmd_inner {
 /// while executing day-to-day operations (podman inspect, reading configs)
 /// with unprivileged credentials.  Privileged actions bypass this wrapper
 /// by passing `default_user: None`.
+///
+/// # Errors
+/// An error is returned if the command fails to start, or if it exits with a non-zero status code.
 pub fn run_command_output_as<I, S>(
     program: &str,
     args: I,
@@ -266,6 +274,7 @@ where
 /// Privileged actions always run as root (`None`). Unprivileged actions run as
 /// the supplied `user` when it is present, otherwise they fall back to root.
 #[inline]
+#[must_use]
 pub fn effective_user<'a>(
     info: &'a ModuleInfo,
     action: &'a str,
@@ -276,51 +285,6 @@ pub fn effective_user<'a>(
     } else {
         user
     }
-}
-
-/// Like [`run_command`], but respects [`ModuleInfo::privileged_actions`] and
-/// runs unprivileged actions as the supplied `user` when available.
-#[deprecated = "use crate::cmd!() instead"]
-pub fn run_command_for_module<I, S>(
-    info: &ModuleInfo,
-    action: &str,
-    program: &str,
-    args: I,
-    user: Option<&str>,
-) -> Result<Value>
-where
-    I: IntoIterator<Item = S> + Copy,
-    S: AsRef<OsStr> + std::fmt::Display,
-{
-    Ok(json!(run_command_output_as(
-        program,
-        args,
-        false,
-        effective_user(info, action, user)
-    )?))
-}
-
-/// Like [`run_command_or_dry_run`], but respects [`ModuleInfo::privileged_actions`]
-/// and runs unprivileged actions as the supplied `user` when available.
-#[deprecated = "use crate::cmd!() instead"]
-pub fn run_command_or_dry_run_for_module<I, S>(
-    info: &ModuleInfo,
-    action: &str,
-    program: &str,
-    args: I,
-    dry_run: bool,
-    user: Option<&str>,
-) -> Result<Value>
-where
-    I: IntoIterator<Item = S> + Copy,
-    S: AsRef<OsStr> + std::fmt::Display,
-{
-    Ok(json!(run_command_output_as(
-        program,
-        args,
-        dry_run,
-        effective_user(info, action, user)
-    )?))
 }
 
 /// Apply SELinux file-context labeling to a path as part of a module action.
@@ -348,11 +312,28 @@ where
 /// Dry-run mode propagates to both `semanage` and `restorecon` calls, so a
 /// dry-run preview of the *whole* action (e.g. write smb.conf + label it)
 /// shows the exact commands without changing the host.
+///
+/// # Errors
+/// An error is returned if `context_type` is set but no pattern can be derived.
+/// Command errors are also propagated.
 pub fn apply_selinux(
     options: Option<&SelinuxOptions>,
     default_path: Option<&Path>,
     dry_run: bool,
 ) -> Result<Vec<Value>> {
+    // Build the default `semanage fcontext` pattern for `path`. Recursive
+    // labeling appends `(/.*)?` so that `restorecon` relabels the whole subtree;
+    // non-recursive labeling targets just the path itself.
+    let default_fcontext_pattern = |path: Option<&String>, recursive: bool| {
+        path.map(|path| {
+            if recursive {
+                format!("{path}(/.*)?")
+            } else {
+                path.to_owned()
+            }
+        })
+    };
+
     let Some(options) = options else {
         return Ok(Vec::new());
     };
@@ -365,33 +346,23 @@ pub fn apply_selinux(
         return Ok(Vec::new());
     }
 
-    let path = options
-        .path
-        .clone()
+    let path = (options.path.clone())
         .or_else(|| default_path.map(|path| path.to_string_lossy().into_owned()));
     let mut operations = Vec::new();
 
     if let Some(context_type) = &options.context_type {
-        let pattern = options
-            .path_pattern
-            .clone()
-            .or_else(|| {
-                path.as_ref()
-                    .map(|path| default_fcontext_pattern(path, options.recursive))
-            })
+        let pattern = (options.path_pattern.clone())
+            .or_else(|| default_fcontext_pattern(path.as_ref(), options.recursive))
             .context("SELinux context_type requires path, path_pattern, or default path")?;
         operations.push(
             cmd!((dry_run) "semanage" ["fcontext", "-a", "-t", context_type, &pattern] json)?,
         );
     }
 
-    if let Some(path) = path {
+    if let Some(path) = path.as_deref() {
         let mut args = Vec::new();
-        if options.recursive {
-            args.push("-R".to_owned());
-        }
-        args.push("-v".to_owned());
-        args.push(path);
+        args.extend(options.recursive.then_some("-R"));
+        args.extend_from_slice(&["-v", path]);
         operations.push(cmd!((dry_run) "restorecon" &args ; json)?);
     }
 
@@ -404,6 +375,9 @@ pub fn apply_selinux(
 /// This is the guard against path-traversal in module payloads — e.g. a
 /// Quadlet filename from the dashboard can't reach outside the Quadlet scan
 /// directory by sending `../../../etc/passwd`.
+///
+/// # Errors
+/// An error is returned if `name` is absolute or contains any parent-directory
 pub fn safe_join(base: &Path, name: &str) -> Result<PathBuf> {
     let path = Path::new(name);
     if path.is_absolute()
@@ -418,30 +392,14 @@ pub fn safe_join(base: &Path, name: &str) -> Result<PathBuf> {
 }
 
 /// Render a command and its args as a single space-joined display string.
-/// Used both for dry-run previews and for error messages (`\`foo bar\` failed`).
+/// Used both for dry-run previews and for error messages (`` `foo bar` failed ``).
 #[must_use]
-pub fn command_display<
-    's,
-    I: IntoIterator<Item = S>,
-    S: std::fmt::Display,
-    P: std::fmt::Display,
->(
+pub fn command_display<I: IntoIterator<Item = S>, S: std::fmt::Display, P: std::fmt::Display>(
     program: P,
     args: I,
 ) -> String {
     let args = (args.into_iter()).map(|arg| Box::new(arg) as Box<dyn std::fmt::Display>);
     (std::iter::once(Box::new(program) as Box<dyn std::fmt::Display>).chain(args)).join(" ")
-}
-
-/// Build the default `semanage fcontext` pattern for `path`. Recursive
-/// labeling appends `(/.*)?` so that `restorecon` relabels the whole subtree;
-/// non-recursive labeling targets just the path itself.
-fn default_fcontext_pattern(path: &str, recursive: bool) -> String {
-    if recursive {
-        format!("{path}(/.*)?")
-    } else {
-        path.to_owned()
-    }
 }
 
 /// The result of running (or dry-running) a host command. Serialized as JSON
@@ -494,14 +452,14 @@ mod tests {
             safe_join(base, "unit.container").unwrap(),
             base.join("unit.container")
         );
-        assert!(safe_join(base, "../unit.container").is_err());
-        assert!(safe_join(base, "/tmp/unit.container").is_err());
+        safe_join(base, "../unit.container").unwrap_err();
+        safe_join(base, "/tmp/unit.container").unwrap_err();
     }
 
     #[test]
     fn formats_command_display() {
         assert_eq!(
-            command_display("systemctl", &["status", "nginx.service"]),
+            command_display("systemctl", ["status", "nginx.service"]),
             "systemctl status nginx.service"
         );
     }

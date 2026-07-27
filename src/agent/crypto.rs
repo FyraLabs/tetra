@@ -170,7 +170,7 @@ pub fn public_key_fingerprint(verifying_key: &VerifyingKey) -> String {
 }
 
 /// Parse a URL-safe base64 public key.
-/// 
+///
 /// # Errors
 /// Returns and error if the public key is not valid base64url or does not contain 32 bytes.
 pub fn parse_verifying_key(encoded: &str) -> Result<VerifyingKey> {

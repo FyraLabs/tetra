@@ -14,6 +14,7 @@ use super::{AgentCommand, AgentResponse, module_support::ModuleInfo};
 /// Modules are stateless: `handle` takes `&self`, so the same module can be
 /// invoked concurrently from multiple transport tasks. State lives in the
 /// host (systemd, the filesystem, etc.), not in the module.
+#[allow(clippy::missing_errors_doc)]
 pub trait AgentModule: Send + Sync {
     /// Static metadata describing this module to the dashboard: name, feature
     /// flag, description, status, and the actions it supports.
@@ -55,14 +56,15 @@ impl Dispatcher {
     }
 
     /// Builder-style registration: `Dispatcher::new().with_module(Foo).with_module(Bar)`.
-    pub fn with_module(mut self, module: impl AgentModule + 'static) -> Self {
+    #[must_use]
+    pub fn with_module<M: AgentModule + 'static>(mut self, module: M) -> Self {
         self.register(module);
         self
     }
 
     /// Register a module under its `name()`. A later registration with the
     /// same name replaces the earlier one.
-    pub fn register(&mut self, module: impl AgentModule + 'static) {
+    pub fn register<M: AgentModule + 'static>(&mut self, module: M) {
         self.modules
             .insert(module.name().to_owned(), Box::new(module));
     }

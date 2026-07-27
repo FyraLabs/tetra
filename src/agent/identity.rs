@@ -1,11 +1,7 @@
 //! Persistent Tetra host identity for authenticated transport enrollment.
 
-use std::{
-    fs,
-    path::{Path, PathBuf},
-};
+use crate::prelude::*;
 
-use anyhow::{Context, Result, ensure};
 use ed25519_dalek::{SigningKey, VerifyingKey};
 
 const PRIVATE_KEY_FILE: &str = "ed25519-private.key";
@@ -19,7 +15,12 @@ pub struct HostIdentity {
 }
 
 impl HostIdentity {
-    pub fn load_or_generate(directory: impl AsRef<Path>) -> Result<Self> {
+    /// Load an existing host identity from the given directory, or generate a new one if none exists.
+    ///
+    /// # Errors
+    /// Returns an error if the identity directory cannot be created, or the private key cannot be
+    /// generated or is invalid.
+    pub fn load_or_generate<A: AsRef<Path>>(directory: A) -> Result<Self> {
         let directory = directory.as_ref();
         fs::create_dir_all(directory).with_context(|| {
             format!(
@@ -28,17 +29,13 @@ impl HostIdentity {
             )
         })?;
         let path = directory.join(PRIVATE_KEY_FILE);
-        let bytes = if path.exists() {
+        let bytes: [u8; PRIVATE_KEY_BYTES] = if path.exists() {
             let bytes = fs::read(&path)
                 .with_context(|| format!("failed to read host identity `{}`", path.display()))?;
-            ensure!(
-                bytes.len() == PRIVATE_KEY_BYTES,
-                "host identity has invalid length"
-            );
-            bytes
+            (bytes.try_into()).map_err(|_| anyhow::anyhow!("host identity length checked"))?
         } else {
             let mut bytes = [0_u8; PRIVATE_KEY_BYTES];
-            fill_random(&mut bytes)?;
+            rand::fill(&mut bytes);
             let temporary =
                 directory.join(format!(".{PRIVATE_KEY_FILE}.tmp-{}", std::process::id()));
             fs::write(&temporary, bytes).with_context(|| {
@@ -52,10 +49,9 @@ impl HostIdentity {
             })?;
             fs::rename(&temporary, &path)
                 .with_context(|| format!("failed to install host identity `{}`", path.display()))?;
-            bytes.to_vec()
+            bytes
         };
 
-        let bytes: [u8; PRIVATE_KEY_BYTES] = bytes.try_into().expect("identity length checked");
         Ok(Self {
             signing_key: SigningKey::from_bytes(&bytes),
             path,
@@ -75,6 +71,11 @@ impl HostIdentity {
         &self.path
     }
 
+    /// Returns the directory containing the host identity files.
+    ///
+    /// # Panics
+    /// Panics if the identity path does not have a parent directory, which should never happen
+    /// since the identity is always stored in a directory.
     #[must_use]
     pub fn directory(&self) -> &Path {
         self.path
@@ -82,6 +83,11 @@ impl HostIdentity {
             .expect("identity path always has a parent")
     }
 
+    /// Load the controller public key from the identity directory, if it exists.
+    ///
+    /// # Errors
+    /// Returns an error if the controller public key file exists but cannot be read or is empty.
+    /// Note that `Ok(None)` is returned if the file does not exist, which is not considered an error.
     pub fn load_controller_key(&self) -> Result<Option<String>> {
         let path = self.directory().join(CONTROLLER_PUBLIC_KEY_FILE);
         if !path.exists() {
@@ -94,9 +100,14 @@ impl HostIdentity {
         Ok(Some(value))
     }
 
+    /// Enroll the given controller public key.
+    ///
+    /// # Errors
+    /// Returns an error if the public key is empty, or if the controller public key file cannot be written or is restricted.
     pub fn enroll_controller_key(&self, public_key: &str) -> Result<()> {
+        let public_key = public_key.trim();
         ensure!(
-            !public_key.trim().is_empty(),
+            !public_key.is_empty(),
             "controller public key cannot be empty"
         );
         let path = self.directory().join(CONTROLLER_PUBLIC_KEY_FILE);
@@ -120,14 +131,6 @@ impl HostIdentity {
             .with_context(|| format!("failed to install controller key `{}`", path.display()))?;
         Ok(())
     }
-}
-
-fn fill_random(bytes: &mut [u8]) -> Result<()> {
-    use std::io::Read;
-    let mut file = fs::File::open("/dev/urandom").context("failed to open /dev/urandom")?;
-    file.read_exact(bytes)
-        .context("failed to read random host identity bytes")?;
-    Ok(())
 }
 
 #[cfg(unix)]

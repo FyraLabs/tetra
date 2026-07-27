@@ -36,22 +36,10 @@
 //! `systemctl daemon-reload`; the caller does that through the separate
 //! `services` module's `daemon_reload` action once writes are confirmed.
 
-use std::{
-    fs,
-    path::{Path, PathBuf},
+use crate::agent::module_support::{
+    SelinuxOptions, apply_selinux, handle_metadata, parse_payload, safe_join, unsupported_action,
 };
-
-use anyhow::{Context, Result, bail};
-use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
-
-use crate::agent::{
-    AgentModule,
-    module_support::{
-        ModuleInfo, ModuleStatus, SelinuxOptions, apply_selinux, handle_metadata, parse_payload,
-        safe_join, unsupported_action,
-    },
-};
+use crate::prelude::*;
 
 /// Agent module backing the `quadlets` feature. See the module-level docs
 /// for the unit-vs-companion distinction and the scope model.
@@ -190,7 +178,7 @@ impl QuadletFile {
                 continue;
             };
             if is_quadlet_filename(filename) {
-                files.push(QuadletFile {
+                files.push(Self {
                     filename: filename.to_owned(),
                     path,
                 });
@@ -217,7 +205,7 @@ impl ManagedFile {
     fn list(base_dir: &Path) -> Result<Vec<Self>> {
         Ok(QuadletFile::list(base_dir)?
             .into_iter()
-            .map(|QuadletFile { filename, path }| ManagedFile {
+            .map(|QuadletFile { filename, path }| Self {
                 filename,
                 path,
                 quadlet: true,
@@ -252,7 +240,7 @@ impl AgentModule for QuadletsModule {
     }
 
     fn handle(&self, action: &str, payload: Value, _user: Option<&str>) -> Result<Value> {
-        if let Some(response) = handle_metadata(INFO, action, payload.clone()) {
+        if let Some(response) = handle_metadata(INFO, action, &payload) {
             return Ok(response);
         }
 
@@ -260,7 +248,7 @@ impl AgentModule for QuadletsModule {
             "list" => {
                 let payload: BasePayload = parse_payload(payload)?;
                 let base_dir = quadlet_base_dir(payload.base_dir, payload.scope)?;
-                Ok(json!({ "base_dir": base_dir, "files": QuadletFile::list(&base_dir)? }))
+                Ok(jsonf! { base_dir, "files": QuadletFile::list(&base_dir)? })
             }
             "list_files" => {
                 let payload: BasePayload = parse_payload(payload)?;
@@ -278,11 +266,7 @@ impl AgentModule for QuadletsModule {
                         .reverse()
                         .then_with(|| left.filename.cmp(&right.filename))
                 });
-                Ok(json!({
-                    "base_dir": base_dir,
-                    "files_base_dir": files_base_dir,
-                    "files": files
-                }))
+                Ok(jsonf! { base_dir, files_base_dir, files })
             }
             "read" => {
                 let payload: FilePayload = parse_payload(payload)?;
@@ -306,9 +290,7 @@ impl AgentModule for QuadletsModule {
                 let path = safe_join(&base_dir, &payload.filename)?;
                 let contents = fs::read_to_string(&path)
                     .with_context(|| format!("failed to read `{}`", path.display()))?;
-                Ok(
-                    json!({ "base_dir": base_dir, "filename": payload.filename, "contents": contents }),
-                )
+                Ok(jsonf! { base_dir, payload.filename, contents })
             }
             "write" => {
                 let payload: WritePayload = parse_payload(payload)?;
@@ -326,14 +308,11 @@ impl AgentModule for QuadletsModule {
                 // executing them, so the caller can preview a real write.
                 let selinux =
                     apply_selinux(payload.selinux.as_ref(), Some(&path), payload.dry_run)?;
-                Ok(json!({
-                    "base_dir": base_dir,
-                    "filename": payload.filename,
-                    "path": path,
+                Ok(jsonf! {
+                    base_dir, payload.filename, path,
                     "written": !payload.dry_run,
-                    "dry_run": payload.dry_run,
-                    "selinux": selinux,
-                }))
+                    payload.dry_run, selinux,
+                })
             }
             "delete" => {
                 let payload: FilePayload = parse_payload(payload)?;
@@ -343,18 +322,16 @@ impl AgentModule for QuadletsModule {
                     fs::remove_file(&path)
                         .with_context(|| format!("failed to delete `{}`", path.display()))?;
                 }
-                Ok(json!({
-                    "base_dir": base_dir,
-                    "filename": payload.filename,
-                    "path": path,
+                Ok(jsonf! {
+                    base_dir, payload.filename, path,
                     "deleted": !payload.dry_run,
-                    "dry_run": payload.dry_run,
-                }))
+                    payload.dry_run,
+                })
             }
             "validate" => {
                 let payload: WritePayload = parse_payload(payload)?;
                 validate_quadlet(&payload.filename, &payload.contents)?;
-                Ok(json!({ "filename": payload.filename, "valid": true }))
+                Ok(jsonf! { payload.filename, "valid": true })
             }
             "install" => {
                 let payload: InstallPayload = parse_payload(payload)?;
@@ -424,15 +401,11 @@ impl AgentModule for QuadletsModule {
                     payload.dry_run,
                 )?);
 
-                Ok(json!({
-                    "base_dir": base_dir,
-                    "files_base_dir": files_base_dir,
-                    "installed": installed,
-                    "files": files,
+                Ok(jsonf! {
+                    base_dir, files_base_dir, installed, files,
                     "written": !payload.dry_run,
-                    "dry_run": payload.dry_run,
-                    "selinux": selinux,
-                }))
+                    payload.dry_run, selinux,
+                })
             }
             _ => unsupported_action(INFO.name, action),
         }
@@ -635,8 +608,8 @@ mod tests {
     #[test]
     fn rejects_paths_outside_base_dir() {
         let base = Path::new("/tmp/quadlets");
-        assert!(safe_join(base, "../unit.container").is_err());
-        assert!(safe_join(base, "/tmp/unit.container").is_err());
+        safe_join(base, "../unit.container").unwrap_err();
+        safe_join(base, "/tmp/unit.container").unwrap_err();
         assert_eq!(
             safe_join(base, "unit.container").unwrap(),
             base.join("unit.container")
@@ -645,9 +618,9 @@ mod tests {
 
     #[test]
     fn validates_quadlet_sections_and_extensions() {
-        assert!(validate_quadlet("app.container", "[Container]\nImage=example\n").is_ok());
-        assert!(validate_quadlet("app.service", "[Container]\nImage=example\n").is_err());
-        assert!(validate_quadlet("app.container", "[Service]\nExecStart=true\n").is_err());
+        validate_quadlet("app.container", "[Container]\nImage=example\n").unwrap();
+        validate_quadlet("app.service", "[Container]\nImage=example\n").unwrap_err();
+        validate_quadlet("app.container", "[Service]\nExecStart=true\n").unwrap_err();
     }
 
     #[test]
@@ -673,12 +646,12 @@ mod tests {
         let response = QuadletsModule
             .handle(
                 "write",
-                json!({
+                jsonf! {
                     "base_dir": dir.path(),
                     "filename": "app.container",
                     "contents": "[Container]\nImage=example\n",
                     "dry_run": true
-                }),
+                },
                 None,
             )
             .unwrap();
@@ -694,7 +667,7 @@ mod tests {
         let response = QuadletsModule
             .handle(
                 "install",
-                json!({
+                jsonf! {
                     "base_dir": dir.path(),
                     "dry_run": true,
                     "resources": [
@@ -707,7 +680,7 @@ mod tests {
                         "context_type": "container_unit_file_t",
                         "recursive": true
                     }
-                }),
+                },
                 None,
             )
             .unwrap();
@@ -734,7 +707,7 @@ mod tests {
         let response = QuadletsModule
             .handle(
                 "install",
-                json!({
+                jsonf! {
                     "base_dir": quadlet_dir.path(),
                     "files_base_dir": files_dir.path(),
                     "resources": [
@@ -753,7 +726,7 @@ mod tests {
                             "contents": "server {}\n"
                         }
                     ]
-                }),
+                },
                 None,
             )
             .unwrap();
@@ -794,7 +767,7 @@ mod tests {
         let response = QuadletsModule
             .handle(
                 "list_files",
-                json!({ "base_dir": quadlet_dir.path(), "files_base_dir": files_dir.path() }),
+                jsonf! { "base_dir": quadlet_dir.path(), "files_base_dir": files_dir.path() },
                 None,
             )
             .unwrap();
@@ -816,11 +789,11 @@ mod tests {
         let response = QuadletsModule
             .handle(
                 "read",
-                json!({
+                jsonf! {
                     "files_base_dir": files_dir.path(),
                     "filename": "site/index.html",
                     "companion": true
-                }),
+                },
                 None,
             )
             .unwrap();

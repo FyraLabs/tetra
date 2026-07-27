@@ -216,7 +216,7 @@ async fn handle_connection(
                         prompt_id,
                         action_id: "io.tetra.agent.elevate".into(),
                         message: "Enter the server administrator password to enable privileged operations.".into(),
-                        expires_at: unix_timestamp().unwrap_or(0) + 300,
+                        expires_at: unix_timestamp() + 300,
                     },
                 )
                 .await?;
@@ -242,9 +242,7 @@ async fn handle_connection(
                 match verify_password(&username, &password) {
                     Ok(true) => {
                         let grant = HeadlessElevationGrant::new(ELEVATION_TTL);
-                        let expires_at = grant
-                            .expires_in_seconds()
-                            .map(|s| unix_timestamp().unwrap_or(0) + s);
+                        let expires_at = grant.expires_in_seconds().map(|s| unix_timestamp() + s);
                         elevation = Some(grant);
                         send(
                             &mut socket,
@@ -316,7 +314,7 @@ async fn handle_connection(
                 .await?;
             }
             AuthFrame::Command { .. } => {
-                let now = unix_timestamp()?;
+                let now = unix_timestamp();
                 let mut command = session.accept_command(&frame, now)?.clone();
                 command.user = session.user().map(std::borrow::ToOwned::to_owned);
 
@@ -748,7 +746,7 @@ mod tests {
         let authenticated = receive(&mut socket).await;
         assert!(matches!(authenticated, AuthFrame::Response { response } if response.ok));
 
-        let timestamp = unix_timestamp().unwrap();
+        let timestamp = unix_timestamp();
         let nonce = "nonce-000000000001".to_string();
         let mut command = AgentCommand {
             id: "cmd-settings".into(),

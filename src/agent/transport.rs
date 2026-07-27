@@ -9,17 +9,20 @@ use super::{AgentCommand, AgentResponse};
 /// responses between the control plane and the agent.
 ///
 /// Each concrete transport (WSS, vsock) adapts this trait to its own framing.
+#[allow(clippy::missing_errors_doc)]
 pub trait Transport {
     fn connect(&mut self) -> Result<()>;
     fn receive(&mut self) -> Result<Option<AgentCommand>>;
     fn send(&mut self, response: AgentResponse) -> Result<()>;
 }
 
-/// Connection parameters the `agent-connect` subcommand loads from a JSON
-/// config file. The `control_plane_url` selects the transport; the TLS paths
+/// Connection parameters the `agent-connect` subcommand loads from a JSON config file.
+///
+/// The `control_plane_url` selects the transport; the TLS paths
 /// are used only for `wss://` endpoints (mTLS to the control plane).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct TransportConfig {
+    /// The control-plane URL, which selects the transport kind and endpoint.
     pub control_plane_url: String,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -33,18 +36,25 @@ pub struct TransportConfig {
 }
 
 impl TransportConfig {
-    /// Parse `control_plane_url` into a concrete endpoint kind. This is where
-    /// the URL scheme (`wss://`, `ws://`, `vsock://`) decides which transport
+    /// Parse `control_plane_url` into a concrete endpoint kind.
+    ///
+    /// This is where the URL scheme (`wss://`, `ws://`, `vsock://`) decides which transport
     /// implementation will be used.
+    ///
+    /// # Errors
+    /// Returns an error if the `control_plane_url` is not a supported address scheme.
     pub fn endpoint(&self) -> Result<TransportEndpoint> {
         self.control_plane_url.parse()
     }
 
-    /// Reject production WSS configurations until the transport has enough TLS
-    /// material for explicit mutual authentication. The current connector still
-    /// needs a custom rustls client setup to consume these files; failing closed is
-    /// safer than silently using platform roots and ignoring the configured mTLS
-    /// paths.
+    /// Reject production WSS configurations until the transport has enough TLS material for explicit mutual authentication.
+    ///
+    /// The current connector still needs a custom rustls client setup to consume these files;
+    /// failing closed is safer than silently using platform roots and ignoring the configured mTLS paths.
+    ///
+    /// # Errors
+    /// Returns an error if the `control_plane_url` is `ws://` or if any of the TLS paths are missing.
+    /// `ws://` should only be used in development, and the TLS paths are required for production WSS connections.
     pub fn validate(&self, url: &str) -> Result<()> {
         if url.starts_with("ws://") {
             bail!("outbound production transport requires wss://; ws:// is development-only")

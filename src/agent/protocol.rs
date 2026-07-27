@@ -210,11 +210,16 @@ impl AuthenticatedSession {
     }
 }
 
-pub fn unix_timestamp() -> Result<i64> {
-    Ok(SystemTime::now()
+/// Returns the current Unix timestamp in seconds since the epoch.
+///
+/// # Panics
+/// Panics if the system clock is before the Unix epoch.
+#[must_use]
+pub fn unix_timestamp() -> i64 {
+    SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map_err(|_| anyhow::anyhow!("system clock is before Unix epoch"))?
-        .as_secs() as i64)
+        .expect("system clock is before Unix epoch")
+        .as_secs() as i64
 }
 
 #[derive(Serialize)]
@@ -296,17 +301,13 @@ mod tests {
         .unwrap();
         let first = signed_frame(&key, 0, 1000, "nonce-000000000001");
         session.accept_command(&first, 1000).unwrap();
-        assert!(session.accept_command(&first, 1000).is_err());
-        assert!(
-            session
-                .accept_command(&signed_frame(&key, 2, 1000, "nonce-000000000002"), 1000)
-                .is_err()
-        );
-        assert!(
-            session
-                .accept_command(&signed_frame(&key, 1, 0, "nonce-000000000003"), 1000)
-                .is_err()
-        );
+        session.accept_command(&first, 1000).unwrap_err();
+        session
+            .accept_command(&signed_frame(&key, 2, 1000, "nonce-000000000002"), 1000)
+            .unwrap_err();
+        session
+            .accept_command(&signed_frame(&key, 1, 0, "nonce-000000000003"), 1000)
+            .unwrap_err();
     }
 
     #[test]

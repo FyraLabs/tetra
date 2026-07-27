@@ -79,7 +79,7 @@ impl AgentModule for NfsModule {
     fn handle(&self, action: &str, payload: Value, user: Option<&str>) -> Result<Value> {
         // Standard metadata fast-path: `capabilities` and `plan` are answered
         // from `INFO` without touching the system.
-        if let Some(response) = handle_metadata(INFO, action, payload.clone()) {
+        if let Some(response) = handle_metadata(INFO, action, &payload) {
             return Ok(response);
         }
 
