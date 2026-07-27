@@ -19,9 +19,14 @@ use super::{Dispatcher, modules};
 /// This is the host→guest test path: run Tetra inside a VM guest and have the
 /// host send a single command JSON object per connection. The production
 /// control-plane transport is the WSS connection in [`super::websocket`].
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, clap::Parser)]
 pub struct VsockAgentConfig {
+    /// Vsock port to listen on inside the VM guest.
+    #[arg(long, default_value_t = 2048)]
     pub port: u32,
+
+    /// Maximum accepted command JSON body size in bytes.
+    #[arg(long, default_value_t = 1024 * 1024)]
     pub max_command_bytes: usize,
 }
 

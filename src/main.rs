@@ -51,7 +51,7 @@ enum Commands {
     AgentDispatch(AgentDispatchCli),
 
     /// Serve the local agent backend over a Linux virtio-vsock listener.
-    AgentVsockServe(AgentVsockServeCli),
+    AgentVsockServe(VsockAgentConfig),
 
     /// Connect the local agent backend to an outbound WSS control plane.
     AgentConnect(AgentConnectCli),
@@ -86,17 +86,6 @@ struct RenderCli {
 struct AgentDispatchCli {
     /// JSON command envelope to dispatch. Reads stdin when omitted.
     command: Option<PathBuf>,
-}
-
-#[derive(Debug, Parser)]
-struct AgentVsockServeCli {
-    /// Vsock port to listen on inside the VM guest.
-    #[arg(long, default_value_t = 2048)]
-    port: u32,
-
-    /// Maximum accepted command JSON body size in bytes.
-    #[arg(long, default_value_t = 1024 * 1024)]
-    max_command_bytes: usize,
 }
 
 #[derive(Debug, Parser)]
@@ -148,7 +137,7 @@ async fn main() -> Result<()> {
     match cli.command {
         Commands::Render(cli) => render(cli),
         Commands::AgentDispatch(cli) => agent_dispatch(cli).await,
-        Commands::AgentVsockServe(cli) => agent_vsock_serve(cli),
+        Commands::AgentVsockServe(cli) => vsock::serve(cli),
         Commands::AgentConnect(cli) => agent_connect(cli).await,
         Commands::AgentWsServe(cli) => agent_ws_serve(cli).await,
     }
@@ -225,13 +214,6 @@ async fn agent_ws_serve(
         tls_cert_key_path: tls_cert.zip(tls_key),
     })
     .await
-}
-
-fn agent_vsock_serve(cli: AgentVsockServeCli) -> Result<()> {
-    vsock::serve(VsockAgentConfig {
-        port: cli.port,
-        max_command_bytes: cli.max_command_bytes,
-    })
 }
 
 async fn agent_connect(cli: AgentConnectCli) -> Result<()> {

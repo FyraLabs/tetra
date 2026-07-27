@@ -11,6 +11,7 @@
 //! scheduler can split verified read-only operations into a bounded concurrent
 //! lane without weakening mutation ordering.
 
+use crate::prelude::*;
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
@@ -18,8 +19,6 @@ use std::sync::{
 
 use kameo::actor::ActorRef;
 use tokio::sync::{mpsc, oneshot};
-
-use super::{AgentBackend, AgentCommand, AgentResponse, DispatchCommand};
 
 /// Maximum number of commands waiting or being admitted to the dispatcher by
 /// default. Transports should report a retryable queue-full error instead of
@@ -119,7 +118,6 @@ impl DispatchQueue {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
 
     #[tokio::test]
     async fn queue_rejects_when_admission_capacity_is_exhausted() {
@@ -136,7 +134,7 @@ mod tests {
                     id: "queued".into(),
                     module: "settings".into(),
                     action: "get_system".into(),
-                    payload: json!({}),
+                    payload: jsonf! {},
                     signature: None,
                     user: None,
                 },
@@ -148,7 +146,7 @@ mod tests {
                 id: "queue-full".into(),
                 module: "settings".into(),
                 action: "get_system".into(),
-                payload: json!({}),
+                payload: jsonf! {},
                 signature: None,
                 user: None,
             })
@@ -168,7 +166,7 @@ mod tests {
                 id: "queue-settings".into(),
                 module: "settings".into(),
                 action: "get_system".into(),
-                payload: json!({}),
+                payload: jsonf! {},
                 signature: None,
                 user: None,
             })

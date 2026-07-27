@@ -12,17 +12,9 @@
 //! code; they share the `SelinuxOptions` payload via `apply_selinux()` in
 //! `module_support.rs`.
 
-use anyhow::Result;
-use itertools::Itertools;
-use serde::Deserialize;
-use serde_json::{Value, json};
+use crate::prelude::*;
 
-use crate::agent::{
-    AgentModule,
-    module_support::{
-        ModuleInfo, ModuleStatus, handle_metadata, parse_payload, unsupported_action,
-    },
-};
+use crate::agent::module_support::{handle_metadata, parse_payload, unsupported_action};
 
 /// SELinux module entry point registered under feature `selinux`.
 ///
@@ -132,43 +124,31 @@ impl AgentModule for SelinuxModule {
     fn handle(&self, action: &str, payload: Value, user: Option<&str>) -> Result<Value> {
         // Standard metadata fast-path: `capabilities` and `plan` are answered
         // from `INFO` without touching the system.
-        if let Some(response) = handle_metadata(INFO, action, payload.clone())? {
+        if let Some(response) = handle_metadata(INFO, action, payload.clone()) {
             return Ok(response);
         }
 
         match action {
             "status" => {
                 let result = crate::cmd!({&INFO, action, user} "sestatus")?;
-                Ok(json!({
-                    "command": result.command,
-                    "status": result.status,
-                    "stdout": result.stdout,
-                    "stderr": result.stderr,
-                    "dry_run": result.dry_run,
+                Ok(jsonf! {
+                    result.command, result.status, result.stdout, result.stderr, result.dry_run,
                     "selinux": parse_sestatus(&result.stdout),
-                }))
+                })
             }
             "enforce" => {
                 let result = crate::cmd!({&INFO, action, user} "getenforce")?;
-                Ok(json!({
-                    "command": result.command,
-                    "status": result.status,
-                    "stdout": result.stdout,
-                    "stderr": result.stderr,
-                    "dry_run": result.dry_run,
+                Ok(jsonf! {
+                    result.command, result.status, result.stdout, result.stderr, result.dry_run,
                     "mode": result.stdout.trim(),
-                }))
+                })
             }
             "booleans" => {
                 let result = crate::cmd!({&INFO, action, user} "getsebool" ["-a"])?;
-                Ok(json!({
-                    "command": result.command,
-                    "status": result.status,
-                    "stdout": result.stdout,
-                    "stderr": result.stderr,
-                    "dry_run": result.dry_run,
+                Ok(jsonf! {
+                    result.command, result.status, result.stdout, result.stderr, result.dry_run,
                     "booleans": parse_getsebool(&result.stdout),
-                }))
+                })
             }
             "set_boolean" => {
                 let payload: SetBooleanPayload = parse_payload(payload)?;
@@ -188,14 +168,10 @@ impl AgentModule for SelinuxModule {
                 // knows about; `parse_semanage_fcontext` below turns the
                 // tabular output into structured JSON.
                 let result = crate::cmd!({&INFO, action, user} "semanage" ["fcontext", "-l"])?;
-                Ok(json!({
-                    "command": result.command,
-                    "status": result.status,
-                    "stdout": result.stdout,
-                    "stderr": result.stderr,
-                    "dry_run": result.dry_run,
+                Ok(jsonf! {
+                    result.command, result.status, result.stdout, result.stderr, result.dry_run,
                     "file_contexts": parse_semanage_fcontext(&result.stdout),
-                }))
+                })
             }
             "add_file_context" => {
                 let payload: FileContextPayload = parse_payload(payload)?;
@@ -257,11 +233,11 @@ fn parse_sestatus(stdout: &str) -> Value {
 fn parse_getsebool(stdout: &str) -> Vec<Value> {
     (stdout.lines().filter_map(|line| line.split_once("-->")))
         .map(|(name, value)| {
-            json!({
+            jsonf! {
                 "name": name.trim(),
                 "enabled": matches!(value.trim(), "on" | "1" | "true"),
                 "value": value.trim(),
-            })
+            }
         })
         .collect()
 }
@@ -285,12 +261,12 @@ fn parse_semanage_fcontext(stdout: &str) -> Vec<Value> {
             let [path_pattern, file_type @ .., context] = &fields[..] else {
                 return None;
             };
-            Some(json!({
-                "path_pattern": path_pattern,
+            Some(jsonf! {
+                path_pattern,
                 "file_type": file_type.join(" "),
-                "context": context,
+                context,
                 "context_type": extract_context_type(context),
-            }))
+            })
         })
         .collect()
 }
@@ -350,7 +326,7 @@ mod tests {
         let response = SelinuxModule
             .handle(
                 "set_boolean",
-                json!({ "name": "virt_use_nfs", "value": true, "dry_run": true }),
+                jsonf! { "name": "virt_use_nfs", "value": true, "dry_run": true },
                 None,
             )
             .unwrap();
@@ -365,7 +341,7 @@ mod tests {
         let response = SelinuxModule
             .handle(
                 "restore_context",
-                json!({ "path": "/srv/tetra", "recursive": true, "dry_run": true }),
+                jsonf! { "path": "/srv/tetra", "recursive": true, "dry_run": true },
                 None,
             )
             .unwrap();

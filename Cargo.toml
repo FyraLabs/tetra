@@ -63,6 +63,7 @@ tokio-tungstenite = { version = "0.30", features = ["rustls-tls-native-roots"] }
 rustls = "0.23"
 rustls-pemfile = "2"
 itertools = "0.15.0"
+preinterpret = "0.2.1"
 
 [dev-dependencies]
 tempfile = "3"
@@ -79,6 +80,7 @@ suspicious = { level = "warn", priority = -1 }
 disallowed-macros = "deny"
 excessive-nesting = "warn"
 
+arithmetic_side_effects = "warn"
 assertions_on_result_states = "warn"
 clone_on_ref_ptr = "warn"
 create_dir = "warn"

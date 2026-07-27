@@ -1,14 +1,7 @@
-use std::{
-    ffi::OsStr,
-    path::{Component, Path, PathBuf},
-    process::Command,
-};
+use crate::prelude::*;
+use std::{path::Component, process::Command};
 
-use anyhow::{Context, Result, bail};
-use itertools::Itertools;
-use serde::Deserialize;
-use serde::Serialize;
-use serde_json::{Value, json};
+use serde_json::json;
 
 /// Whether a module is shipping in this build or is a placeholder for a future
 /// feature. The dashboard uses this to grey out planned-but-unavailable
@@ -62,17 +55,16 @@ impl ModuleInfo {
 ///
 /// Returns `Ok(None)` when the action isn't one of these meta-actions, so the
 /// caller can fall through to its own match.
-pub fn handle_metadata(info: ModuleInfo, action: &str, payload: Value) -> Result<Option<Value>> {
-    // NOTE: why do you need Result<_> and Ok()?
+pub fn handle_metadata(info: ModuleInfo, action: &str, payload: Value) -> Option<Value> {
     match action {
-        "capabilities" => Ok(Some(json!(info))),
-        "plan" => Ok(Some(json!({
+        "capabilities" => Some(json!(info)),
+        "plan" => Some(jsonf! {
             "module": info.name,
-            "feature": info.feature,
-            "status": info.status,
+            info.feature,
+            info.status,
             "requested": payload,
-        }))),
-        _ => Ok(None),
+        }),
+        _ => None,
     }
 }
 
@@ -207,87 +199,8 @@ macro_rules! __cmd_inner {
     (@{JSON}$final:expr) => { $final.and_then(|result| {
         let data: ::serde_json::Value =
             ::serde_json::from_str(&result.stdout).context("failed to parse command stdout as JSON")?;
-        Ok(::serde_json::json!({
-            "command": result.command,
-            "status": result.status,
-            "stdout": result.stdout,
-            "stderr": result.stderr,
-            "dry_run": result.dry_run,
-            "data": data,
-        }))
+        Ok($crate::jsonf! { result.command, result.status, result.stdout, result.stderr, result.dry_run, data })
     }) };
-}
-
-/// Run a host command and return its [`CommandResult`] as JSON, executing
-/// unconditionally (no dry-run support).
-#[deprecated = "use crate::cmd!() instead"]
-pub fn run_command<I, S>(program: &str, args: I) -> Result<Value>
-where
-    I: IntoIterator<Item = S> + Copy,
-    S: AsRef<OsStr> + std::fmt::Display,
-{
-    Ok(json!(run_command_output(program, args, false)?))
-}
-
-/// Run a host command, or when `dry_run` is true, return what would have been
-/// run without executing it. The returned JSON always carries `dry_run` so the
-/// caller can distinguish a preview from a real result by inspecting the
-/// payload, not just by remembering what it asked for.
-#[deprecated = "use crate::cmd!() instead"]
-pub fn run_command_or_dry_run<I, S>(program: &str, args: I, dry_run: bool) -> Result<Value>
-where
-    I: IntoIterator<Item = S> + Copy,
-    S: AsRef<OsStr> + std::fmt::Display,
-{
-    Ok(json!(run_command_output_as(program, args, dry_run, None)?))
-}
-
-/// Run a host command that is expected to print JSON to stdout, and return a
-/// composite value that includes the parsed stdout (`data`) alongside the
-/// command metadata (status, raw stdout/stderr, `dry_run` flag).
-///
-/// This is the helper for commands like `podman inspect --format json` where
-/// the interesting content is structured — callers get the parsed value
-/// directly rather than re-parsing `stdout` themselves.
-#[deprecated = "use crate::cmd!() instead"]
-pub fn run_command_json<I, S>(program: &str, args: I) -> Result<Value>
-where
-    I: IntoIterator<Item = S> + Copy,
-    S: AsRef<OsStr> + std::fmt::Display,
-{
-    let result = run_command_output_as(program, args, false, None)?;
-    let data: Value =
-        serde_json::from_str(&result.stdout).context("failed to parse command stdout as JSON")?;
-    Ok(json!({
-        "command": result.command,
-        "status": result.status,
-        "stdout": result.stdout,
-        "stderr": result.stderr,
-        "dry_run": result.dry_run,
-        "data": data,
-    }))
-}
-
-/// Run a host command (or fake it for a dry run) and return a structured
-/// [`CommandResult`].
-///
-/// Dry-run mode short-circuits before spawning the process: the returned
-/// `CommandResult` carries the exact command string that *would* have been run
-/// (so the dashboard can show it), with empty stdout/stderr and `status: None`.
-///
-/// On a real run, a non-zero exit status is converted to an error with the
-/// trimmed stderr in the message — modules don't need to re-check exit codes.
-/// Run a host command (or fake it for a dry run) and return a structured
-/// [`CommandResult`].  When `default_user` is set and the action is not
-/// privileged, the command is executed via `runuser` so it runs under the
-/// configured unprivileged account rather than root.
-#[deprecated = "use crate::cmd!() instead"]
-pub fn run_command_output<I, S>(program: &str, args: I, dry_run: bool) -> Result<CommandResult>
-where
-    I: IntoIterator<Item = S> + Copy,
-    S: AsRef<OsStr> + std::fmt::Display,
-{
-    run_command_output_as(program, args, dry_run, None)
 }
 
 /// Run a host command, optionally impersonating `default_user`.
@@ -336,12 +249,7 @@ where
     let code = output.status.code();
 
     if !output.status.success() {
-        bail!(
-            "`{}` failed with status {:?}: {}",
-            command,
-            code,
-            stderr.trim()
-        );
+        bail!("`{command}` failed with status {code:?}: {}", stderr.trim());
     }
 
     Ok(CommandResult {
@@ -413,51 +321,6 @@ where
         dry_run,
         effective_user(info, action, user)
     )?))
-}
-
-/// Like [`run_command_json`], but respects [`ModuleInfo::privileged_actions`] and
-/// runs unprivileged actions as the supplied `user` when available.
-#[deprecated = "use crate::cmd!() instead"]
-pub fn run_command_json_for_module<I, S>(
-    info: &ModuleInfo,
-    action: &str,
-    program: &str,
-    args: I,
-    user: Option<&str>,
-) -> Result<Value>
-where
-    I: IntoIterator<Item = S> + Copy,
-    S: AsRef<OsStr> + std::fmt::Display,
-{
-    let result = run_command_output_as(program, args, false, effective_user(info, action, user))?;
-    let data: Value =
-        serde_json::from_str(&result.stdout).context("failed to parse command stdout as JSON")?;
-    Ok(json!({
-        "command": result.command,
-        "status": result.status,
-        "stdout": result.stdout,
-        "stderr": result.stderr,
-        "dry_run": result.dry_run,
-        "data": data,
-    }))
-}
-
-/// Like [`run_command_output`], but respects [`ModuleInfo::privileged_actions`] and
-/// runs unprivileged actions as the supplied `user` when available.
-#[deprecated = "use crate::cmd!() instead"]
-pub fn run_command_output_for_module<I, S>(
-    info: &ModuleInfo,
-    action: &str,
-    program: &str,
-    args: I,
-    dry_run: bool,
-    user: Option<&str>,
-) -> Result<CommandResult>
-where
-    I: IntoIterator<Item = S> + Copy,
-    S: AsRef<OsStr> + std::fmt::Display,
-{
-    run_command_output_as(program, args, dry_run, effective_user(info, action, user))
 }
 
 /// Apply SELinux file-context labeling to a path as part of a module action.

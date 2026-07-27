@@ -105,7 +105,7 @@ impl AgentModule for ServicesModule {
 
     fn handle(&self, action: &str, payload: Value, user: Option<&str>) -> Result<Value> {
         // Delegate `capabilities`/`plan` to the shared metadata handler first.
-        if let Some(response) = handle_metadata(INFO, action, payload.clone())? {
+        if let Some(response) = handle_metadata(INFO, action, payload.clone()) {
             return Ok(response);
         }
 

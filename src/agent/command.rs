@@ -14,7 +14,7 @@ use serde_json::Value;
 /// `signature` is reserved for future command signing. It is currently only
 /// checked for emptiness (see [`Dispatcher::dispatch`](super::Dispatcher)); a
 /// non-empty value is accepted but not yet verified against a key.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct AgentCommand {
     pub id: String,
     pub module: String,

@@ -178,6 +178,8 @@ async fn handle_connection(
         privileged_actions,
     }: ConnectionHandler,
 ) -> Result<()> {
+    const ELEVATION_TTL: Duration = Duration::from_secs(30 * 60);
+
     let mut socket = accept_async(stream)
         .await
         .context("WebSocket handshake failed")?;
@@ -186,7 +188,7 @@ async fn handle_connection(
     let controller_key = if let Some(key) = controller_key {
         key
     } else {
-        get_controller_key(&identity, enrollment_token, &mut socket).await?
+        request_enroll_pubkey(&identity, enrollment_token, &mut socket).await?
     };
 
     let mut session = auth(identity, &mut socket, session_id, challenge, controller_key).await?;
@@ -195,7 +197,6 @@ async fn handle_connection(
     // administrator password via PasswordResponse.
     let mut elevation: Option<HeadlessElevationGrant> = None;
     let mut pending_prompt: Option<String> = None;
-    const ELEVATION_TTL: Duration = Duration::from_secs(30 * 60);
 
     while let Some(message) = socket.next().await {
         let frame = parse_message(message?)?;
@@ -435,8 +436,7 @@ async fn auth(
     Ok(session)
 }
 
-// TODO: correct function name
-async fn get_controller_key(
+async fn request_enroll_pubkey(
     identity: &HostIdentity,
     enrollment_token: Option<String>,
     socket: &mut tokio_tungstenite::WebSocketStream<Box<dyn AsyncReadWrite>>,

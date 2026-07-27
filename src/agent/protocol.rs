@@ -3,17 +3,8 @@
 //! WebSocket framing will use these types in the next transport increment. The
 //! validator is transport-neutral so outbound WSS and inbound development WSS
 //! cannot accidentally implement different replay rules.
-
-use std::{
-    collections::{HashSet, VecDeque},
-    time::{SystemTime, UNIX_EPOCH},
-};
-
-use super::{AgentCommand, crypto::verify_command_signature};
-use anyhow::{Result, bail, ensure};
+use crate::prelude::*;
 use ed25519_dalek::VerifyingKey;
-use rand::distr::weighted::Weight;
-use serde::{Deserialize, Serialize};
 
 pub const PROTOCOL_VERSION: &str = "2026-07-auth-v1";
 pub const DEFAULT_CLOCK_SKEW_SECONDS: i64 = 5 * 60;
@@ -209,7 +200,6 @@ impl AuthenticatedSession {
         self.next_sequence
             .checked_add_assign(&1)
             .map_err(|()| anyhow::anyhow!("command sequence exhausted"))?;
-        // NOTE: why do you need two lists of nonces?
         self.nonces.insert(nonce.clone());
         self.nonce_order.push_back(nonce.clone());
         let nounces = self.nonce_order.len();

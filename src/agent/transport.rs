@@ -18,7 +18,7 @@ pub trait Transport {
 /// Connection parameters the `agent-connect` subcommand loads from a JSON
 /// config file. The `control_plane_url` selects the transport; the TLS paths
 /// are used only for `wss://` endpoints (mTLS to the control plane).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct TransportConfig {
     pub control_plane_url: String,
 
@@ -157,9 +157,7 @@ mod tests {
     fn parses_vsock_control_plane_url() {
         let config = TransportConfig {
             control_plane_url: "vsock://host:2048".into(),
-            client_cert_path: None,
-            client_key_path: None,
-            server_ca_path: None,
+            ..Default::default()
         };
 
         assert_eq!(

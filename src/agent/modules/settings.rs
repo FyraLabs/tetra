@@ -49,7 +49,7 @@ impl AgentModule for SettingsModule {
         // Delegate the cross-module metadata actions (`capabilities`, `plan`)
         // first. When matched, the early return skips the action match below;
         // otherwise the payload is forwarded to the module-specific handlers.
-        if let Some(response) = handle_metadata(INFO, action, payload.clone())? {
+        if let Some(response) = handle_metadata(INFO, action, payload.clone()) {
             return Ok(response);
         }
 

@@ -9,17 +9,10 @@
 //! subcommand, keeping the protocol verb consistent across modules while the
 //! underlying CLI uses its native spelling.
 
-use anyhow::Result;
-use serde::Deserialize;
-use serde_json::Value;
+use crate::prelude::*;
 
-use crate::agent::{
-    AgentModule,
-    module_support::{
-        ModuleInfo, ModuleStatus, NamedPayload, handle_metadata, parse_payload,
-        run_command_for_module, run_command_json_for_module, run_command_or_dry_run_for_module,
-        unsupported_action,
-    },
+use crate::agent::module_support::{
+    NamedPayload, handle_metadata, parse_payload, unsupported_action,
 };
 
 /// Marker type for the podman module. Stateless; all behavior lives in the
@@ -64,7 +57,7 @@ impl AgentModule for PodmanModule {
 
     fn handle(&self, action: &str, payload: Value, user: Option<&str>) -> Result<Value> {
         // Delegate `capabilities`/`plan` to the shared metadata handler first.
-        if let Some(response) = handle_metadata(INFO, action, payload.clone())? {
+        if let Some(response) = handle_metadata(INFO, action, payload.clone()) {
             return Ok(response);
         }
 
@@ -72,82 +65,40 @@ impl AgentModule for PodmanModule {
             // Listing actions lean on podman's own `--format json`, which emits
             // a JSON array directly. `run_command_json` parses that stdout and
             // exposes it as `data`, alongside the raw command/result fields.
-            "containers" => run_command_json_for_module(
-                &INFO,
-                action,
-                "podman",
-                ["ps", "--all", "--format", "json"],
-                user,
-            ),
+            "containers" => {
+                crate::cmd!({ &INFO, action, user } "podman" ["ps", "--all", "--format", "json"] JSON)
+            }
             // `inspect` returns a rich JSON document for a single container (or
             // image/volume/network when qualified). It is passed through as-is.
             "inspect" => {
                 let payload: NamedPayload = parse_payload(payload)?;
-                run_command_json_for_module(
-                    &INFO,
-                    action,
-                    "podman",
-                    ["inspect", &payload.name],
-                    user,
-                )
+                crate::cmd!({ &INFO, action, user } "podman" ["inspect", &payload.name] JSON)
             }
-            "images" => run_command_json_for_module(
-                &INFO,
-                action,
-                "podman",
-                ["images", "--format", "json"],
-                user,
-            ),
-            "volumes" => run_command_json_for_module(
-                &INFO,
-                action,
-                "podman",
-                ["volume", "ls", "--format", "json"],
-                user,
-            ),
-            "networks" => run_command_json_for_module(
-                &INFO,
-                action,
-                "podman",
-                ["network", "ls", "--format", "json"],
-                user,
-            ),
+            "images" => {
+                crate::cmd!({ &INFO, action, user } "podman" ["images", "--format", "json"] JSON)
+            }
+            "volumes" => {
+                crate::cmd!({ &INFO, action, user } "podman" ["volume", "ls", "--format", "json"] JSON)
+            }
+            "networks" => {
+                crate::cmd!({ &INFO, action, user } "podman" ["network", "ls", "--format", "json"] JSON)
+            }
             "logs" => {
                 let payload: LogsPayload = parse_payload(payload)?;
                 // `--tail` bounds the response; `logs` is a read and therefore
                 // never dry-run.
-                run_command_for_module(
-                    &INFO,
-                    action,
-                    "podman",
-                    ["logs", "--tail", &payload.lines.to_string(), &payload.name],
-                    user,
-                )
+                crate::cmd!({ &INFO, action, user } "podman" ["logs", "--tail", &payload.lines.to_string(), &payload.name] json)
             }
             // Lifecycle verbs share the trivial `podman <verb> <name>` shape, so
             // the action string is forwarded directly as the subcommand.
             "start" | "stop" | "restart" => {
                 let payload: NamedPayload = parse_payload(payload)?;
-                run_command_or_dry_run_for_module(
-                    &INFO,
-                    action,
-                    "podman",
-                    [action, &payload.name],
-                    payload.dry_run,
-                    user,
-                )
+                crate::cmd!((payload.dry_run) { &INFO, action, user } "podman" [action, &payload.name] json)
             }
             // Protocol verb is `remove`; the podman subcommand is `rm`.
             "remove" => {
                 let payload: NamedPayload = parse_payload(payload)?;
-                run_command_or_dry_run_for_module(
-                    &INFO,
-                    action,
-                    "podman",
-                    ["rm", &payload.name],
-                    payload.dry_run,
-                    user,
-                )
+                crate::cmd!((payload.dry_run) { &INFO, action, user } "podman" ["rm", &payload.name] json)
             }
             _ => unsupported_action(INFO.name, action),
         }

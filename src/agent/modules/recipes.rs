@@ -111,7 +111,7 @@ impl AgentModule for RecipeModule {
     fn handle(&self, action: &str, payload: Value, _user: Option<&str>) -> Result<Value> {
         // Every module first answers the shared `capabilities`/`plan`
         // metadata actions before dispatching its own action set.
-        if let Some(response) = handle_metadata(INFO, action, payload.clone())? {
+        if let Some(response) = handle_metadata(INFO, action, payload.clone()) {
             return Ok(response);
         }
 

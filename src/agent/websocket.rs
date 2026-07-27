@@ -5,8 +5,6 @@ use futures_util::{SinkExt, StreamExt};
 
 use rand::RngExt;
 use serde::{Deserialize, Serialize};
-#[cfg(test)]
-use serde_json::{Value, json};
 use tokio::time::sleep;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
@@ -149,7 +147,7 @@ pub async fn run(config: WebSocketAgentConfig) -> Result<()> {
         }
     };
 
-    validate_tls_config(&url, &config.transport)?;
+    config.transport.validate(&url)?;
 
     let queue = DispatchQueue::spawn(AgentBackend::spawn_default(), DEFAULT_QUEUE_CAPACITY);
     let mut attempt = 0_u32;
@@ -234,16 +232,6 @@ async fn connect_once(
     Ok(())
 }
 
-/// Reject production WSS configurations until the transport has enough TLS
-/// material for explicit mutual authentication. The current connector still
-/// needs a custom rustls client setup to consume these files; failing closed is
-/// safer than silently using platform roots and ignoring the configured mTLS
-/// paths.
-#[deprecated = "use TransportConfig::validate instead"]
-fn validate_tls_config(url: &str, config: &TransportConfig) -> Result<()> {
-    config.validate(url)
-}
-
 /// Exponential reconnect backoff with jitter: `2^attempt` seconds, capped at
 /// [`MAX_RECONNECT_DELAY`], plus up to 1 second of random jitter to spread out
 /// a thundering herd of agents reconnecting after a control-plane restart.
@@ -269,6 +257,7 @@ fn hostname() -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::Value;
 
     #[test]
     fn reconnect_delay_is_capped() {
@@ -279,11 +268,9 @@ mod tests {
     fn rejects_incomplete_or_plaintext_outbound_tls_configuration() {
         let incomplete = TransportConfig {
             control_plane_url: "wss://dashboard.example.test/tetra".into(),
-            client_cert_path: None,
-            client_key_path: None,
-            server_ca_path: None,
+            ..Default::default()
         };
-        assert!(validate_tls_config(&incomplete.control_plane_url, &incomplete).is_err());
+        (incomplete.validate(&incomplete.control_plane_url)).unwrap_err();
 
         let plaintext = TransportConfig {
             control_plane_url: "ws://127.0.0.1:7780".into(),
@@ -291,7 +278,7 @@ mod tests {
             client_key_path: Some("client.key".into()),
             server_ca_path: Some("ca.crt".into()),
         };
-        assert!(validate_tls_config(&plaintext.control_plane_url, &plaintext).is_err());
+        (plaintext.validate(&plaintext.control_plane_url)).unwrap_err();
     }
 
     #[test]
@@ -301,9 +288,7 @@ mod tests {
                 id: "cmd-1".into(),
                 module: "settings".into(),
                 action: "get_system".into(),
-                payload: json!({}),
-                signature: None,
-                user: None,
+                ..Default::default()
             },
         };
 

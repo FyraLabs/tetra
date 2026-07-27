@@ -11,18 +11,9 @@
 //! (`write`, `delete`) accept `dry_run` and an optional `reload` flag that
 //! triggers `systemctl reload caddy.service` after the change.
 
-use std::{fs, path::PathBuf};
+use crate::prelude::*;
 
-use anyhow::{Context, Result, bail};
-use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
-
-use crate::agent::{
-    AgentModule,
-    module_support::{
-        ModuleInfo, ModuleStatus, handle_metadata, parse_payload, safe_join, unsupported_action,
-    },
-};
+use crate::agent::module_support::{handle_metadata, parse_payload, safe_join, unsupported_action};
 
 /// Agent module that manages Caddy reverse proxy snippets.
 ///
@@ -122,7 +113,7 @@ impl AgentModule for ReverseProxyModule {
 
     fn handle(&self, action: &str, payload: Value, _user: Option<&str>) -> Result<Value> {
         // Answer the shared `capabilities`/`plan` metadata actions first.
-        if let Some(response) = handle_metadata(INFO, action, payload.clone())? {
+        if let Some(response) = handle_metadata(INFO, action, payload.clone()) {
             return Ok(response);
         }
 
@@ -130,18 +121,18 @@ impl AgentModule for ReverseProxyModule {
             "list" => {
                 let payload: BasePayload = parse_payload(payload)?;
                 let config_dir = config_dir(payload.config_dir);
-                Ok(json!({ "config_dir": config_dir, "sites": list_sites(&config_dir)? }))
+                Ok(jsonf! { config_dir, "sites": list_sites(&config_dir)? })
             }
             // `render` only produces the snippet text; it does not touch disk.
             // Use `write` to persist (and optionally reload).
             "render" => {
                 let payload: SitePayload = parse_payload(payload)?;
                 let site = validated_site(payload.domain, payload.upstream, payload.tls)?;
-                Ok(json!({
+                Ok(jsonf! {
                     "filename": site_filename(&site.domain),
                     "contents": render_site(&site)?,
-                    "site": site,
-                }))
+                     site,
+                })
             }
             "write" => {
                 let payload: SitePayload = parse_payload(payload)?;
@@ -176,17 +167,11 @@ impl AgentModule for ReverseProxyModule {
                     (None, None)
                 };
 
-                Ok(json!({
-                    "config_dir": config_dir,
-                    "filename": filename,
-                    "path": path,
-                    "contents": contents,
-                    "site": site,
+                Ok(jsonf! {
+                    config_dir, filename, path, contents, site,
                     "written": !payload.dry_run,
-                    "dry_run": payload.dry_run,
-                    "reload": reload,
-                    "reload_error": reload_error,
-                }))
+                    payload.dry_run, reload, reload_error,
+                })
             }
             "delete" => {
                 let payload: DeletePayload = parse_payload(payload)?;
@@ -214,15 +199,11 @@ impl AgentModule for ReverseProxyModule {
                     (None, None)
                 };
 
-                Ok(json!({
-                    "config_dir": config_dir,
-                    "filename": filename,
-                    "path": path,
+                Ok(jsonf! {
+                    config_dir, filename, path,
                     "deleted": !payload.dry_run,
-                    "dry_run": payload.dry_run,
-                    "reload": reload,
-                    "reload_error": reload_error,
-                }))
+                    payload.dry_run, reload, reload_error,
+                })
             }
             "reload" => {
                 let payload: ReloadPayload = parse_payload(payload)?;
@@ -362,13 +343,10 @@ fn list_sites(config_dir: &PathBuf) -> Result<Vec<Value>> {
             .find_map(|line| line.strip_prefix("# tetra: "))
             .and_then(|raw| serde_json::from_str::<SiteMetadata>(raw).ok());
         if let Some(site) = metadata {
-            sites.push(json!({
+            sites.push(jsonf! {
                 "filename": path.file_name().and_then(|name| name.to_str()).unwrap_or_default(),
-                "path": path,
-                "domain": site.domain,
-                "upstream": site.upstream,
-                "tls": site.tls,
-            }));
+                path, site.domain, site.upstream, site.tls,
+            });
         }
     }
 

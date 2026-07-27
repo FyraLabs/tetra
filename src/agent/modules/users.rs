@@ -14,18 +14,10 @@
 //! - `create`/`update` deliberately omit flags the caller did not set, so
 //!   shadow-utils defaults apply for anything left unspecified.
 
-use std::fs;
-
-use anyhow::{Context, Result};
-use serde::Deserialize;
-use serde_json::{Value, json};
-
-use crate::agent::{
-    AgentModule,
-    module_support::{
-        ModuleInfo, ModuleStatus, NamedPayload, handle_metadata, parse_payload, unsupported_action,
-    },
+use crate::agent::module_support::{
+    NamedPayload, handle_metadata, parse_payload, unsupported_action,
 };
+use crate::prelude::*;
 
 /// Marker type for the users module. Stateless; all behavior lives in the
 /// [`AgentModule`] impl and the static [`INFO`] descriptor.
@@ -88,24 +80,6 @@ struct SetPasswordPayload {
     dry_run: bool,
 }
 
-macro_rules! flag {
-    ($args:ident $payload:ident:$($idk:tt)+) => {
-        $($args.extend(flag!(@$payload $idk));)+
-    };
-    (@$payload:ident [$field:ident]) => {
-        $payload.$field.into_iter().flat_map(|$field| [stringify!(--$field).to_owned(), $field])
-    };
-    (@$payload:ident [$s:literal $field:ident]) => {
-        $payload.$field.into_iter().flat_map(|$field| [$s.to_owned(), $field])
-    };
-    (@$payload:ident $field:ident) => {
-        $payload.$field.then(|| stringify!(--$field).to_owned())
-    };
-    (@$payload:ident $field:ident($e:expr)) => {
-        $payload.$field.then(|| $e)
-    };
-}
-
 impl AgentModule for UsersModule {
     fn info(&self) -> ModuleInfo {
         INFO
@@ -113,7 +87,7 @@ impl AgentModule for UsersModule {
 
     fn handle(&self, action: &str, payload: Value, user: Option<&str>) -> Result<Value> {
         // Delegate `capabilities`/`plan` to the shared metadata handler first.
-        if let Some(response) = handle_metadata(INFO, action, payload.clone())? {
+        if let Some(response) = handle_metadata(INFO, action, payload.clone()) {
             return Ok(response);
         }
 
@@ -121,8 +95,8 @@ impl AgentModule for UsersModule {
             // `/etc/passwd` is the source of truth for local accounts; the
             // password field is deliberately not surfaced (it is `x` under
             // shadow passwords, with the real hash in `/etc/shadow`).
-            "list" => Ok(json!({ "users": parse_passwd(&read_file("/etc/passwd")?) })),
-            "groups" => Ok(json!({ "groups": parse_group(&read_file("/etc/group")?) })),
+            "list" => Ok(jsonf! { "users": parse_passwd(&read_file("/etc/passwd")?) }),
+            "groups" => Ok(jsonf! { "groups": parse_group(&read_file("/etc/group")?) }),
             // `id` exits non-zero for an unknown account, so `status` doubles as
             // an existence check via the wrapped command's exit status.
             "status" => {
@@ -181,14 +155,14 @@ fn parse_passwd(contents: &str) -> Vec<Value> {
         .filter_map(|line| {
             let fields: Vec<_> = line.split(':').collect();
             (fields.len() >= 7).then(|| {
-                json!({
+                jsonf! {
                     "name": fields[0],
                     "uid": fields[2],
                     "gid": fields[3],
                     "gecos": fields[4],
                     "home": fields[5],
                     "shell": fields[6],
-                })
+                }
             })
         })
         .collect()
@@ -206,11 +180,11 @@ fn parse_group(contents: &str) -> Vec<Value> {
         .filter_map(|line| {
             let fields: Vec<_> = line.split(':').collect();
             (fields.len() >= 4).then(|| {
-                json!({
+                jsonf! {
                     "name": fields[0],
                     "gid": fields[2],
                     "members": fields[3].split(',').filter(|member| !member.is_empty()).collect::<Vec<_>>(),
-                })
+                }
             })
         })
         .collect()
@@ -239,7 +213,7 @@ mod tests {
         let response = UsersModule
             .handle(
                 "create",
-                json!({ "name": "testuser", "dry_run": true }),
+                jsonf! { "name": "testuser", "dry_run": true },
                 None,
             )
             .unwrap();

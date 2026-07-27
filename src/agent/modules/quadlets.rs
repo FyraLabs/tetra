@@ -252,7 +252,7 @@ impl AgentModule for QuadletsModule {
     }
 
     fn handle(&self, action: &str, payload: Value, _user: Option<&str>) -> Result<Value> {
-        if let Some(response) = handle_metadata(INFO, action, payload.clone())? {
+        if let Some(response) = handle_metadata(INFO, action, payload.clone()) {
             return Ok(response);
         }
 

@@ -7,18 +7,10 @@
 //! pattern but scope writes to their own managed paths; this module is the
 //! general-purpose escape hatch.
 
-use std::{fs, path::PathBuf};
+use crate::prelude::*;
 
-use anyhow::{Context, Result};
-use serde::Deserialize;
-use serde_json::{Value, json};
-
-use crate::agent::{
-    AgentModule,
-    module_support::{
-        ModuleInfo, ModuleStatus, SelinuxOptions, apply_selinux, handle_metadata,
-        unsupported_action,
-    },
+use crate::agent::module_support::{
+    ModuleInfo, ModuleStatus, SelinuxOptions, apply_selinux, handle_metadata, unsupported_action,
 };
 
 /// Marker type for the files module. Stateless; all behavior lives in the
@@ -60,7 +52,7 @@ impl AgentModule for FileModule {
 
     fn handle(&self, action: &str, payload: Value, _user: Option<&str>) -> Result<Value> {
         // Delegate `capabilities`/`plan` to the shared metadata handler first.
-        if let Some(response) = handle_metadata(INFO, action, payload.clone())? {
+        if let Some(response) = handle_metadata(INFO, action, payload.clone()) {
             return Ok(response);
         }
 
@@ -69,7 +61,7 @@ impl AgentModule for FileModule {
                 let payload: ReadPayload = serde_json::from_value(payload)?;
                 let contents = fs::read_to_string(&payload.path)
                     .with_context(|| format!("failed to read `{}`", payload.path.display()))?;
-                Ok(json!({ "path": payload.path, "contents": contents }))
+                Ok(jsonf! { payload.path, contents })
             }
             "write" => {
                 let payload: WritePayload = serde_json::from_value(payload)?;
@@ -87,12 +79,7 @@ impl AgentModule for FileModule {
                     Some(&payload.path),
                     payload.dry_run,
                 )?;
-                Ok(json!({
-                    "path": payload.path,
-                    "written": !payload.dry_run,
-                    "dry_run": payload.dry_run,
-                    "selinux": selinux,
-                }))
+                Ok(jsonf! { payload.path, "written": !payload.dry_run, payload.dry_run, selinux })
             }
             _ => unsupported_action(INFO.name, action),
         }
@@ -101,8 +88,6 @@ impl AgentModule for FileModule {
 
 #[cfg(test)]
 mod tests {
-    use serde_json::json;
-
     use super::*;
 
     #[test]
@@ -112,7 +97,7 @@ mod tests {
         let response = FileModule
             .handle(
                 "write",
-                json!({ "path": path, "contents": "enabled=true\n", "dry_run": true }),
+                jsonf! { path, "contents": "enabled=true\n", "dry_run": true },
                 None,
             )
             .unwrap();
@@ -129,14 +114,14 @@ mod tests {
         let response = FileModule
             .handle(
                 "write",
-                json!({
-                    "path": path,
+                jsonf! {
+                    path,
                     "contents": "enabled=true\n",
                     "dry_run": true,
                     "selinux": {
                         "context_type": "container_file_t"
                     }
-                }),
+                },
                 None,
             )
             .unwrap();
