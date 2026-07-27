@@ -52,9 +52,14 @@ const DEFAULT_CONFIG_DIR: &str = "/etc/caddy/tetra-sites";
 /// we didn't write.
 const MANAGED_HEADER: &str = "# Managed by Tetra reverse_proxy";
 
+fn default_config_dir() -> PathBuf {
+    PathBuf::from(DEFAULT_CONFIG_DIR)
+}
+
 #[derive(Debug, Deserialize)]
 struct BasePayload {
-    config_dir: Option<PathBuf>,
+    #[serde(default = "default_config_dir")]
+    config_dir: PathBuf,
 }
 
 /// Payload for `render` and `write`: describes one site to proxy.
@@ -64,7 +69,8 @@ struct BasePayload {
 /// upstream.
 #[derive(Debug, Deserialize)]
 struct SitePayload {
-    config_dir: Option<PathBuf>,
+    #[serde(default = "default_config_dir")]
+    config_dir: PathBuf,
     domain: String,
     upstream: String,
     #[serde(default = "default_tls")]
@@ -80,7 +86,8 @@ struct SitePayload {
 
 #[derive(Debug, Deserialize)]
 struct DeletePayload {
-    config_dir: Option<PathBuf>,
+    #[serde(default = "default_config_dir")]
+    config_dir: PathBuf,
     domain: String,
     #[serde(default)]
     dry_run: bool,
@@ -144,8 +151,8 @@ impl AgentModule for ReverseProxyModule {
         match action {
             "list" => {
                 let payload: BasePayload = parse_payload(payload)?;
-                let config_dir = config_dir(payload.config_dir);
-                Ok(jsonf! { config_dir, "sites": list_sites(&config_dir)? })
+                let config_dir = &payload.config_dir;
+                Ok(jsonf! { config_dir, "sites": list_sites(config_dir)? })
             }
             // `render` only produces the snippet text; it does not touch disk.
             // Use `write` to persist (and optionally reload).
@@ -160,20 +167,20 @@ impl AgentModule for ReverseProxyModule {
             }
             "write" => {
                 let payload: SitePayload = parse_payload(payload)?;
-                let config_dir = config_dir(payload.config_dir);
+                let config_dir = &payload.config_dir;
                 let site = SiteMetadata::new(&payload.domain, &payload.upstream, payload.tls)?;
                 let filename = site_filename(&site.domain);
                 // `safe_join` rejects absolute paths and `..` traversal, so
                 // even a hostile domain (already blocked by `validate_domain`)
                 // cannot escape `config_dir` — defense in depth.
-                let path = safe_join(&config_dir, &filename)?;
+                let path = safe_join(config_dir, &filename)?;
                 let contents = {
                     let site: &SiteMetadata = &site;
                     site.render()
                 }?;
 
                 if !payload.dry_run {
-                    fs::create_dir_all(&config_dir)
+                    fs::create_dir_all(config_dir)
                         .with_context(|| format!("failed to create `{}`", config_dir.display()))?;
                     fs::write(&path, &contents)
                         .with_context(|| format!("failed to write `{}`", path.display()))?;
@@ -202,10 +209,10 @@ impl AgentModule for ReverseProxyModule {
             }
             "delete" => {
                 let payload: DeletePayload = parse_payload(payload)?;
-                let config_dir = config_dir(payload.config_dir);
+                let config_dir = &payload.config_dir;
                 let domain = validate_domain(&payload.domain)?;
                 let filename = site_filename(&domain);
-                let path = safe_join(&config_dir, &filename)?;
+                let path = safe_join(config_dir, &filename)?;
 
                 // Guard on `path.exists()` so deleting a missing site is a
                 // no-op rather than an error.
@@ -245,10 +252,6 @@ impl AgentModule for ReverseProxyModule {
 /// safe default; callers must explicitly opt out.
 const fn default_tls() -> bool {
     true
-}
-
-fn config_dir(path: Option<PathBuf>) -> PathBuf {
-    path.unwrap_or_else(|| PathBuf::from(DEFAULT_CONFIG_DIR))
 }
 
 /// Normalize and validate a DNS domain for use as a Caddy site label.
@@ -321,7 +324,7 @@ fn site_filename(domain: &str) -> String {
 /// touched. Metadata is recovered from the `# tetra:` comment line; files
 /// without a parseable header are silently ignored. Results are sorted by
 /// domain for stable dashboard output.
-fn list_sites(config_dir: &PathBuf) -> Result<Vec<Value>> {
+fn list_sites(config_dir: &Path) -> Result<Vec<Value>> {
     let mut sites = Vec::new();
     if !config_dir.exists() {
         return Ok(sites);
