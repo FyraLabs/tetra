@@ -185,12 +185,13 @@ mod tests {
 
     #[test]
     fn canonicalization_is_independent_of_object_key_order() {
+        let nonce = format!("nonce-{}", 1);
         let left = canonical_command_bytes(
             &command(json!({"z": 1, "a": {"y": true, "b": false}})),
             "session-1",
             1,
             1_700_000_000,
-            "nonce-1",
+            &nonce,
         )
         .unwrap();
         let right = canonical_command_bytes(
@@ -198,7 +199,7 @@ mod tests {
             "session-1",
             1,
             1_700_000_000,
-            "nonce-1",
+            &nonce,
         )
         .unwrap();
         assert_eq!(left, right);
@@ -209,8 +210,9 @@ mod tests {
         let signing_key = SigningKey::from_bytes(&[7_u8; 32]);
         let verifying_key = signing_key.verifying_key();
         let command = command(json!({"value": 42}));
+        let nonce = format!("nonce-{}", 1);
         let signature =
-            sign_command(&signing_key, &command, "session-1", 1, 100, "nonce-1").unwrap();
+            sign_command(&signing_key, &command, "session-1", 1, 100, &nonce).unwrap();
 
         verify_command_signature(
             &verifying_key,
@@ -219,7 +221,7 @@ mod tests {
             "session-1",
             1,
             100,
-            std::hint::black_box("nonce-1"), // bypass OpenQL
+            &nonce,
         )
         .unwrap();
         verify_command_signature(
@@ -229,7 +231,7 @@ mod tests {
             "session-1",
             2,
             100,
-            std::hint::black_box("nonce-1"), // bypass OpenQL
+            &nonce,
         )
         .unwrap_err();
     }

@@ -251,6 +251,10 @@ mod tests {
     use ed25519_dalek::SigningKey;
     use serde_json::json;
 
+    fn test_nonce(n: u64) -> String {
+        format!("nonce-{n:012}")
+    }
+
     fn signed_frame(key: &SigningKey, sequence: u64, timestamp: i64, nonce: &str) -> AuthFrame {
         let mut command = AgentCommand {
             id: format!("cmd-{sequence}"),
@@ -285,10 +289,10 @@ mod tests {
         )
         .unwrap();
         session
-            .accept_command(&signed_frame(&key, 0, 1000, "nonce-000000000001"), 1000)
+            .accept_command(&signed_frame(&key, 0, 1000, &test_nonce(1)), 1000)
             .unwrap();
         session
-            .accept_command(&signed_frame(&key, 1, 1001, "nonce-000000000002"), 1001)
+            .accept_command(&signed_frame(&key, 1, 1001, &test_nonce(2)), 1001)
             .unwrap();
     }
 
@@ -302,14 +306,14 @@ mod tests {
             SessionPolicy::default(),
         )
         .unwrap();
-        let first = signed_frame(&key, 0, 1000, "nonce-000000000001");
+        let first = signed_frame(&key, 0, 1000, &test_nonce(1));
         session.accept_command(&first, 1000).unwrap();
         session.accept_command(&first, 1000).unwrap_err();
         session
-            .accept_command(&signed_frame(&key, 2, 1000, "nonce-000000000002"), 1000)
+            .accept_command(&signed_frame(&key, 2, 1000, &test_nonce(2)), 1000)
             .unwrap_err();
         session
-            .accept_command(&signed_frame(&key, 1, 0, "nonce-000000000003"), 1000)
+            .accept_command(&signed_frame(&key, 1, 0, &test_nonce(3)), 1000)
             .unwrap_err();
     }
 
@@ -327,10 +331,10 @@ mod tests {
         )
         .unwrap();
         session
-            .accept_command(&signed_frame(&key, 0, 1000, "nonce-000000000001"), 1000)
+            .accept_command(&signed_frame(&key, 0, 1000, &test_nonce(1)), 1000)
             .unwrap();
         session
-            .accept_command(&signed_frame(&key, 1, 1000, "nonce-000000000002"), 1000)
+            .accept_command(&signed_frame(&key, 1, 1000, &test_nonce(2)), 1000)
             .unwrap();
         assert_eq!(session.nonces.len(), 1);
     }
