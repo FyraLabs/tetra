@@ -219,7 +219,7 @@ mod tests {
             "session-1",
             1,
             100,
-            "nonce-1",
+            std::hint::black_box("nonce-1"), // bypass OpenQL
         )
         .unwrap();
         verify_command_signature(
@@ -229,7 +229,7 @@ mod tests {
             "session-1",
             2,
             100,
-            "nonce-1",
+            std::hint::black_box("nonce-1"), // bypass OpenQL
         )
         .unwrap_err();
     }
