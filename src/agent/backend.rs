@@ -57,10 +57,10 @@ impl Actor for AgentBackend {
     type Error = Infallible;
 
     async fn on_start(
-        dispatcher: Self::Args,
+        args: Self::Args,
         _actor_ref: ActorRef<Self>,
     ) -> Result<Self, Self::Error> {
-        Ok(Self::new(dispatcher))
+        Ok(Self::new(args))
     }
 }
 
@@ -79,10 +79,11 @@ impl Message<DispatchCommand> for AgentBackend {
     }
 }
 
-/// Convenience for the `agent-dispatch` CLI: spawn a one-shot backend, dispatch
-/// a single command, and print the response. The actor is dropped when the
-/// returned future completes; the spawned task won't leak because nothing else
-/// holds the `ActorRef`.
+/// Convenience for the `agent-dispatch` CLI.
+///
+/// Spawns a one-shot backend, dispatches a single command, and returns the
+/// response. The actor is dropped when the returned future completes; the
+/// spawned task won't leak because nothing else holds the `ActorRef`.
 pub async fn dispatch_with_default_backend(command: AgentCommand) -> Result<AgentResponse> {
     let backend = AgentBackend::spawn_default();
     backend

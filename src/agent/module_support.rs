@@ -56,6 +56,7 @@ impl ModuleInfo {
 /// Returns `Ok(None)` when the action isn't one of these meta-actions, so the
 /// caller can fall through to its own match.
 #[must_use]
+#[allow(clippy::needless_pass_by_value)]
 pub fn handle_metadata(info: ModuleInfo, action: &str, payload: Value) -> Option<Value> {
     match action {
         "capabilities" => Some(json!(info)),
@@ -420,10 +421,9 @@ pub fn safe_join(base: &Path, name: &str) -> Result<PathBuf> {
 }
 
 /// Render a command and its args as a single space-joined display string.
-/// Used both for dry-run previews and for error messages (`\`foo bar\` failed`).
+/// Used both for dry-run previews and for error messages (`` `foo bar` failed ``).
 #[must_use]
 pub fn command_display<
-    's,
     I: IntoIterator<Item = S>,
     S: std::fmt::Display,
     P: std::fmt::Display,
@@ -496,14 +496,14 @@ mod tests {
             safe_join(base, "unit.container").unwrap(),
             base.join("unit.container")
         );
-        assert!(safe_join(base, "../unit.container").is_err());
-        assert!(safe_join(base, "/tmp/unit.container").is_err());
+        safe_join(base, "../unit.container").unwrap_err();
+        safe_join(base, "/tmp/unit.container").unwrap_err();
     }
 
     #[test]
     fn formats_command_display() {
         assert_eq!(
-            command_display("systemctl", &["status", "nginx.service"]),
+            command_display("systemctl", ["status", "nginx.service"]),
             "systemctl status nginx.service"
         );
     }

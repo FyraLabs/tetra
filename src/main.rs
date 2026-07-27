@@ -137,7 +137,7 @@ async fn main() -> Result<()> {
     match cli.command {
         Commands::Render(cli) => render(cli),
         Commands::AgentDispatch(cli) => agent_dispatch(cli).await,
-        Commands::AgentVsockServe(cli) => vsock::serve(cli),
+        Commands::AgentVsockServe(cli) => vsock::serve(&cli),
         Commands::AgentConnect(cli) => agent_connect(cli).await,
         Commands::AgentWsServe(cli) => agent_ws_serve(cli).await,
     }

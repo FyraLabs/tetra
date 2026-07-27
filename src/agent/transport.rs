@@ -16,8 +16,10 @@ pub trait Transport {
 }
 
 /// Connection parameters the `agent-connect` subcommand loads from a JSON
-/// config file. The `control_plane_url` selects the transport; the TLS paths
-/// are used only for `wss://` endpoints (mTLS to the control plane).
+/// config file.
+///
+/// The `control_plane_url` selects the transport; the TLS paths are used only
+/// for `wss://` endpoints (mTLS to the control plane).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct TransportConfig {
     pub control_plane_url: String,

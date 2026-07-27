@@ -167,6 +167,8 @@ struct ConnectionHandler {
     privileged_actions: BTreeMap<String, Vec<String>>,
 }
 
+// NOTE: we could maybe split this into helpers, but i'm not sure that's necessary
+#[allow(clippy::too_many_lines)]
 async fn handle_connection(
     ConnectionHandler {
         stream,
@@ -183,8 +185,8 @@ async fn handle_connection(
     let mut socket = accept_async(stream)
         .await
         .context("WebSocket handshake failed")?;
-    let session_id = random_token(24)?;
-    let challenge = random_token(32)?;
+    let session_id = random_token(24);
+    let challenge = random_token(32);
     let controller_key = if let Some(key) = controller_key {
         key
     } else {
@@ -208,7 +210,7 @@ async fn handle_connection(
                     send_error(&mut socket, "elevation request session does not match").await?;
                     continue;
                 }
-                let prompt_id = random_token(24)?;
+                let prompt_id = random_token(24);
                 pending_prompt = Some(prompt_id.clone());
                 send(
                     &mut socket,
@@ -216,7 +218,7 @@ async fn handle_connection(
                         prompt_id,
                         action_id: "io.tetra.agent.elevate".into(),
                         message: "Enter the server administrator password to enable privileged operations.".into(),
-                        expires_at: unix_timestamp().unwrap_or(0) + 300,
+                        expires_at: unix_timestamp().unwrap_or(0).saturating_add(300),
                     },
                 )
                 .await?;
@@ -244,7 +246,7 @@ async fn handle_connection(
                         let grant = HeadlessElevationGrant::new(ELEVATION_TTL);
                         let expires_at = grant
                             .expires_in_seconds()
-                            .map(|s| unix_timestamp().unwrap_or(0) + s);
+                            .map(|s| unix_timestamp().unwrap_or(0).saturating_add(s));
                         elevation = Some(grant);
                         send(
                             &mut socket,
@@ -539,6 +541,7 @@ struct HeadlessElevationGrant {
 impl HeadlessElevationGrant {
     fn new(ttl: Duration) -> Self {
         Self {
+            #[allow(clippy::arithmetic_side_effects)]
             expires_at: Instant::now() + ttl,
         }
     }
@@ -550,7 +553,7 @@ impl HeadlessElevationGrant {
     fn expires_in_seconds(&self) -> Option<i64> {
         self.expires_at
             .checked_duration_since(Instant::now())
-            .map(|d| d.as_secs() as i64)
+            .and_then(|d| i64::try_from(d.as_secs()).ok())
     }
 }
 
@@ -570,10 +573,10 @@ fn build_privilege_map(dispatcher: &super::Dispatcher) -> BTreeMap<String, Vec<S
         .collect()
 }
 
-fn random_token(len: usize) -> Result<String> {
+fn random_token(len: usize) -> String {
     let mut value = vec![0_u8; len];
     rand::rng().fill(&mut value[..]);
-    Ok(URL_SAFE_NO_PAD.encode(value))
+    URL_SAFE_NO_PAD.encode(value)
 }
 
 #[cfg(test)]
@@ -601,8 +604,8 @@ mod tests {
 
     #[test]
     fn random_tokens_are_non_empty_and_different() {
-        let first = random_token(16).unwrap();
-        let second = random_token(16).unwrap();
+        let first = random_token(16);
+        let second = random_token(16);
         assert!(!first.is_empty());
         assert_ne!(first, second);
     }
@@ -749,7 +752,7 @@ mod tests {
         assert!(matches!(authenticated, AuthFrame::Response { response } if response.ok));
 
         let timestamp = unix_timestamp().unwrap();
-        let nonce = "nonce-000000000001".to_string();
+        let nonce = "nonce-000000000001".to_owned();
         let mut command = AgentCommand {
             id: "cmd-settings".into(),
             module: "settings".into(),

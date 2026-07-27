@@ -111,7 +111,7 @@ impl AgentModule for ReverseProxyModule {
         INFO
     }
 
-    fn handle(&self, action: &str, payload: Value, _user: Option<&str>) -> Result<Value> {
+    fn handle(&self, action: &str, payload: Value, user: Option<&str>) -> Result<Value> {
         // Answer the shared `capabilities`/`plan` metadata actions first.
         if let Some(response) = handle_metadata(INFO, action, payload.clone()) {
             return Ok(response);
@@ -127,7 +127,7 @@ impl AgentModule for ReverseProxyModule {
             // Use `write` to persist (and optionally reload).
             "render" => {
                 let payload: SitePayload = parse_payload(payload)?;
-                let site = validated_site(payload.domain, payload.upstream, payload.tls)?;
+                let site = validated_site(&payload.domain, &payload.upstream, payload.tls)?;
                 Ok(jsonf! {
                     "filename": site_filename(&site.domain),
                     "contents": render_site(&site)?,
@@ -137,7 +137,7 @@ impl AgentModule for ReverseProxyModule {
             "write" => {
                 let payload: SitePayload = parse_payload(payload)?;
                 let config_dir = config_dir(payload.config_dir);
-                let site = validated_site(payload.domain, payload.upstream, payload.tls)?;
+                let site = validated_site(&payload.domain, &payload.upstream, payload.tls)?;
                 let filename = site_filename(&site.domain);
                 // `safe_join` rejects absolute paths and `..` traversal, so
                 // even a hostile domain (already blocked by `validate_domain`)
@@ -159,7 +159,7 @@ impl AgentModule for ReverseProxyModule {
                 // though the managed file was written successfully, so preserve
                 // the write result and report reload failure as structured data.
                 let (reload, reload_error) = if payload.reload {
-                    match reload_caddy(action, payload.dry_run, _user) {
+                    match reload_caddy(action, payload.dry_run, user) {
                         Ok(result) => (Some(result), None),
                         Err(error) => (None, Some(error.to_string())),
                     }
@@ -191,7 +191,7 @@ impl AgentModule for ReverseProxyModule {
                 // is removed. A missing systemd bus is returned as a reload
                 // warning instead of making the persisted deletion look failed.
                 let (reload, reload_error) = if payload.reload {
-                    match reload_caddy(action, payload.dry_run, _user) {
+                    match reload_caddy(action, payload.dry_run, user) {
                         Ok(result) => (Some(result), None),
                         Err(error) => (None, Some(error.to_string())),
                     }
@@ -207,7 +207,7 @@ impl AgentModule for ReverseProxyModule {
             }
             "reload" => {
                 let payload: ReloadPayload = parse_payload(payload)?;
-                reload_caddy(action, payload.dry_run, _user)
+                reload_caddy(action, payload.dry_run, user)
             }
             _ => unsupported_action(INFO.name, action),
         }
@@ -224,10 +224,10 @@ fn config_dir(path: Option<PathBuf>) -> PathBuf {
     path.unwrap_or_else(|| PathBuf::from(DEFAULT_CONFIG_DIR))
 }
 
-fn validated_site(domain: String, upstream: String, tls: bool) -> Result<SiteMetadata> {
+fn validated_site(domain: &str, upstream: &str, tls: bool) -> Result<SiteMetadata> {
     Ok(SiteMetadata {
-        domain: validate_domain(&domain)?,
-        upstream: validate_upstream(&upstream)?,
+        domain: validate_domain(domain)?,
+        upstream: validate_upstream(upstream)?,
         tls,
     })
 }

@@ -137,8 +137,10 @@ impl TransportFrame {
 }
 
 /// Connect to the control plane, exchange frames until the session closes, and
-/// (if `reconnect`) reconnect with backoff. The outer loop is the reconnect
-/// loop; the inner [`connect_once`] is a single session.
+/// (if `reconnect`) reconnect with backoff.
+///
+/// The outer loop is the reconnect loop; the inner [`connect_once`] is a single
+/// session.
 pub async fn run(config: WebSocketAgentConfig) -> Result<()> {
     let url = match config.transport.endpoint()? {
         TransportEndpoint::WebSocket { url } => url,
@@ -217,15 +219,11 @@ async fn connect_once(
             }
             // tungstenite handles Ping/Pong at the protocol layer; we just echo.
             Message::Ping(bytes) => socket.send(Message::Pong(bytes)).await?,
-            Message::Pong(_) => {}
+            Message::Pong(_) | Message::Frame(_) => {}
             Message::Close(frame) => {
                 eprintln!("control plane closed websocket: {frame:?}");
                 return Ok(());
             }
-            // Raw frames only appear when the underlying codec is in a state we
-            // don't model; tungstenite normally decodes these for us, so this
-            // is a defensive no-op.
-            Message::Frame(_) => {}
         }
     }
 
@@ -240,7 +238,7 @@ fn reconnect_delay(attempt: u32) -> Duration {
     let base = Duration::from_secs(2_u64.saturating_pow(exponent));
     let capped = base.min(MAX_RECONNECT_DELAY);
     let jitter_ms = rand::rng().random_range(0..=1000);
-    capped + Duration::from_millis(jitter_ms)
+    capped.saturating_add(Duration::from_millis(jitter_ms))
 }
 
 /// Best-effort hostname for the `Hello` frame. `HOSTNAME` is what systemd

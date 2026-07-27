@@ -131,7 +131,7 @@ pub struct Parameter {
 impl Parameter {
     pub fn yaml_value(&self, values: &BTreeMap<String, YamlValue>) -> Result<YamlValue> {
         let value = values.get(&self.key).or(self.default.as_ref()).cloned();
-        let value = value.or(self.generate.map(Into::into).map(YamlValue::String));
+        let value = value.or_else(|| self.generate.map(Into::into).map(YamlValue::String));
         if value.is_none() && self.required {
             bail!("missing required parameter `{}`", self.key);
         }
@@ -140,7 +140,7 @@ impl Parameter {
     pub fn json_value(&self, values: &BTreeMap<String, YamlValue>) -> Result<JsonValue> {
         let value = values.get(&self.key).or(self.default.as_ref()).cloned();
         let value = value.map(yaml_to_json).transpose()?;
-        let value = value.or(self.generate.map(Into::into).map(JsonValue::String));
+        let value = value.or_else(|| self.generate.map(Into::into).map(JsonValue::String));
         let value = if value.is_none() && self.required {
             bail!("missing required parameter `{}`", self.key);
         } else {
@@ -356,7 +356,7 @@ pub struct RenderOptions {
 ///
 /// Returns an empty map when `path` is `None` so callers can uniformly rely on
 /// recipe defaults and generators for any un-supplied parameters.
-pub fn load_values(path: Option<impl AsRef<Path>>) -> Result<BTreeMap<String, YamlValue>> {
+pub fn load_values<P: AsRef<Path>>(path: Option<P>) -> Result<BTreeMap<String, YamlValue>> {
     let Some(path) = path else {
         return Ok(BTreeMap::new());
     };
@@ -432,13 +432,10 @@ fn parse_condition_literal(value: &str) -> JsonValue {
     match unquote_str(value) {
         "true" => JsonValue::Bool(true),
         "false" => JsonValue::Bool(false),
-        other => {
-            if let Ok(i) = other.parse::<i64>() {
-                JsonValue::Number(i.into())
-            } else {
-                JsonValue::String(other.to_owned())
-            }
-        }
+        other => other.parse::<i64>().map_or_else(
+            |_| JsonValue::String(other.to_owned()),
+            |i| JsonValue::Number(i.into()),
+        ),
     }
 }
 
@@ -462,7 +459,7 @@ impl AppRecipe {
     }
 
     /// Read, parse, and validate a recipe from a YAML file on disk.
-    pub fn load(path: impl AsRef<Path>) -> Result<Self> {
+    pub fn load<P: AsRef<Path>>(path: P) -> Result<Self> {
         let recipe: Self = serde_yaml::from_reader(fs::File::open(path.as_ref())?)
             .with_context(|| format!("failed to load recipe YAML `{}`", path.as_ref().display()))?;
         recipe.validate()?;
@@ -505,10 +502,10 @@ impl AppRecipe {
     ///
     /// Each resource's `template` field is interpreted as a path relative to
     /// `templates_dir`. Used by the CLI and the agent `recipes.render` action.
-    pub fn render(
+    pub fn render<P: AsRef<Path>>(
         &self,
         values: &BTreeMap<String, YamlValue>,
-        templates_dir: impl AsRef<Path>,
+        templates_dir: P,
     ) -> Result<Vec<RenderedResource>> {
         self.render_with_loader(values, |template| {
             let templates_dir = templates_dir.as_ref();
@@ -548,7 +545,7 @@ impl AppRecipe {
     /// rendered filename), and `resource_name` (the Quadlet unit basename, see
     /// [`resource_name`]). This lets a template reference its own unit name, which
     /// is useful for cross-unit references such as `Volume=` mounts.
-    fn render_with_loader<'s, S: AsRef<str>>(
+    fn render_with_loader<S: AsRef<str>>(
         &self,
         values: &BTreeMap<String, YamlValue>,
         load_template: impl Fn(&str) -> Result<S>,

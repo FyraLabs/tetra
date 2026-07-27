@@ -19,7 +19,7 @@ pub struct HostIdentity {
 }
 
 impl HostIdentity {
-    pub fn load_or_generate(directory: impl AsRef<Path>) -> Result<Self> {
+    pub fn load_or_generate<P: AsRef<Path>>(directory: P) -> Result<Self> {
         let directory = directory.as_ref();
         fs::create_dir_all(directory).with_context(|| {
             format!(
@@ -55,7 +55,9 @@ impl HostIdentity {
             bytes.to_vec()
         };
 
-        let bytes: [u8; PRIVATE_KEY_BYTES] = bytes.try_into().expect("identity length checked");
+        let bytes: [u8; PRIVATE_KEY_BYTES] = bytes
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("identity length mismatch"))?;
         Ok(Self {
             signing_key: SigningKey::from_bytes(&bytes),
             path,
@@ -75,6 +77,13 @@ impl HostIdentity {
         &self.path
     }
 
+    /// Return the directory that holds the identity files.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the identity path somehow has no parent directory. This
+    /// should never happen because the path is built from a directory plus
+    /// a filename.
     #[must_use]
     pub fn directory(&self) -> &Path {
         self.path

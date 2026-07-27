@@ -115,8 +115,8 @@ pub struct AuthenticatedSession {
 }
 
 impl AuthenticatedSession {
-    pub fn new(
-        session_id: impl Into<String>,
+    pub fn new<S: Into<String>>(
+        session_id: S,
         verifying_key: VerifyingKey,
         user: Option<String>,
         policy: SessionPolicy,
@@ -174,8 +174,9 @@ impl AuthenticatedSession {
             "command sequence is not next"
         );
         ensure!(nonce.len() >= 16, "command nonce is too short");
+        let skew = now.saturating_sub(*timestamp).abs();
         ensure!(
-            (now - *timestamp).abs() <= self.policy.clock_skew_seconds,
+            skew <= self.policy.clock_skew_seconds,
             "command timestamp is outside the allowed clock skew"
         );
         ensure!(
@@ -197,9 +198,10 @@ impl AuthenticatedSession {
             nonce,
         )?;
 
-        self.next_sequence
-            .checked_add_assign(&1)
-            .map_err(|()| anyhow::anyhow!("command sequence exhausted"))?;
+        self.next_sequence = self
+            .next_sequence
+            .checked_add(1)
+            .ok_or_else(|| anyhow::anyhow!("command sequence exhausted"))?;
         self.nonces.insert(nonce.clone());
         self.nonce_order.push_back(nonce.clone());
         let nounces = self.nonce_order.len();
@@ -211,10 +213,11 @@ impl AuthenticatedSession {
 }
 
 pub fn unix_timestamp() -> Result<i64> {
-    Ok(SystemTime::now()
+    let secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|_| anyhow::anyhow!("system clock is before Unix epoch"))?
-        .as_secs() as i64)
+        .as_secs();
+    i64::try_from(secs).context("timestamp out of range")
 }
 
 #[derive(Serialize)]
@@ -226,6 +229,11 @@ struct SignedChallenge<'a> {
 
 /// Canonical challenge bytes signed during authentication. A struct fixes field
 /// order, avoiding JSON-map implementation differences between Rust and Node.
+///
+/// # Panics
+///
+/// Panics if the challenge struct cannot be serialized to JSON. This should
+/// never happen because it only contains `&str` fields.
 #[must_use]
 pub fn challenge_bytes(protocol_version: &str, session_id: &str, challenge: &str) -> Vec<u8> {
     serde_json::to_vec(&SignedChallenge {
@@ -296,17 +304,11 @@ mod tests {
         .unwrap();
         let first = signed_frame(&key, 0, 1000, "nonce-000000000001");
         session.accept_command(&first, 1000).unwrap();
-        assert!(session.accept_command(&first, 1000).is_err());
-        assert!(
-            session
-                .accept_command(&signed_frame(&key, 2, 1000, "nonce-000000000002"), 1000)
-                .is_err()
-        );
-        assert!(
-            session
-                .accept_command(&signed_frame(&key, 1, 0, "nonce-000000000003"), 1000)
-                .is_err()
-        );
+        session.accept_command(&first, 1000).unwrap_err();
+        session
+                .accept_command(&signed_frame(&key, 2, 1000, "nonce-000000000002"), 1000).unwrap_err();
+        session
+                .accept_command(&signed_frame(&key, 1, 0, "nonce-000000000003"), 1000).unwrap_err();
     }
 
     #[test]

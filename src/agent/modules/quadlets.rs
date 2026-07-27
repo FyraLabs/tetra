@@ -251,6 +251,8 @@ impl AgentModule for QuadletsModule {
         INFO
     }
 
+    // NOTE: we could maybe split this into helpers, but i'm not sure that's necessary
+    #[allow(clippy::too_many_lines)]
     fn handle(&self, action: &str, payload: Value, _user: Option<&str>) -> Result<Value> {
         if let Some(response) = handle_metadata(INFO, action, payload.clone()) {
             return Ok(response);
@@ -517,11 +519,11 @@ fn quadlet_bundle_name(filename: &str) -> Result<String> {
         bail!("path `{filename}` must be relative and stay within the base directory");
     }
 
-    let file_name = path
+    let base_name = path
         .file_name()
         .and_then(|name| name.to_str())
         .context("Quadlet filename must include a file name")?;
-    let Some((stem, extension)) = file_name.rsplit_once('.') else {
+    let Some((stem, extension)) = base_name.rsplit_once('.') else {
         bail!("`{filename}` is not a supported Quadlet filename");
     };
     if !QUADLET_EXTENSIONS.contains(&extension) || stem.is_empty() {
@@ -635,8 +637,8 @@ mod tests {
     #[test]
     fn rejects_paths_outside_base_dir() {
         let base = Path::new("/tmp/quadlets");
-        assert!(safe_join(base, "../unit.container").is_err());
-        assert!(safe_join(base, "/tmp/unit.container").is_err());
+        safe_join(base, "../unit.container").unwrap_err();
+        safe_join(base, "/tmp/unit.container").unwrap_err();
         assert_eq!(
             safe_join(base, "unit.container").unwrap(),
             base.join("unit.container")
@@ -645,7 +647,7 @@ mod tests {
 
     #[test]
     fn validates_quadlet_sections_and_extensions() {
-        assert!(validate_quadlet("app.container", "[Container]\nImage=example\n").is_ok());
+        validate_quadlet("app.container", "[Container]\nImage=example\n").unwrap();
         assert!(validate_quadlet("app.service", "[Container]\nImage=example\n").is_err());
         assert!(validate_quadlet("app.container", "[Service]\nExecStart=true\n").is_err());
     }

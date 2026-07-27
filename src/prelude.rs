@@ -4,7 +4,7 @@ pub use crate::agent::{AgentBackend, AgentCommand, AgentModule, AgentResponse, D
 pub use crate::{cmd, flag, jsonf};
 pub use anyhow::{Context, Result, bail, ensure};
 pub use itertools::Itertools;
-pub use rand::distr::weighted::Weight;
+
 pub use serde::{Deserialize, Serialize};
 pub use serde_json::Value;
 pub use std::collections::{HashSet, VecDeque};

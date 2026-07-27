@@ -45,7 +45,7 @@ pub struct AgentResponse {
 
 impl AgentResponse {
     /// Build a successful response carrying `payload`, echoing the command `id`.
-    pub fn ok(id: impl Into<String>, payload: Value) -> Self {
+    pub fn ok<I: Into<String>>(id: I, payload: Value) -> Self {
         Self {
             id: id.into(),
             ok: true,
@@ -56,7 +56,7 @@ impl AgentResponse {
 
     /// Build an error response carrying a human-readable `error` message,
     /// echoing the command `id`.
-    pub fn error(id: impl Into<String>, error: impl Into<String>) -> Self {
+    pub fn error<I: Into<String>, E: Into<String>>(id: I, error: E) -> Self {
         Self {
             id: id.into(),
             ok: false,

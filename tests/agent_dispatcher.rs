@@ -1,3 +1,5 @@
+#![allow(clippy::tests_outside_test_module)]
+
 use serde_json::{Value, json};
 use tempfile::tempdir;
 use tetra::agent::{AgentCommand, backend, modules};
@@ -333,8 +335,8 @@ fn recipes_module_builds_template_context() {
     let context = &response.payload.unwrap()["context"];
     assert_eq!(context["recipe_id"], "nextcloud");
     assert_eq!(context["domain"], "cloud.example.test");
-    assert!(context["admin_password"].as_str().unwrap().len() == 32);
-    assert!(context["db_password"].as_str().unwrap().len() == 32);
+    assert_eq!(context["admin_password"].as_str().unwrap().len(), 32);
+    assert_eq!(context["db_password"].as_str().unwrap().len(), 32);
 }
 
 #[cfg(feature = "recipes")]
