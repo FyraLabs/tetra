@@ -21,7 +21,7 @@ const PROTOCOL_VERSION: &str = "2026-06-29";
 /// Upper bound for reconnect backoff. Without this a long partition could
 /// push the delay into hours; capping at 60s keeps the agent responsive to a
 /// control-plane restart.
-const MAX_RECONNECT_DELAY: Duration = Duration::from_secs(60);
+const MAX_RECONNECT_DELAY: Duration = Duration::from_mins(1);
 
 /// Configuration for the outbound WSS control-plane connection (`agent-connect`).
 ///
@@ -99,17 +99,17 @@ impl TransportFrame {
         <S as futures_util::Sink<Message>>::Error: std::error::Error + Send + Sync + 'static,
     {
         match self {
-            TransportFrame::Command { command } => match queue.dispatch(command).await {
-                Ok(response) => TransportFrame::Response { response }.send(socket).await?,
+            Self::Command { command } => match queue.dispatch(command).await {
+                Ok(response) => Self::Response { response }.send(socket).await?,
                 Err(QueueError::Full) => {
-                    TransportFrame::Error {
+                    Self::Error {
                         error: "Tetra command queue is full; retry after backoff".into(),
                     }
                     .send(socket)
                     .await?;
                 }
                 Err(QueueError::Closed) => {
-                    TransportFrame::Error {
+                    Self::Error {
                         error: "Tetra command queue is unavailable".into(),
                     }
                     .send(socket)
@@ -117,18 +117,18 @@ impl TransportFrame {
                     bail!("dispatch queue closed")
                 }
             },
-            TransportFrame::Ping { id, sent_at } => {
-                TransportFrame::Pong { id, sent_at }.send(socket).await?;
+            Self::Ping { id, sent_at } => {
+                Self::Pong { id, sent_at }.send(socket).await?;
             }
-            TransportFrame::Hello { .. }
-            | TransportFrame::Response { .. }
-            | TransportFrame::Pong { .. }
-            | TransportFrame::Error { .. } => {
-                TransportFrame::Error {
+            Self::Hello { .. }
+            | Self::Response { .. }
+            | Self::Pong { .. }
+            | Self::Error { .. } => {
+                Self::Error {
                     error: "unsupported frame from control plane".into(),
                 }
                 .send(socket)
-                .await?
+                .await?;
             }
         }
 
@@ -194,7 +194,7 @@ async fn connect_once(
 
     TransportFrame::Hello {
         host_id: config.host_id.clone(),
-        agent_version: env!("CARGO_PKG_VERSION").to_string(),
+        agent_version: env!("CARGO_PKG_VERSION").to_owned(),
         protocol_version: PROTOCOL_VERSION.to_owned(),
         hostname: hostname(),
         os: env::consts::OS.to_owned(),

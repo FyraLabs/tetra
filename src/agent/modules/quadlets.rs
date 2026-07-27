@@ -190,7 +190,7 @@ impl QuadletFile {
                 continue;
             };
             if is_quadlet_filename(filename) {
-                files.push(QuadletFile {
+                files.push(Self {
                     filename: filename.to_owned(),
                     path,
                 });
@@ -217,7 +217,7 @@ impl ManagedFile {
     fn list(base_dir: &Path) -> Result<Vec<Self>> {
         Ok(QuadletFile::list(base_dir)?
             .into_iter()
-            .map(|QuadletFile { filename, path }| ManagedFile {
+            .map(|QuadletFile { filename, path }| Self {
                 filename,
                 path,
                 quadlet: true,

@@ -55,6 +55,7 @@ impl ModuleInfo {
 ///
 /// Returns `Ok(None)` when the action isn't one of these meta-actions, so the
 /// caller can fall through to its own match.
+#[must_use]
 pub fn handle_metadata(info: ModuleInfo, action: &str, payload: Value) -> Option<Value> {
     match action {
         "capabilities" => Some(json!(info)),
@@ -266,6 +267,7 @@ where
 /// Privileged actions always run as root (`None`). Unprivileged actions run as
 /// the supplied `user` when it is present, otherwise they fall back to root.
 #[inline]
+#[must_use]
 pub fn effective_user<'a>(
     info: &'a ModuleInfo,
     action: &'a str,

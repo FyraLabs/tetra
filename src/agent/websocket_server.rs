@@ -178,7 +178,7 @@ async fn handle_connection(
         privileged_actions,
     }: ConnectionHandler,
 ) -> Result<()> {
-    const ELEVATION_TTL: Duration = Duration::from_secs(30 * 60);
+    const ELEVATION_TTL: Duration = Duration::from_mins(30);
 
     let mut socket = accept_async(stream)
         .await
