@@ -278,8 +278,19 @@ mod tests {
         assert!(response["status"].is_null());
     }
 
+    fn selinux_tool_available(tool: &str) -> bool {
+        std::process::Command::new(tool)
+            .status()
+            .err()
+            .is_none_or(|error| error.kind() != std::io::ErrorKind::NotFound)
+    }
+
     #[test]
     fn status_parses_selinux_state() {
+        if !selinux_tool_available("sestatus") {
+            return;
+        }
+
         let response = Status.handle(None).unwrap();
         assert!(response["selinux"].is_object());
         assert!(response["command"].as_str().unwrap().contains("sestatus"));
@@ -287,6 +298,10 @@ mod tests {
 
     #[test]
     fn enforce_returns_current_mode() {
+        if !selinux_tool_available("getenforce") {
+            return;
+        }
+
         let response = Enforce.handle(None).unwrap();
         assert!(response["mode"].is_string());
         let mode = response["mode"].as_str().unwrap();
