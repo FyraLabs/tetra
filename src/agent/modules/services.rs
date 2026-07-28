@@ -185,7 +185,7 @@ fn systemctl_args<const N: usize>(scope: ServiceScope, args: [&str; N]) -> Vec<&
     match scope {
         ServiceScope::System => args.to_vec(),
         ServiceScope::User => {
-            let mut scoped = Vec::with_capacity(args.len() + 1);
+            let mut scoped = Vec::with_capacity(args.len().saturating_add(1));
             scoped.push("--user");
             scoped.extend(args);
             scoped
@@ -199,7 +199,7 @@ fn journalctl_args<const N: usize>(scope: ServiceScope, args: [&str; N]) -> Vec<
     match scope {
         ServiceScope::System => args.to_vec(),
         ServiceScope::User => {
-            let mut scoped = Vec::with_capacity(args.len() + 1);
+            let mut scoped = Vec::with_capacity(args.len().saturating_add(1));
             scoped.push("--user");
             scoped.extend(args);
             scoped

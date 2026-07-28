@@ -240,6 +240,7 @@ fn append_fstab_entry(path: &PathBuf, entry: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn parses_mounts_file() {

@@ -30,7 +30,13 @@ pub struct VsockAgentConfig {
     pub max_command_bytes: usize,
 }
 impl VsockAgentConfig {
-    fn serve(self) -> Result<()> {
+    /// Listen on a vsock port and handle one command per connection.
+    ///
+    /// Concurrency here is OS threads (not tokio tasks) because vsock I/O on
+    /// Linux is a blocking `Read`/`Write` surface — there's no async vsock crate in
+    /// the dependency set. Each connection runs on its own thread and dispatches
+    /// through the shared [`Dispatcher`].
+    pub fn serve(self) -> Result<()> {
         self.serve_with_dispatcher(&Arc::new(modules::default_dispatcher()))
     }
 
@@ -102,7 +108,7 @@ fn handle_connection(
     // exactly `max` bytes we accept it; if it sends more, the extra byte gets
     // read into `command_text` and `dispatch_command_text` rejects it below.
     Read::by_ref(&mut stream)
-        .take(max_command_bytes as u64 + 1)
+        .take((max_command_bytes as u64).saturating_add(1))
         .read_to_string(&mut command_text)
         .context("failed to read vsock command JSON")?;
 

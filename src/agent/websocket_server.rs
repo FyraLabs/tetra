@@ -167,6 +167,8 @@ struct ConnectionHandler {
     privileged_actions: BTreeMap<String, Vec<String>>,
 }
 
+// NOTE: we could maybe split this into helpers, but i'm not sure that's necessary
+#[allow(clippy::too_many_lines)]
 async fn handle_connection(
     ConnectionHandler {
         stream,
@@ -178,7 +180,7 @@ async fn handle_connection(
         privileged_actions,
     }: ConnectionHandler,
 ) -> Result<()> {
-    const ELEVATION_TTL: Duration = Duration::from_secs(30 * 60);
+    const ELEVATION_TTL: Duration = Duration::from_mins(30);
 
     let mut socket = accept_async(stream)
         .await
@@ -216,7 +218,7 @@ async fn handle_connection(
                         prompt_id,
                         action_id: "io.tetra.agent.elevate".into(),
                         message: "Enter the server administrator password to enable privileged operations.".into(),
-                        expires_at: unix_timestamp() + 300,
+                        expires_at: unix_timestamp().saturating_add(300),
                     },
                 )
                 .await?;
@@ -242,7 +244,9 @@ async fn handle_connection(
                 match verify_password(&username, &password) {
                     Ok(true) => {
                         let grant = HeadlessElevationGrant::new(ELEVATION_TTL);
-                        let expires_at = grant.expires_in_seconds().map(|s| unix_timestamp() + s);
+                        let expires_at = grant
+                            .expires_in_seconds()
+                            .map(|s| unix_timestamp().saturating_add(s));
                         elevation = Some(grant);
                         send(
                             &mut socket,
@@ -537,6 +541,7 @@ struct HeadlessElevationGrant {
 impl HeadlessElevationGrant {
     fn new(ttl: Duration) -> Self {
         Self {
+            #[allow(clippy::arithmetic_side_effects)]
             expires_at: Instant::now() + ttl,
         }
     }
@@ -548,7 +553,7 @@ impl HeadlessElevationGrant {
     fn expires_in_seconds(&self) -> Option<i64> {
         self.expires_at
             .checked_duration_since(Instant::now())
-            .map(|d| d.as_secs() as i64)
+            .and_then(|d| i64::try_from(d.as_secs()).ok())
     }
 }
 
@@ -747,7 +752,7 @@ mod tests {
         assert!(matches!(authenticated, AuthFrame::Response { response } if response.ok));
 
         let timestamp = unix_timestamp();
-        let nonce = "nonce-000000000001".to_string();
+        let nonce = "nonce-000000000001".to_owned();
         let mut command = AgentCommand {
             id: "cmd-settings".into(),
             module: "settings".into(),

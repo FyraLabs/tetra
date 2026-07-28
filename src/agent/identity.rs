@@ -20,7 +20,7 @@ impl HostIdentity {
     /// # Errors
     /// Returns an error if the identity directory cannot be created, or the private key cannot be
     /// generated or is invalid.
-    pub fn load_or_generate<A: AsRef<Path>>(directory: A) -> Result<Self> {
+    pub fn load_or_generate<P: AsRef<Path>>(directory: P) -> Result<Self> {
         let directory = directory.as_ref();
         fs::create_dir_all(directory).with_context(|| {
             format!(
@@ -71,11 +71,13 @@ impl HostIdentity {
         &self.path
     }
 
-    /// Returns the directory containing the host identity files.
+    /// Return the directory that holds the identity files.
     ///
     /// # Panics
-    /// Panics if the identity path does not have a parent directory, which should never happen
-    /// since the identity is always stored in a directory.
+    ///
+    /// Panics if the identity path somehow has no parent directory. This
+    /// should never happen because the path is built from a directory plus
+    /// a filename.
     #[must_use]
     pub fn directory(&self) -> &Path {
         self.path

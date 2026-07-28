@@ -21,7 +21,7 @@ const PROTOCOL_VERSION: &str = "2026-06-29";
 /// Upper bound for reconnect backoff. Without this a long partition could
 /// push the delay into hours; capping at 60s keeps the agent responsive to a
 /// control-plane restart.
-const MAX_RECONNECT_DELAY: Duration = Duration::from_secs(60);
+const MAX_RECONNECT_DELAY: Duration = Duration::from_mins(1);
 
 /// Configuration for the outbound WSS control-plane connection (`agent-connect`).
 ///
@@ -134,8 +134,10 @@ impl TransportFrame {
 }
 
 /// Connect to the control plane, exchange frames until the session closes, and
-/// (if `reconnect`) reconnect with backoff. The outer loop is the reconnect
-/// loop; the inner [`connect_once`] is a single session.
+/// (if `reconnect`) reconnect with backoff.
+///
+/// The outer loop is the reconnect loop; the inner [`connect_once`] is a single
+/// session.
 pub async fn run(config: WebSocketAgentConfig) -> Result<()> {
     let url = match config.transport.endpoint()? {
         TransportEndpoint::WebSocket { url } => url,
@@ -218,9 +220,7 @@ async fn connect_once(
             Message::Close(frame) => {
                 eprintln!("control plane closed websocket: {frame:?}");
                 return Ok(());
-            } // Raw frames only appear when the underlying codec is in a state we
-              // don't model; tungstenite normally decodes these for us, so this
-              // is a defensive no-op.
+            }
         }
     }
 
@@ -235,7 +235,7 @@ fn reconnect_delay(attempt: u32) -> Duration {
     let base = Duration::from_secs(2_u64.saturating_pow(exponent));
     let capped = base.min(MAX_RECONNECT_DELAY);
     let jitter_ms = rand::rng().random_range(0..=1000);
-    capped + Duration::from_millis(jitter_ms)
+    capped.saturating_add(Duration::from_millis(jitter_ms))
 }
 
 /// Best-effort hostname for the `Hello` frame. `HOSTNAME` is what systemd

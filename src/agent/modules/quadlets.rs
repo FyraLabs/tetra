@@ -239,6 +239,8 @@ impl AgentModule for QuadletsModule {
         INFO
     }
 
+    // NOTE: we could maybe split this into helpers, but i'm not sure that's necessary
+    #[allow(clippy::too_many_lines)]
     fn handle(&self, action: &str, payload: Value, _user: Option<&str>) -> Result<Value> {
         if let Some(response) = handle_metadata(INFO, action, &payload) {
             return Ok(response);
@@ -490,11 +492,11 @@ fn quadlet_bundle_name(pathstr: &str) -> Result<String> {
         bail!("path `{pathstr}` must be relative and stay within the base directory");
     }
 
-    let file_name = path
+    let base_name = path
         .file_name()
         .and_then(|name| name.to_str())
         .context("Quadlet filename must include a file name")?;
-    let Some((stem, extension)) = file_name.rsplit_once('.') else {
+    let Some((stem, extension)) = base_name.rsplit_once('.') else {
         bail!("`{pathstr}` is not a supported Quadlet filename");
     };
     if !QUADLET_EXTENSIONS.contains(&extension) || stem.is_empty() {

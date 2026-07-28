@@ -76,11 +76,11 @@ impl Message<DispatchCommand> for AgentBackend {
     }
 }
 
-/// Convenience for the `agent-dispatch` CLI: spawn a one-shot backend, dispatch a single command,
-/// and print the response.
+/// Convenience for the `agent-dispatch` CLI.
 ///
-/// The actor is dropped when the returned future completes; the spawned task won't leak because
-/// nothing else holds the `ActorRef`.
+/// Spawns a one-shot backend, dispatches a single command, and returns the
+/// response. The actor is dropped when the returned future completes; the
+/// spawned task won't leak because nothing else holds the `ActorRef`.
 ///
 /// # Errors
 /// See [`ActorRef::ask`].

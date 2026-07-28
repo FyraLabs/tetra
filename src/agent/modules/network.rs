@@ -170,6 +170,7 @@ fn read_interfaces() -> Result<Vec<Value>> {
 mod tests {
     use super::*;
     use crate::agent::AgentModule;
+    use serde_json::json;
 
     #[test]
     fn dry_run_set_config_does_not_write() {

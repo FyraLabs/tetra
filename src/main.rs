@@ -12,7 +12,7 @@ use tetra::{
     agent::{
         AgentCommand, backend,
         transport::TransportConfig,
-        vsock::{self, VsockAgentConfig},
+        vsock::VsockAgentConfig,
         websocket::{self, WebSocketAgentConfig},
         websocket_server::{self, WebSocketServerConfig},
     },
@@ -137,7 +137,7 @@ async fn main() -> Result<()> {
     match cli.command {
         Commands::Render(cli) => render(cli),
         Commands::AgentDispatch(cli) => agent_dispatch(cli).await,
-        Commands::AgentVsockServe(cli) => vsock::serve(cli),
+        Commands::AgentVsockServe(cli) => cli.serve(),
         Commands::AgentConnect(cli) => agent_connect(cli).await,
         Commands::AgentWsServe(cli) => agent_ws_serve(cli).await,
     }

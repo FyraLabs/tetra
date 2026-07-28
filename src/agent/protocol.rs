@@ -174,8 +174,9 @@ impl AuthenticatedSession {
             "command sequence is not next"
         );
         ensure!(nonce.len() >= 16, "command nonce is too short");
+        let skew = now.saturating_sub(*timestamp).abs();
         ensure!(
-            (now - *timestamp).abs() <= self.policy.clock_skew_seconds,
+            skew <= self.policy.clock_skew_seconds,
             "command timestamp is outside the allowed clock skew"
         );
         ensure!(
@@ -197,9 +198,10 @@ impl AuthenticatedSession {
             nonce,
         )?;
 
-        self.next_sequence
-            .checked_add_assign(&1)
-            .map_err(|()| anyhow::anyhow!("command sequence exhausted"))?;
+        self.next_sequence = self
+            .next_sequence
+            .checked_add(1)
+            .ok_or_else(|| anyhow::anyhow!("command sequence exhausted"))?;
         self.nonces.insert(nonce.clone());
         self.nonce_order.push_back(nonce.clone());
         let nounces = self.nonce_order.len();
@@ -231,6 +233,11 @@ struct SignedChallenge<'a> {
 
 /// Canonical challenge bytes signed during authentication. A struct fixes field
 /// order, avoiding JSON-map implementation differences between Rust and Node.
+///
+/// # Panics
+///
+/// Panics if the challenge struct cannot be serialized to JSON. This should
+/// never happen because it only contains `&str` fields.
 #[must_use]
 pub fn challenge_bytes(protocol_version: &str, session_id: &str, challenge: &str) -> Vec<u8> {
     serde_json::to_vec(&SignedChallenge {
@@ -247,6 +254,10 @@ mod tests {
     use crate::agent::{AgentCommand, crypto::sign_command};
     use ed25519_dalek::SigningKey;
     use serde_json::json;
+
+    fn test_nonce(n: u64) -> String {
+        format!("nonce-{n:012}")
+    }
 
     fn signed_frame(key: &SigningKey, sequence: u64, timestamp: i64, nonce: &str) -> AuthFrame {
         let mut command = AgentCommand {
@@ -282,10 +293,10 @@ mod tests {
         )
         .unwrap();
         session
-            .accept_command(&signed_frame(&key, 0, 1000, "nonce-000000000001"), 1000)
+            .accept_command(&signed_frame(&key, 0, 1000, &test_nonce(1)), 1000)
             .unwrap();
         session
-            .accept_command(&signed_frame(&key, 1, 1001, "nonce-000000000002"), 1001)
+            .accept_command(&signed_frame(&key, 1, 1001, &test_nonce(2)), 1001)
             .unwrap();
     }
 
@@ -299,14 +310,14 @@ mod tests {
             SessionPolicy::default(),
         )
         .unwrap();
-        let first = signed_frame(&key, 0, 1000, "nonce-000000000001");
+        let first = signed_frame(&key, 0, 1000, &test_nonce(1));
         session.accept_command(&first, 1000).unwrap();
         session.accept_command(&first, 1000).unwrap_err();
         session
-            .accept_command(&signed_frame(&key, 2, 1000, "nonce-000000000002"), 1000)
+            .accept_command(&signed_frame(&key, 2, 1000, &test_nonce(2)), 1000)
             .unwrap_err();
         session
-            .accept_command(&signed_frame(&key, 1, 0, "nonce-000000000003"), 1000)
+            .accept_command(&signed_frame(&key, 1, 0, &test_nonce(3)), 1000)
             .unwrap_err();
     }
 
@@ -324,10 +335,10 @@ mod tests {
         )
         .unwrap();
         session
-            .accept_command(&signed_frame(&key, 0, 1000, "nonce-000000000001"), 1000)
+            .accept_command(&signed_frame(&key, 0, 1000, &test_nonce(1)), 1000)
             .unwrap();
         session
-            .accept_command(&signed_frame(&key, 1, 1000, "nonce-000000000002"), 1000)
+            .accept_command(&signed_frame(&key, 1, 1000, &test_nonce(2)), 1000)
             .unwrap();
         assert_eq!(session.nonces.len(), 1);
     }
