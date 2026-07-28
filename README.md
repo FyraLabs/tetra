@@ -37,12 +37,12 @@ Default build features:
 - `samba`
 - `nfs`
 - `users`
-- `virtual-machines`
+- `storage`
+- `network`
 
 Additional optional features:
 
-- `storage`
-- `network`
+- `virtual-machines`
 
 Build with every module:
 
