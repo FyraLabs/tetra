@@ -1,0 +1,23 @@
+{
+  "name": "Tetra",
+  "build": {
+    "context": ".",
+    "dockerfile": "Containerfile",
+  },
+
+  "privileged": true,
+  "capAdd": ["NET_ADMIN"],
+  "customizations": {
+    "zed": {
+      "settings": {
+        "languages": {
+          "Rust": {
+            "format_on_save": "on",
+            "formatter": "language_server",
+          },
+        },
+      },
+    },
+  },
+  "postCreateCommand": "cargo test --all-features && cargo clippy --all-features --lib --tests -- -D warnings",
+}
