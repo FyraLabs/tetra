@@ -1,7 +1,7 @@
 # Tetra
 
-Tetra is a modular host agent and recipe renderer for the Ultramarine Server
-web control plane. It is organized around a single dispatcher with independent,
+Tetra is a modular host agent and recipe renderer for the [Ultramarine Server Dashboard](https://github.com/Ultramarine-Linux/dashboard).
+It is organized around a single dispatcher with independent,
 feature-gated modules for files, recipes, SELinux, services, Quadlets,
 reverse-proxy, Podman, Samba, NFS, users, and virtual machines. The `settings`
 module is always compiled so the control plane can discover basic host facts.
