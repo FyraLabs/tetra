@@ -17,8 +17,11 @@
 
 use crate::prelude::*;
 
-use crate::agent::module_support::{
-    SelinuxOptions, apply_selinux, handle_metadata, parse_payload, unsupported_action,
+use crate::{
+    agent::module_support::{apply_selinux, parse_payload},
+    types::{
+        DryRunRequest, NetworkConfigRequest, NetworkInterfaceRequest, NetworkWriteConfigRequest,
+    },
 };
 
 /// Marker type for the network module. Stateless; all behavior lives in the
@@ -42,40 +45,6 @@ const INFO: ModuleInfo = ModuleInfo {
     privileged_actions: &["set_config", "reload"],
 };
 
-/// Payload for `status`; the optional interface name narrows `ip addr show`
-/// to a single device via `dev <name>`. Omitting it lists all interfaces.
-#[derive(Debug, Deserialize)]
-struct InterfacePayload {
-    interface: Option<String>,
-}
-
-/// Payload for `get_config`: the keyfile path to read (typically under
-/// `/etc/NetworkManager/system-connections/`).
-#[derive(Debug, Deserialize)]
-struct ConfigPayload {
-    path: PathBuf,
-}
-
-/// Payload for `set_config`: writes `contents` to the keyfile at `path`. The
-/// `selinux` option relabels the file after the write; `dry_run` skips both.
-#[derive(Debug, Deserialize)]
-struct SetConfigPayload {
-    path: PathBuf,
-    contents: String,
-    #[serde(default)]
-    dry_run: bool,
-    #[serde(default)]
-    selinux: Option<SelinuxOptions>,
-}
-
-/// Payload for `reload`: only carries the standard `dry_run` flag, since the
-/// reload target (NetworkManager.service) is fixed.
-#[derive(Debug, Deserialize)]
-struct DryRunPayload {
-    #[serde(default)]
-    dry_run: bool,
-}
-
 impl AgentModule for NetworkModule {
     fn info(&self) -> ModuleInfo {
         INFO
@@ -83,7 +52,7 @@ impl AgentModule for NetworkModule {
 
     fn handle(&self, action: &str, payload: Value, user: Option<&str>) -> Result<Value> {
         // Delegate `capabilities`/`plan` to the shared metadata handler first.
-        if let Some(response) = handle_metadata(INFO, action, &payload) {
+        if let Some(response) = INFO.metadata_response(action, &payload) {
             return Ok(response);
         }
 
@@ -93,30 +62,22 @@ impl AgentModule for NetworkModule {
             // empty list rather than a 500 to the control plane.
             "interfaces" => Ok(jsonf! { "interfaces": read_interfaces().unwrap_or_default() }),
             "status" => {
-                let payload: InterfacePayload = parse_payload(payload)?;
+                let payload: NetworkInterfaceRequest = parse_payload(payload)?;
                 // `ip -json addr show` returns structured JSON we can pass
                 // through verbatim; an optional `dev <name>` narrows the scope.
-                let mut args = vec!["-json".to_owned(), "addr".to_owned(), "show".to_owned()];
-                if let Some(interface) = payload.interface {
-                    args.push("dev".into());
-                    args.push(interface);
-                }
+                let args = payload.ip_args();
                 crate::cmd!({ &INFO, action, user } "ip" => &args ; JSON)
             }
             "get_config" => {
-                let payload: ConfigPayload = parse_payload(payload)?;
-                let contents = fs::read_to_string(&payload.path)
-                    .with_context(|| format!("failed to read `{}`", payload.path.display()))?;
+                let payload: NetworkConfigRequest = parse_payload(payload)?;
+                let contents = payload.read()?;
                 Ok(jsonf! { payload.path, contents })
             }
             "set_config" => {
-                let payload: SetConfigPayload = parse_payload(payload)?;
+                let payload: NetworkWriteConfigRequest = parse_payload(payload)?;
                 // Only touch the filesystem outside dry-run; SELinux planning
                 // below still runs so the response previews the relabel.
-                if !payload.dry_run {
-                    fs::write(&payload.path, payload.contents)
-                        .with_context(|| format!("failed to write `{}`", payload.path.display()))?;
-                }
+                payload.write()?;
                 let selinux = apply_selinux(
                     payload.selinux.as_ref(),
                     Some(&payload.path),
@@ -130,12 +91,12 @@ impl AgentModule for NetworkModule {
                 })
             }
             "reload" => {
-                let payload: DryRunPayload = parse_payload(payload)?;
+                let payload: DryRunRequest = parse_payload(payload)?;
                 // `reload-or-restart` applies new keyfiles without dropping
                 // active connections when possible, falling back to a restart.
                 crate::cmd!((payload.dry_run) { &INFO, action, user } "systemctl" ["reload-or-restart", "NetworkManager.service"] ; json)
             }
-            _ => unsupported_action(INFO.name, action),
+            _ => INFO.unsupported_action(action),
         }
     }
 }
