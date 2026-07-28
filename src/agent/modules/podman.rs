@@ -48,12 +48,12 @@ impl Mod for PodmanModule {
     }
 }
 
-actions!(Action [self user] => {
+actions!(Action [payload user] => {
     Containers => {
         crate::cmd!({ &INFO, "containers", user } "podman" ["ps", "--all", "--format", "json"] JSON)
     },
     Inspect { name: String } => {
-        crate::cmd!({ &INFO, "inspect", user } "podman" ["inspect", &self.name] JSON)
+        crate::cmd!({ &INFO, "inspect", user } "podman" ["inspect", &payload.name] JSON)
     },
     Images => {
         crate::cmd!({ &INFO, "images", user } "podman" ["images", "--format", "json"] JSON)
@@ -69,35 +69,35 @@ actions!(Action [self user] => {
         #[serde(default = "default_log_lines")]
         lines: u16,
     } => {
-        crate::cmd!({ &INFO, "logs", user } "podman" ["logs", "--tail", &self.lines.to_string(), &self.name] json)
+        crate::cmd!({ &INFO, "logs", user } "podman" ["logs", "--tail", &payload.lines.to_string(), &payload.name] json)
     },
     Start {
         name: String,
         #[serde(default)]
         dry_run: bool,
     } => {
-        crate::cmd!((self.dry_run) { &INFO, "start", user } "podman" ["start", &self.name] json)
+        crate::cmd!((payload.dry_run) { &INFO, "start", user } "podman" ["start", &payload.name] json)
     },
     Stop {
         name: String,
         #[serde(default)]
         dry_run: bool,
     } => {
-        crate::cmd!((self.dry_run) { &INFO, "stop", user } "podman" ["stop", &self.name] json)
+        crate::cmd!((payload.dry_run) { &INFO, "stop", user } "podman" ["stop", &payload.name] json)
     },
     Restart {
         name: String,
         #[serde(default)]
         dry_run: bool,
     } => {
-        crate::cmd!((self.dry_run) { &INFO, "restart", user } "podman" ["restart", &self.name] json)
+        crate::cmd!((payload.dry_run) { &INFO, "restart", user } "podman" ["restart", &payload.name] json)
     },
     Remove {
         name: String,
         #[serde(default)]
         dry_run: bool,
     } => {
-        crate::cmd!((self.dry_run) { &INFO, "remove", user } "podman" ["rm", &self.name] json)
+        crate::cmd!((payload.dry_run) { &INFO, "remove", user } "podman" ["rm", &payload.name] json)
     }
 });
 

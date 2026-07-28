@@ -8,8 +8,9 @@
 //! SELinux will deny smbd access to the path on enforcing hosts.
 
 use crate::{
-    agent::module_support::{SelinuxOptions, apply_selinux},
+    agent::module_support::apply_selinux,
     prelude::*,
+    types::{DryRunRequest, SambaConfigRequest, SambaWriteConfigRequest},
 };
 
 /// Samba module entry point registered under feature `samba`.
@@ -35,80 +36,56 @@ const INFO: ModuleInfo = ModuleInfo {
     privileged_actions: &["set_config", "reload", "enable", "disable"],
 };
 
+/// Dispatches `samba` actions. Config reads/writes target `smb.conf`;
+/// service actions shell out to `systemctl` against `smb.service`.
 impl Mod for SambaModule {
     fn info(&self) -> ModuleInfo {
         INFO
     }
 
     fn handle(&self, action: &str, payload: Value, user: Option<&str>) -> Result<Value> {
+        // Standard metadata fast-path: `capabilities` and `plan` are answered
+        // from `INFO` without touching the system.
+        if let Some(response) = INFO.metadata_response(action, &payload) {
+            return Ok(response);
+        }
         Action::from_payload(action, payload)?.handle(user)
     }
 }
 
-actions!(Action [self user] => {
-    ListShares {
-        #[serde(default = "default_smb_conf")]
-        path: PathBuf,
-    } => {
-        let contents = read_config(&self.path)?;
-        Ok(jsonf! { self.path, "shares": parse_samba_shares(&contents) })
+actions!(Action [payload user] => {
+    ListShares: SambaConfigRequest => {
+        let contents = payload.read()?;
+        Ok(jsonf!{ payload.path, "shares": parse_samba_shares(&contents) })
     },
-    GetConfig {
-        #[serde(default = "default_smb_conf")]
-        path: PathBuf,
-    } => {
-        let contents = read_config(&self.path)?;
-        Ok(jsonf! { self.path, contents })
+    GetConfig: SambaConfigRequest => {
+        let contents = payload.read()?;
+        Ok(jsonf!{ payload.path, contents })
     },
-    SetConfig {
-        #[serde(default = "default_smb_conf")]
-        path: PathBuf,
-        contents: String,
-        #[serde(default)]
-        dry_run: bool,
-        #[serde(default)]
-        selinux: Option<SelinuxOptions>,
-    } => {
-        if !self.dry_run {
-            fs::write(&self.path, self.contents)
-                .with_context(|| format!("failed to write `{}`", self.path.display()))?;
-        }
+    SetConfig: SambaWriteConfigRequest => {
+        // The whole file is replaced; callers are expected to build the
+        // full desired smb.conf (including `[global]`) rather than
+        // patch a single share in place.
+        payload.write()?;
+        // The default relabel target is the config file path; callers
+        // wanting to label the share directory pass an explicit `path`
+        // inside the selinux object pointing at e.g. `/srv/media`.
         let selinux = apply_selinux(
-            self.selinux.as_ref(),
-            Some(&self.path),
-            self.dry_run,
+            payload.selinux.as_ref(),
+            Some(&payload.path),
+            payload.dry_run,
         )?;
         Ok(jsonf! {
-            self.path,
-            "written": !self.dry_run,
-            self.dry_run,
+            payload.path,
+            "written": !payload.dry_run,
+            payload.dry_run,
             selinux,
         })
     },
-    Reload {
-        #[serde(default)]
-        dry_run: bool,
-    } => crate::cmd!((self.dry_run) { &INFO, "reload", user } "systemctl" ["reload-or-restart", "smb.service"] json),
-    Enable {
-        #[serde(default)]
-        dry_run: bool,
-    } => crate::cmd!((self.dry_run) { &INFO, "enable", user } "systemctl" ["enable", "--now", "smb.service"] json),
-    Disable {
-        #[serde(default)]
-        dry_run: bool,
-    } => crate::cmd!((self.dry_run) { &INFO, "disable", user } "systemctl" ["disable", "--now", "smb.service"] json),
-
+    Reload: DryRunRequest => crate::cmd!((payload.dry_run) { &INFO, "reload", user } "systemctl" ["reload-or-restart", "smb.service"] json),
+    Enable: DryRunRequest => crate::cmd!((payload.dry_run) { &INFO, "enable", user } "systemctl" ["enable", "--now", "smb.service"] json),
+    Disable: DryRunRequest => crate::cmd!((payload.dry_run) { &INFO, "disable", user } "systemctl" ["disable", "--now", "smb.service"] json),
 });
-
-/// Default smb.conf location used when a read/write action omits `path`.
-fn default_smb_conf() -> PathBuf {
-    PathBuf::from("/etc/samba/smb.conf")
-}
-
-/// Reads the smb.conf file as UTF-8 text with a context-rich error.
-fn read_config(path: &PathBuf) -> Result<String> {
-    fs::read_to_string(path).with_context(|| format!("failed to read `{}`", path.display()))
-}
 
 /// Extracts share section names from smb.conf contents.
 ///
@@ -128,6 +105,9 @@ fn parse_samba_shares(contents: &str) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    use crate::agent::module_support::SelinuxOptions;
+    use std::fs;
+
     use super::*;
 
     #[test]
@@ -142,12 +122,12 @@ mod tests {
         let path = dir.path().join("smb.conf");
         fs::write(&path, "[global]\n").unwrap();
 
-        let response = SetConfig {
+        let response = SetConfig(SambaWriteConfigRequest {
             path: path.clone(),
             contents: "[media]\n".into(),
             dry_run: true,
             selinux: None,
-        }
+        })
         .handle(None)
         .unwrap();
 
@@ -160,7 +140,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("smb.conf");
 
-        let response = SetConfig {
+        let response = SetConfig(SambaWriteConfigRequest {
             path: path.clone(),
             contents: "[media]\npath = /srv/media\n".into(),
             dry_run: true,
@@ -170,7 +150,7 @@ mod tests {
                 recursive: true,
                 ..SelinuxOptions::default()
             }),
-        }
+        })
         .handle(None)
         .unwrap();
 
@@ -190,7 +170,9 @@ mod tests {
         let path = dir.path().join("smb.conf");
         fs::write(&path, "[global]\n[media]\npath = /srv/media\n").unwrap();
 
-        let response = ListShares { path: path.clone() }.handle(None).unwrap();
+        let response = ListShares(SambaConfigRequest { path: path.clone() })
+            .handle(None)
+            .unwrap();
 
         assert_eq!(response["path"].as_str().unwrap(), &path);
         assert_eq!(response["shares"].as_array().unwrap().len(), 1);
@@ -199,7 +181,9 @@ mod tests {
 
     #[test]
     fn reload_dry_run_does_not_restart_service() {
-        let response = Reload { dry_run: true }.handle(None).unwrap();
+        let response = Reload(DryRunRequest { dry_run: true })
+            .handle(None)
+            .unwrap();
         assert_eq!(
             response["command"],
             "systemctl reload-or-restart smb.service"

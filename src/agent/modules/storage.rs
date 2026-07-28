@@ -43,7 +43,7 @@ impl Mod for StorageModule {
     }
 }
 
-actions!(Action [self user] => {
+actions!(Action [payload user] => {
     List => Ok(jsonf! {
         // unwrap_or_default swallows read/parse errors and yields an
         // empty list — `list` is best-effort inventory, not a health
@@ -55,7 +55,7 @@ actions!(Action [self user] => {
         path: PathBuf,
         #[serde(default)]
         dry_run: bool,
-    } => crate::cmd!({ &INFO, "status", user } "df" ["-h", self.path.to_string_lossy().as_ref()] json),
+    } => crate::cmd!({ &INFO, "status", user } "df" ["-h", payload.path.to_string_lossy().as_ref()] json),
     Mount {
         source: String,
         target: String,
@@ -67,18 +67,18 @@ actions!(Action [self user] => {
         selinux: Option<SelinuxOptions>,
     } => {
         let mut args = Vec::new();
-        flag!(args self: ["-t" fstype] ["-o" options]);
-        let target = PathBuf::from(&self.target);
-        args.extend([self.source, self.target]);
-        let mount = crate::cmd!((self.dry_run) { &INFO, "mount", user } "mount" => &args ; json)?;
-        let selinux = apply_selinux(self.selinux.as_ref(), Some(&target), self.dry_run)?;
+        flag!(args payload: ["-t" fstype] ["-o" options]);
+        let target = PathBuf::from(&payload.target);
+        args.extend([payload.source, payload.target]);
+        let mount = crate::cmd!((payload.dry_run) { &INFO, "mount", user } "mount" => &args ; json)?;
+        let selinux = apply_selinux(payload.selinux.as_ref(), Some(&target), payload.dry_run)?;
         Ok(jsonf! { mount, selinux })
     },
     Unmount {
         path: PathBuf,
         #[serde(default)]
         dry_run: bool,
-    } => crate::cmd!((self.dry_run) { &INFO, "unmount", user } "umount" [self.path.to_string_lossy().as_ref()] json),
+    } => crate::cmd!((payload.dry_run) { &INFO, "unmount", user } "umount" [payload.path.to_string_lossy().as_ref()] json),
     Configure {
         #[serde(default = "default_fstab_path")]
         fstab_path: PathBuf,
@@ -88,18 +88,18 @@ actions!(Action [self user] => {
         #[serde(default)]
         selinux: Option<SelinuxOptions>,
     } => {
-        if !self.dry_run {
-            append_fstab_entry(&self.fstab_path, &self.entry)?;
+        if !payload.dry_run {
+            append_fstab_entry(&payload.fstab_path, &payload.entry)?;
         }
         let selinux = apply_selinux(
-            self.selinux.as_ref(),
-            Some(&self.fstab_path),
-            self.dry_run,
+            payload.selinux.as_ref(),
+            Some(&payload.fstab_path),
+            payload.dry_run,
         )?;
         Ok(jsonf! {
-            self.fstab_path,
-            "configured": !self.dry_run,
-            self.dry_run,
+            payload.fstab_path,
+            "configured": !payload.dry_run,
+            payload.dry_run,
             selinux,
         })
     },

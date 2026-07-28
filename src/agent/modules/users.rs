@@ -50,10 +50,10 @@ impl Mod for UsersModule {
     }
 }
 
-actions!(Action [self user] => {
+actions!(Action [payload user] => {
     List => Ok(jsonf! { "users": parse_passwd(&read_file("/etc/passwd")?) }),
     Groups => Ok(jsonf! { "groups": parse_group(&read_file("/etc/group")?) }),
-    Status { name: String } => crate::cmd!({ &INFO, "status", user } "id" [&self.name] json),
+    Status { name: String } => crate::cmd!({ &INFO, "status", user } "id" [&payload.name] json),
     Create {
         name: String,
         shell: Option<String>,
@@ -66,9 +66,9 @@ actions!(Action [self user] => {
         let mut args = Vec::new();
         // `useradd` spells the home flag `--home-dir` (unlike
         // `usermod`'s `--home` below).
-        flag!(args self: system [shell] ["--home-dir" home]);
-        args.push(self.name);
-        crate::cmd!((self.dry_run) { &INFO, "create", user } "useradd" => &args ; json)
+        flag!(args payload: system [shell] ["--home-dir" home]);
+        args.push(payload.name);
+        crate::cmd!((payload.dry_run) { &INFO, "create", user } "useradd" => &args ; json)
     },
     Update {
         name: String,
@@ -79,24 +79,24 @@ actions!(Action [self user] => {
         dry_run: bool,
     } => {
         let mut args = Vec::new();
-        flag!(args self: [shell] [home]);
-        if let Some(groups) = self.groups {
+        flag!(args payload: [shell] [home]);
+        if let Some(groups) = payload.groups {
             args.extend(["--groups".into(), groups.join(",")]);
         }
-        args.push(self.name);
-        crate::cmd!((self.dry_run) { &INFO, "update", user } "usermod" => &args ; json)
+        args.push(payload.name);
+        crate::cmd!((payload.dry_run) { &INFO, "update", user } "usermod" => &args ; json)
     },
     Delete {
         name: String,
         #[serde(default)]
         dry_run: bool,
-    } => crate::cmd!((self.dry_run) { &INFO, "delete", user } "userdel" [&self.name] json),
+    } => crate::cmd!((payload.dry_run) { &INFO, "delete", user } "userdel" [&payload.name] json),
     SetPassword {
         name: String,
         password_hash: String,
         #[serde(default)]
         dry_run: bool,
-    } => crate::cmd!((self.dry_run) { &INFO, "set_password", user } "usermod" ["--password", &self.password_hash, &self.name] json),
+    } => crate::cmd!((payload.dry_run) { &INFO, "set_password", user } "usermod" ["--password", &payload.password_hash, &payload.name] json),
 });
 
 /// Small helper to read a host file with a context-bearing error. Used for

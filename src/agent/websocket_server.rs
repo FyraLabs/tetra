@@ -167,9 +167,17 @@ struct ConnectionHandler {
     privileged_actions: BTreeMap<String, Vec<String>>,
 }
 
-// NOTE: we could maybe split this into helpers, but i'm not sure that's necessary
-#[allow(clippy::too_many_lines)]
-async fn handle_connection(
+type WebSocket = tokio_tungstenite::WebSocketStream<Box<dyn AsyncReadWrite>>;
+
+struct AuthenticatedConnection {
+    socket: WebSocket,
+    peer: SocketAddr,
+    queue: DispatchQueue,
+    session: AuthenticatedSession,
+    privileged_actions: BTreeMap<String, Vec<String>>,
+}
+
+async fn establish_connection(
     ConnectionHandler {
         stream,
         peer,
@@ -179,21 +187,43 @@ async fn handle_connection(
         enrollment_token,
         privileged_actions,
     }: ConnectionHandler,
-) -> Result<()> {
-    const ELEVATION_TTL: Duration = Duration::from_mins(30);
-
+) -> Result<AuthenticatedConnection> {
     let mut socket = accept_async(stream)
         .await
         .context("WebSocket handshake failed")?;
-    let session_id = random_token(24);
-    let challenge = random_token(32);
-    let controller_key = if let Some(key) = controller_key {
-        key
-    } else {
-        request_enroll_pubkey(&identity, enrollment_token, &mut socket).await?
+    let controller_key = match controller_key {
+        Some(key) => key,
+        None => request_enroll_pubkey(&identity, enrollment_token, &mut socket).await?,
     };
+    let session = auth(
+        identity,
+        &mut socket,
+        random_token(24),
+        random_token(32),
+        controller_key,
+    )
+    .await?;
 
-    let mut session = auth(identity, &mut socket, session_id, challenge, controller_key).await?;
+    Ok(AuthenticatedConnection {
+        socket,
+        peer,
+        queue,
+        session,
+        privileged_actions,
+    })
+}
+
+#[allow(clippy::too_many_lines)]
+async fn handle_connection(connection: ConnectionHandler) -> Result<()> {
+    const ELEVATION_TTL: Duration = Duration::from_mins(30);
+
+    let AuthenticatedConnection {
+        mut socket,
+        peer,
+        queue,
+        mut session,
+        privileged_actions,
+    } = establish_connection(connection).await?;
 
     // Elevation grant for headless servers. The dashboard provides the
     // administrator password via PasswordResponse.

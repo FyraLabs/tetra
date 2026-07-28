@@ -76,9 +76,8 @@ const QUADLET_EXTENSIONS: &[&str] = &["container", "kube", "network", "pod", "vo
 /// data root; `System` resolves to `/etc/containers/systemd` and
 /// `/var/lib/tetra/quadlets`. Defaults to `User` because the agent normally
 /// runs under the owner's account rather than as root.
-#[derive(Debug, Clone, Copy, Deserialize)]
+#[derive(Debug, Default, Clone, Copy, Deserialize)]
 #[serde(rename_all = "snake_case")]
-#[derive(Default)]
 enum QuadletScope {
     #[default]
     User,
@@ -126,14 +125,14 @@ impl Mod for QuadletsModule {
     }
 }
 
-actions!(Action [self user] => {
+actions!(Action [payload user] => {
     List {
         base_dir: Option<PathBuf>,
         files_base_dir: Option<PathBuf>,
         #[serde(default)]
         scope: QuadletScope,
     } => {
-        let base_dir = quadlet_base_dir(self.base_dir, self.scope)?;
+        let base_dir = quadlet_base_dir(payload.base_dir, payload.scope)?;
         Ok(jsonf! { base_dir, "files": QuadletFile::list(&base_dir)? })
     },
     ListFiles {
@@ -142,14 +141,11 @@ actions!(Action [self user] => {
         #[serde(default)]
         scope: QuadletScope,
     } => {
-        let base_dir = quadlet_base_dir(self.base_dir, self.scope)?;
-        let files_base_dir =
-            quadlet_files_base_dir(self.files_base_dir, self.scope, None)?;
+        let base_dir = quadlet_base_dir(payload.base_dir, payload.scope)?;
+        let files_base_dir = quadlet_files_base_dir(payload.files_base_dir, payload.scope, None)?;
         let mut files = ManagedFile::list(&base_dir)?;
         files.extend(list_companion_files(&files_base_dir)?);
-        // Quadlet entries first, then companions, each group sorted by
-        // filename. This pins a bundle's unit file to the top of its
-        // companion list in the dashboard.
+        // Quadlet entries first, then companions, each group sorted by filename.
         files.sort_by(|left, right| {
             left.quadlet
                 .cmp(&right.quadlet)
@@ -172,24 +168,24 @@ actions!(Action [self user] => {
         // Companion files are addressed by their full relative path
         // (e.g. `site/index.html`), so no bundle is derived. Quadlet
         // reads resolve against the flat scan directory instead.
-        let bundle_name = if self.companion {
+        let bundle_name = if payload.companion {
             None
         } else {
-            Some(quadlet_bundle_name(&self.filename)?)
+            Some(quadlet_bundle_name(&payload.filename)?)
         };
-        let base_dir = if self.companion {
+        let base_dir = if payload.companion {
             quadlet_files_base_dir(
-                self.files_base_dir,
-                self.scope,
+                payload.files_base_dir,
+                payload.scope,
                 bundle_name.as_deref(),
             )?
         } else {
-            quadlet_base_dir(self.base_dir, self.scope)?
+            quadlet_base_dir(payload.base_dir, payload.scope)?
         };
-        let path = safe_join(&base_dir, &self.filename)?;
+        let path = safe_join(&base_dir, &payload.filename)?;
         let contents = fs::read_to_string(&path)
             .with_context(|| format!("failed to read `{}`", path.display()))?;
-        Ok(jsonf! { base_dir, self.filename, contents })
+        Ok(jsonf! { base_dir, payload.filename, contents })
     },
     Write {
         base_dir: Option<PathBuf>,
@@ -202,21 +198,21 @@ actions!(Action [self user] => {
         #[serde(default)]
         selinux: Option<SelinuxOptions>,
     } => {
-        validate_quadlet(&self.filename, &self.contents)?;
-        let base_dir = quadlet_base_dir(self.base_dir, self.scope)?;
-        let path = safe_join(&base_dir, &self.filename)?;
-        if !self.dry_run {
+        validate_quadlet(&payload.filename, &payload.contents)?;
+        let base_dir = quadlet_base_dir(payload.base_dir, payload.scope)?;
+        let path = safe_join(&base_dir, &payload.filename)?;
+        if !payload.dry_run {
             fs::create_dir_all(&base_dir)
                 .with_context(|| format!("failed to create `{}`", base_dir.display()))?;
-            fs::write(&path, &self.contents)
+            fs::write(&path, &payload.contents)
                 .with_context(|| format!("failed to write `{}`", path.display()))?;
         }
         let selinux =
-            apply_selinux(self.selinux.as_ref(), Some(&path), self.dry_run)?;
+            apply_selinux(payload.selinux.as_ref(), Some(&path), payload.dry_run)?;
         Ok(jsonf! {
-            base_dir, self.filename, path,
-            "written": !self.dry_run,
-            self.dry_run, selinux,
+            base_dir, payload.filename, path,
+            "written": !payload.dry_run,
+            payload.dry_run, selinux,
         })
     },
     Delete {
@@ -230,16 +226,16 @@ actions!(Action [self user] => {
         #[serde(default)]
         dry_run: bool,
     } => {
-        let base_dir = quadlet_base_dir(self.base_dir, self.scope)?;
-        let path = safe_join(&base_dir, &self.filename)?;
-        if !self.dry_run {
+        let base_dir = quadlet_base_dir(payload.base_dir, payload.scope)?;
+        let path = safe_join(&base_dir, &payload.filename)?;
+        if !payload.dry_run {
             fs::remove_file(&path)
                 .with_context(|| format!("failed to delete `{}`", path.display()))?;
         }
         Ok(jsonf! {
-            base_dir, self.filename, path,
-            "deleted": !self.dry_run,
-            self.dry_run,
+            base_dir, payload.filename, path,
+            "deleted": !payload.dry_run,
+            payload.dry_run,
         })
     },
     Validate {
@@ -253,8 +249,8 @@ actions!(Action [self user] => {
         #[serde(default)]
         selinux: Option<SelinuxOptions>,
     } => {
-        validate_quadlet(&self.filename, &self.contents)?;
-        Ok(jsonf! { self.filename, "valid": true })
+        validate_quadlet(&payload.filename, &payload.contents)?;
+        Ok(jsonf! { payload.filename, "valid": true })
     },
     Install {
         base_dir: Option<PathBuf>,
@@ -269,25 +265,25 @@ actions!(Action [self user] => {
         #[serde(default)]
         selinux: Option<SelinuxOptions>,
     } => {
-        let base_dir = quadlet_base_dir(self.base_dir, self.scope)?;
+        let base_dir = quadlet_base_dir(payload.base_dir, payload.scope)?;
         // The companion bundle is named after the first Quadlet
         // resource's stem (`site.container` -> `site`). Callers are
         // expected to put the primary unit first; with no Quadlets,
         // companions land directly under files_base_dir.
-        let bundle_name = self
+        let bundle_name = payload
             .resources
             .first()
             .map(|resource| quadlet_bundle_name(&resource.filename))
             .transpose()?;
         let files_base_dir = quadlet_files_base_dir(
-            self.files_base_dir,
-            self.scope,
+            payload.files_base_dir,
+            payload.scope,
             bundle_name.as_deref(),
         )?;
         // Create both roots up front so a permission or disk failure
         // surfaces before any file is written, rather than midway
         // through the bundle.
-        if !self.dry_run {
+        if !payload.dry_run {
             fs::create_dir_all(&base_dir)
                 .with_context(|| format!("failed to create `{}`", base_dir.display()))?;
             fs::create_dir_all(&files_base_dir).with_context(|| {
@@ -297,13 +293,13 @@ actions!(Action [self user] => {
 
         let mut installed = Vec::new();
         let mut selinux_ops = Vec::new();
-        for resource in self.resources {
+        for resource in payload.resources {
             validate_quadlet(&resource.filename, &resource.contents)?;
-            let path = write_resource(&base_dir, &resource, self.dry_run)?;
+            let path = write_resource(&base_dir, &resource, payload.dry_run)?;
             selinux_ops.extend(apply_selinux(
                 resource.selinux.as_ref(),
                 Some(&path),
-                self.dry_run,
+                payload.dry_run,
             )?);
             installed.push(QuadletFile {
                 filename: resource.filename,
@@ -311,12 +307,12 @@ actions!(Action [self user] => {
             });
         }
         let mut files = Vec::new();
-        for resource in self.files {
-            let path = write_resource(&files_base_dir, &resource, self.dry_run)?;
+        for resource in payload.files {
+            let path = write_resource(&files_base_dir, &resource, payload.dry_run)?;
             selinux_ops.extend(apply_selinux(
                 resource.selinux.as_ref(),
                 Some(&path),
-                self.dry_run,
+                payload.dry_run,
             )?);
             files.push(ManagedFile {
                 filename: resource.filename,
@@ -330,15 +326,15 @@ actions!(Action [self user] => {
         // files_base_dir are not labeled here — callers label them
         // per-resource when needed.
         selinux_ops.extend(apply_selinux(
-            self.selinux.as_ref(),
+            payload.selinux.as_ref(),
             Some(&base_dir),
-            self.dry_run,
+            payload.dry_run,
         )?);
 
         Ok(jsonf! {
             base_dir, files_base_dir, installed, files,
-            "written": !self.dry_run,
-            self.dry_run, "selinux": selinux_ops,
+            "written": !payload.dry_run,
+            payload.dry_run, "selinux": selinux_ops,
         })
     },
 });

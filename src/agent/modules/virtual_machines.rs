@@ -17,6 +17,10 @@
 
 use crate::prelude::*;
 
+use crate::agent::module_support::{
+    ModuleInfo, ModuleStatus, NamedPayload, handle_metadata, parse_payload, unsupported_action,
+};
+
 /// Marker type for the `virtual_machines` module. Stateless; all behavior lives
 /// in the [`Mod`] impl and the static [`INFO`] descriptor.
 #[derive(Clone, Copy, Debug)]
@@ -48,11 +52,17 @@ impl Mod for VirtualMachinesModule {
     }
 
     fn handle(&self, action: &str, payload: Value, user: Option<&str>) -> Result<Value> {
+        // Delegate `capabilities`/`plan` to the shared metadata handler first.
+        if let Some(response) = handle_metadata(INFO, action, &payload) {
+            return Ok(response);
+        }
         Action::from_payload(action, payload)?.handle(user)
     }
 }
 
-actions!(Action [self user] => {
+actions!(Action [payload user] => {
+    // `list --all` includes powered-off domains, not just running ones.
+    // `list` is a read and therefore never dry-run.
     List => {
         let result = crate::cmd!({ &INFO, "list", user } "virsh" ["list", "--all"])?;
         let domains = parse_virsh_list(&result.stdout);
@@ -65,53 +75,44 @@ actions!(Action [self user] => {
             domains,
         })
     },
-    Status { name: String } => {
-        let result = crate::cmd!({ &INFO, "status", user } "virsh" ["dominfo", &self.name])?;
+    // `list --all` includes powered-off domains, not just running ones.
+    // `list` is a read and therefore never dry-run.
+    Status: NamedPayload => {
+        let result = crate::cmd!({ &INFO, "status", user } "virsh" ["dominfo", &payload.name])?;
         let info = parse_virsh_dominfo(&result.stdout);
         Ok(jsonf! {
-            "command": result.command,
-            "status": result.status,
-            "stdout": result.stdout,
-            "stderr": result.stderr,
-            "dry_run": result.dry_run,
+            result.command,
+            result.status,
+            result.stdout,
+            result.stderr,
+            result.dry_run,
             "domain": info,
         })
     },
-    Logs {
-        #[serde(default = "default_log_lines")]
-        lines: u16,
-    } => crate::cmd!({ &INFO, "logs", user } "journalctl" [
-        "--no-pager",
-        "-u",
-        "libvirtd.service",
-        "-n",
-        &self.lines.to_string()
-    ] ; json),
-    Start {
-        name: String,
-        #[serde(default)]
-        dry_run: bool,
-    } => crate::cmd!((self.dry_run) { &INFO, "start", user } "virsh" ["start", &self.name] ; json),
-    Stop {
-        name: String,
-        #[serde(default)]
-        dry_run: bool,
-    } => crate::cmd!((self.dry_run) { &INFO, "stop", user } "virsh" ["shutdown", &self.name] ; json),
-    Restart {
-        name: String,
-        #[serde(default)]
-        dry_run: bool,
-    } => crate::cmd!((self.dry_run) { &INFO, "restart", user } "virsh" ["reboot", &self.name] ; json),
-    Create {
-        xml_path: String,
-        #[serde(default)]
-        dry_run: bool,
-    } => crate::cmd!((self.dry_run) { &INFO, "create", user } "virsh" ["define", &self.xml_path] ; json),
-    Delete {
-        name: String,
-        #[serde(default)]
-        dry_run: bool,
-    } => crate::cmd!((self.dry_run) { &INFO, "delete", user } "virsh" ["undefine", &self.name] ; json),
+    // Logs come from the libvirtd unit journal, not `virsh`, since
+    // virsh itself does not expose host-side daemon logs.
+    Logs: VirtualMachineLogsRequest => {
+        crate::cmd!({ &INFO, "logs", user } "journalctl" [
+            "--no-pager",
+            "-u",
+            "libvirtd.service",
+            "-n",
+            &payload.lines.to_string()
+        ] json)
+    },
+    Start: NamedPayload => crate::cmd!((payload.dry_run) { &INFO, "start", user } "virsh" ["start", &payload.name] ; json),
+
+    // `stop` uses `shutdown` for a graceful guest-initiated shutdown
+    // rather than `destroy` (hard power-off).
+    Stop: NamedPayload => crate::cmd!((payload.dry_run) { &INFO, "stop", user } "virsh" ["shutdown", &payload.name] json),
+    // `restart` uses `reboot`, the guest-graceful equivalent.
+    Restart: NamedPayload => crate::cmd!((payload.dry_run) { &INFO, "restart", user } "virsh" ["reboot", &payload.name] json),
+    // `create` maps to `define`: register a persistent domain from the
+    // given XML file. See the module docs for why we avoid `virsh create`.
+    Create: VirtualMachineCreateRequest  => crate::cmd!((payload.dry_run) { &INFO, "create", user } "virsh" ["define", &payload.xml_path] json),
+    // `delete` maps to `undefine`: remove the domain registration. It
+    // does not delete disk images by default.
+    Delete: NamedPayload => crate::cmd!((payload.dry_run) { &INFO, "delete", user } "virsh" ["undefine", &payload.name] json),
 });
 
 const fn default_log_lines() -> u16 {

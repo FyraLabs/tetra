@@ -57,7 +57,7 @@ impl Mod for RecipesModule {
     }
 }
 
-actions!(Action [self user] => {
+actions!(Action [payload user] => {
     Render {
         recipe_path: PathBuf,
         templates_dir: PathBuf,
@@ -67,11 +67,11 @@ actions!(Action [self user] => {
         dry_run: bool,
     } => {
         let resources = RenderedResource::from_files(&RenderOptions {
-            recipe_path: self.recipe_path,
-            values_path: self.values_path,
-            templates_dir: self.templates_dir,
-            output_dir: self.output_dir,
-            dry_run: self.dry_run,
+            recipe_path: payload.recipe_path,
+            values_path: payload.values_path,
+            templates_dir: payload.templates_dir,
+            output_dir: payload.output_dir,
+            dry_run: payload.dry_run,
         })?;
         Ok(jsonf! { resources })
     },
@@ -82,9 +82,9 @@ actions!(Action [self user] => {
         #[serde(default)]
         values: BTreeMap<String, YamlValue>,
     } => {
-        let recipe = AppRecipe::load_str(&self.recipe)?;
+        let recipe = AppRecipe::load_str(&payload.recipe)?;
         let resources =
-            recipe.render_with_templates(&self.values, &self.templates)?;
+            recipe.render_with_templates(&payload.values, &payload.templates)?;
         // Echo the parsed recipe alongside the rendered resources so
         // the dashboard can display normalized metadata (id, version,
         // parameters) without re-parsing the YAML it just sent.
@@ -95,8 +95,8 @@ actions!(Action [self user] => {
         #[serde(default)]
         values: BTreeMap<String, YamlValue>,
     } => {
-        let recipe = AppRecipe::load(self.recipe_path)?;
-        let context = recipe.context_for_agent(&self.values)?;
+        let recipe = AppRecipe::load(payload.recipe_path)?;
+        let context = recipe.context_for_agent(&payload.values)?;
         Ok(jsonf! { context })
     },
     ContextInline {
@@ -104,8 +104,8 @@ actions!(Action [self user] => {
         #[serde(default)]
         values: BTreeMap<String, YamlValue>,
     } => {
-        let recipe = AppRecipe::load_str(&self.recipe)?;
-        let context = recipe.context_for_agent(&self.values)?;
+        let recipe = AppRecipe::load_str(&payload.recipe)?;
+        let context = recipe.context_for_agent(&payload.values)?;
         Ok(jsonf! { recipe, context })
     },
 });

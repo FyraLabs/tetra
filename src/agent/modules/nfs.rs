@@ -9,7 +9,8 @@
 
 use crate::prelude::*;
 
-use crate::agent::module_support::{SelinuxOptions, apply_selinux};
+use crate::agent::module_support::apply_selinux;
+use crate::types::{DryRunRequest, NfsConfigRequest, NfsWriteConfigRequest};
 
 /// NFS module entry point registered under feature `nfs`.
 #[derive(Clone, Copy, Debug)]
@@ -34,81 +35,60 @@ const INFO: ModuleInfo = ModuleInfo {
     privileged_actions: &["set_config", "reload", "enable", "disable"],
 };
 
+/// Dispatches `nfs` actions. Config reads/writes target `/etc/exports`;
+/// `reload` runs `exportfs -ra` so the kernel re-reads the file without a
+/// full service restart; `enable`/`disable` drive `nfs-server.service`.
 impl Mod for NfsModule {
     fn info(&self) -> ModuleInfo {
         INFO
     }
 
     fn handle(&self, action: &str, payload: Value, user: Option<&str>) -> Result<Value> {
+        // Standard metadata fast-path: `capabilities` and `plan` are answered
+        // from `INFO` without touching the system.
+        if let Some(response) = INFO.metadata_response(action, &payload) {
+            return Ok(response);
+        }
         Action::from_payload(action, payload)?.handle(user)
     }
 }
 
-actions!(Action [self user] => {
-    ListExports {
-        #[serde(default = "default_exports_path")]
-        path: PathBuf,
-    } => {
-        let contents = read_config(&self.path)?;
-        Ok(jsonf! { self.path, "exports": parse_exports(&contents) })
+actions!(Action [payload user] => {
+    ListExports: NfsConfigRequest => {
+        Ok(jsonf! { payload.path, "exports": parse_exports(&payload.read()?) })
     },
-    GetConfig {
-        #[serde(default = "default_exports_path")]
-        path: PathBuf,
-    } => {
-        let contents = read_config(&self.path)?;
-        Ok(jsonf! { self.path, contents })
+    GetConfig: NfsConfigRequest => {
+        Ok(jsonf! { payload.path, "contents": payload.read()? })
     },
-    SetConfig {
-        #[serde(default = "default_exports_path")]
-        path: PathBuf,
-        contents: String,
-        #[serde(default)]
-        dry_run: bool,
-        #[serde(default)]
-        selinux: Option<SelinuxOptions>,
-    } => {
-        if !self.dry_run {
-            fs::write(&self.path, self.contents)
-                .with_context(|| format!("failed to write `{}`", self.path.display()))?;
-        }
+    SetConfig: NfsWriteConfigRequest => {
+        // The whole file is replaced; callers build the complete
+        // desired `/etc/exports` rather than patching one export.
+        payload.write()?;
+        // Default relabel target is the exports file path; callers
+        // wanting to label the exported directory pass an explicit
+        // `path` inside the selinux object (e.g. `/srv/export`).
         let selinux = apply_selinux(
-            self.selinux.as_ref(),
-            Some(&self.path),
-            self.dry_run,
+            payload.selinux.as_ref(),
+            Some(&payload.path),
+            payload.dry_run,
         )?;
-        Ok(jsonf! { self.path, "written": !self.dry_run, self.dry_run, selinux })
+        Ok(jsonf! {
+            payload.path,
+            "written": !payload.dry_run,
+            payload.dry_run,
+            selinux,
+        })
     },
-    Reload {
-        #[serde(default)]
-        dry_run: bool,
-    } => {
-        cmd!((self.dry_run) { &INFO, "reload", user } "exportfs" ["-ra"] json)
+    Reload: DryRunRequest => {
+        cmd!((payload.dry_run) { &INFO, "reload", user } "exportfs" ["-ra"] json)
     },
-    Enable {
-        #[serde(default)]
-        dry_run: bool,
-    } => {
-        cmd!((self.dry_run) { &INFO, "enable", user } "systemctl" ["enable", "--now", "nfs-server.service"] json)
+    Enable: DryRunRequest => {
+        cmd!((payload.dry_run) { &INFO, "enable", user } "systemctl" ["enable", "--now", "nfs-server.service"] json)
     },
-    Disable {
-        #[serde(default)]
-        dry_run: bool,
-    } => {
-        crate::cmd!((self.dry_run) { &INFO, "disable", user } "systemctl" ["disable", "--now", "nfs-server.service"] json)
+    Disable: DryRunRequest => {
+        crate::cmd!((payload.dry_run) { &INFO, "disable", user } "systemctl" ["disable", "--now", "nfs-server.service"] json)
     }
 });
-
-/// Default `/etc/exports` location used when a read/write action omits
-/// `path`.
-fn default_exports_path() -> PathBuf {
-    PathBuf::from("/etc/exports")
-}
-
-/// Reads the exports file as UTF-8 text with a context-rich error.
-fn read_config(path: &PathBuf) -> Result<String> {
-    fs::read_to_string(path).with_context(|| format!("failed to read `{}`", path.display()))
-}
 
 /// Parses `/etc/exports` into one record per non-comment, non-blank line.
 ///
@@ -134,6 +114,7 @@ fn parse_exports(contents: &str) -> Vec<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::module_support::SelinuxOptions;
 
     #[test]
     fn parses_exports_file() {
@@ -148,12 +129,12 @@ mod tests {
         let path = dir.path().join("exports");
         fs::write(&path, "/srv/media *(ro)\n").unwrap();
 
-        let response = SetConfig {
+        let response = SetConfig(NfsWriteConfigRequest {
             path: path.clone(),
             contents: "/srv/media *(rw)\n".into(),
             dry_run: true,
             selinux: None,
-        }
+        })
         .handle(None)
         .unwrap();
 
@@ -166,7 +147,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("exports");
 
-        let response = SetConfig {
+        let response = SetConfig(NfsWriteConfigRequest {
             path: path.clone(),
             contents: "/srv/export *(rw)\n".into(),
             dry_run: true,
@@ -176,7 +157,7 @@ mod tests {
                 recursive: true,
                 ..SelinuxOptions::default()
             }),
-        }
+        })
         .handle(None)
         .unwrap();
 
@@ -192,7 +173,9 @@ mod tests {
 
     #[test]
     fn reload_dry_run_does_not_execute_exportfs() {
-        let response = Reload { dry_run: true }.handle(None).unwrap();
+        let response = Reload(DryRunRequest { dry_run: true })
+            .handle(None)
+            .unwrap();
         assert_eq!(response["command"], "exportfs -ra");
         assert_eq!(response["dry_run"], true);
         assert!(response["status"].is_null());

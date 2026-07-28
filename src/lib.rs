@@ -14,6 +14,7 @@
 pub mod agent;
 pub mod catalog;
 pub mod prelude;
+pub mod types;
 
 /// [`serde_json::json!`] with field shorthands.
 ///

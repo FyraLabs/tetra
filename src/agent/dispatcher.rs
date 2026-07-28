@@ -69,11 +69,11 @@ impl Dispatcher {
     }
 
     fn try_dispatch(&self, command: &AgentCommand) -> Result<Value> {
-        verify_signature(command)?;
+        command.validate()?;
         // `agent.capabilities` is reserved at the dispatcher level rather than
         // living in a fake `agent` module, so it always reports the *actually
         // registered* module set even if a custom dispatcher was built.
-        if command.module == "agent" && command.action == "capabilities" {
+        if command.requests_capabilities() {
             return Ok(json!({ "modules": self.capabilities() }));
         }
 
@@ -81,26 +81,8 @@ impl Dispatcher {
             bail!("unknown module `{}`", command.module);
         };
 
-        module.handle(
-            &command.action,
-            command.payload.clone(),
-            command.user.as_deref(),
-        )
+        module.handle(&command.action, command.payload.clone(), command.user())
     }
-}
-
-/// Placeholder for future command-signature enforcement.
-///
-/// For now this only rejects empty signature strings, which would otherwise
-/// silently pass as "no signature provided". Real verification against a
-/// control-plane key will live here; the transport is expected to have
-/// already authenticated the connection (mTLS, bearer token, vsock peer).
-fn verify_signature(command: &AgentCommand) -> Result<()> {
-    if command.signature.as_deref() == Some("") {
-        bail!("command signature cannot be empty");
-    }
-
-    Ok(())
 }
 
 #[cfg(test)]

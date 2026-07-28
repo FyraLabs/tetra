@@ -35,7 +35,7 @@ impl Mod for SettingsModule {
     }
 }
 
-actions!(Action [self user] => {
+actions!(Action [payload user] => {
     // `std::env::consts` are compile-time constants derived from the
     // target triple, so `get_system` performs no host probe and is safe
     // to call in any context.
@@ -48,5 +48,5 @@ actions!(Action [self user] => {
         hostname: String,
         #[serde(default)]
         dry_run: bool,
-    } => crate::cmd!((self.dry_run) { &INFO, "set_hostname", user } "hostnamectl" ["set-hostname", &self.hostname] json),
+    } => crate::cmd!((payload.dry_run) { &INFO, "set_hostname", user } "hostnamectl" ["set-hostname", &payload.hostname] json),
 });

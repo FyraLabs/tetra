@@ -101,11 +101,11 @@ impl Mod for ReverseProxyModule {
     }
 }
 
-actions!(Action [self user] => {
+actions!(Action [payload user] => {
     List {
         #[serde(default = "default_config_dir")]
         config_dir: PathBuf,
-    } => Ok(jsonf! { self.config_dir, "sites": list_sites(&self.config_dir)? }),
+    } => Ok(jsonf! { payload.config_dir, "sites": list_sites(&payload.config_dir)? }),
     Render {
         #[serde(default = "default_config_dir")]
         config_dir: PathBuf,
@@ -118,7 +118,7 @@ actions!(Action [self user] => {
         #[serde(default)]
         reload: bool,
     } => {
-        let site = SiteMetadata::new(&self.domain, &self.upstream, self.tls)?;
+        let site = SiteMetadata::new(&payload.domain, &payload.upstream, payload.tls)?;
         Ok(jsonf! {
             "filename": site_filename(&site.domain),
             "contents": site.render()?,
@@ -137,21 +137,21 @@ actions!(Action [self user] => {
         #[serde(default)]
         reload: bool,
     } => {
-        let config_dir = &self.config_dir;
-        let site = SiteMetadata::new(&self.domain, &self.upstream, self.tls)?;
+        let config_dir = &payload.config_dir;
+        let site = SiteMetadata::new(&payload.domain, &payload.upstream, payload.tls)?;
         let filename = site_filename(&site.domain);
         let path = safe_join(config_dir, &filename)?;
         let contents = site.render()?;
 
-        if !self.dry_run {
+        if !payload.dry_run {
             fs::create_dir_all(config_dir)
                 .with_context(|| format!("failed to create `{}`", config_dir.display()))?;
             fs::write(&path, &contents)
                 .with_context(|| format!("failed to write `{}`", path.display()))?;
         }
 
-        let (reload, reload_error) = if self.reload {
-            match reload_caddy("write", self.dry_run, user) {
+        let (reload, reload_error) = if payload.reload {
+            match reload_caddy("write", payload.dry_run, user) {
                 Ok(result) => (Some(result), None),
                 Err(error) => (None, Some(error.to_string())),
             }
@@ -161,8 +161,8 @@ actions!(Action [self user] => {
 
         Ok(jsonf! {
             config_dir, filename, path, contents, site,
-            "written": !self.dry_run,
-            self.dry_run, reload, reload_error,
+            "written": !payload.dry_run,
+            payload.dry_run, reload, reload_error,
         })
     },
     Delete {
@@ -174,18 +174,18 @@ actions!(Action [self user] => {
         #[serde(default)]
         reload: bool,
     } => {
-        let config_dir = &self.config_dir;
-        let domain = validate_domain(&self.domain)?;
+        let config_dir = &payload.config_dir;
+        let domain = validate_domain(&payload.domain)?;
         let filename = site_filename(&domain);
         let path = safe_join(config_dir, &filename)?;
 
-        if !self.dry_run && path.exists() {
+        if !payload.dry_run && path.exists() {
             fs::remove_file(&path)
                 .with_context(|| format!("failed to delete `{}`", path.display()))?;
         }
 
-        let (reload, reload_error) = if self.reload {
-            match reload_caddy("delete", self.dry_run, user) {
+        let (reload, reload_error) = if payload.reload {
+            match reload_caddy("delete", payload.dry_run, user) {
                 Ok(result) => (Some(result), None),
                 Err(error) => (None, Some(error.to_string())),
             }
@@ -195,14 +195,14 @@ actions!(Action [self user] => {
 
         Ok(jsonf! {
             config_dir, filename, path,
-            "deleted": !self.dry_run,
-            self.dry_run, reload, reload_error,
+            "deleted": !payload.dry_run,
+            payload.dry_run, reload, reload_error,
         })
     },
     Reload {
         #[serde(default)]
         dry_run: bool,
-    } => reload_caddy("reload", self.dry_run, user)
+    } => reload_caddy("reload", payload.dry_run, user)
 });
 
 /// Serde default for `tls`. Caddy auto-provisions HTTPS, so TLS is the

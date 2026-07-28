@@ -7,9 +7,10 @@
 //! pattern but scope writes to their own managed paths; this module is the
 //! general-purpose escape hatch.
 
+use crate::agent::module_support::apply_selinux;
 use crate::prelude::*;
 
-use crate::agent::module_support::{SelinuxOptions, apply_selinux};
+use crate::types::{FileReadRequest, FileWriteRequest};
 
 /// Marker type for the files module. Stateless; all behavior lives in the
 /// [`Mod`] impl and the static [`INFO`] descriptor.
@@ -31,56 +32,49 @@ impl Mod for FilesModule {
     }
 
     fn handle(&self, action: &str, payload: Value, user: Option<&str>) -> Result<Value> {
+        // Delegate `capabilities`/`plan` to the module descriptor first.
+        if let Some(response) = INFO.metadata_response(action, &payload) {
+            return Ok(response);
+        }
         Action::from_payload(action, payload)?.handle(user)
     }
 }
 
-actions!(Action [self user] => {
-    Read { path: PathBuf } => {
-        let contents = fs::read_to_string(&self.path)
-            .with_context(|| format!("failed to read `{}`", self.path.display()))?;
-        Ok(jsonf! { self.path, contents })
+actions!(Action [payload user] => {
+    Read: FileReadRequest => {
+        Ok(jsonf! { payload.path, "contents": payload.read()? })
     },
-    Write {
-        path: PathBuf,
-        contents: String,
-        #[serde(default)]
-        dry_run: bool,
-        #[serde(default)]
-        selinux: Option<SelinuxOptions>,
-    } => {
+    Write: FileWriteRequest => {
         // Skip the actual write in dry-run; the SELinux plan below is
         // still computed and echoed back so callers can preview it.
-        if !self.dry_run {
-            fs::write(&self.path, self.contents)
-                .with_context(|| format!("failed to write `{}`", self.path.display()))?;
-        }
+        payload.write()?;
         // `apply_selinux` is a no-op when no options are supplied, so
         // calling it unconditionally is safe. It returns a list of
         // command-result objects (empty when nothing was requested).
         let selinux = apply_selinux(
-            self.selinux.as_ref(),
-            Some(&self.path),
-            self.dry_run,
+            payload.selinux.as_ref(),
+            Some(&payload.path),
+            payload.dry_run,
         )?;
-        Ok(jsonf! { self.path, "written": !self.dry_run, self.dry_run, selinux })
+        Ok(jsonf! { payload.path, "written": !payload.dry_run, payload.dry_run, selinux })
     }
 });
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::module_support::SelinuxOptions;
 
     #[test]
     fn dry_run_write_does_not_create_file() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("managed.conf");
-        let response = Write {
+        let response = Write(FileWriteRequest {
             path,
             contents: "enabled=true\n".into(),
             dry_run: true,
             selinux: None,
-        }
+        })
         .handle(None)
         .unwrap();
 
@@ -93,7 +87,7 @@ mod tests {
     fn write_can_apply_selinux_context() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("managed.conf");
-        let response = Write {
+        let response = Write(FileWriteRequest {
             path,
             contents: "enabled=true\n".to_owned(),
             dry_run: true,
@@ -101,7 +95,7 @@ mod tests {
                 context_type: Some("container_file_t".to_owned()),
                 ..SelinuxOptions::default()
             }),
-        }
+        })
         .handle(None)
         .unwrap();
 

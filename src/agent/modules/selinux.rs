@@ -58,7 +58,7 @@ impl Mod for SelinuxModule {
     }
 }
 
-actions!(Action [self user] => {
+actions!(Action [payload user] => {
     Status => {
         let result = crate::cmd!({&INFO, "status", user} "sestatus")?;
         Ok(jsonf! {
@@ -89,12 +89,12 @@ actions!(Action [self user] => {
         dry_run: bool,
     } => {
         let mut args = Vec::new();
-        if self.persistent {
+        if payload.persistent {
             args.push("-P".to_owned());
         }
-        args.push(self.name);
-        args.push(boolean_value(self.value).to_owned());
-        crate::cmd!({&INFO, "set_boolean", user} (self.dry_run) "setsebool" => &args ; json)
+        args.push(payload.name);
+        args.push(boolean_value(payload.value).to_owned());
+        crate::cmd!({&INFO, "set_boolean", user} (payload.dry_run) "setsebool" => &args ; json)
     },
     FileContexts => {
         let result = crate::cmd!({&INFO, "file_contexts", user} "semanage" ["fcontext", "-l"])?;
@@ -108,18 +108,18 @@ actions!(Action [self user] => {
         context_type: String,
         #[serde(default)]
         dry_run: bool,
-    } => crate::cmd!((self.dry_run){&INFO, "add_file_context", user} "semanage" [
+    } => crate::cmd!((payload.dry_run){&INFO, "add_file_context", user} "semanage" [
         "fcontext",
         "-a",
         "-t",
-        &self.context_type,
-        &self.path_pattern,
+        &payload.context_type,
+        &payload.path_pattern,
     ] json),
     DeleteFileContext {
         path_pattern: String,
         #[serde(default)]
         dry_run: bool,
-    } => crate::cmd!((self.dry_run){&INFO, "delete_file_context", user} "semanage" ["fcontext", "-d", &self.path_pattern] json),
+    } => crate::cmd!((payload.dry_run){&INFO, "delete_file_context", user} "semanage" ["fcontext", "-d", &payload.path_pattern] json),
     RestoreContext {
         path: String,
         #[serde(default)]
@@ -128,9 +128,9 @@ actions!(Action [self user] => {
         dry_run: bool,
     } => {
         let mut args = Vec::new();
-        args.extend(self.recursive.then_some("-R"));
-        args.extend(["-v", &self.path]);
-        crate::cmd!((self.dry_run){&INFO, "restore_context", user} "restorecon" => &args ; json)
+        args.extend(payload.recursive.then_some("-R"));
+        args.extend(["-v", &payload.path]);
+        crate::cmd!((payload.dry_run){&INFO, "restore_context", user} "restorecon" => &args ; json)
     },
 });
 

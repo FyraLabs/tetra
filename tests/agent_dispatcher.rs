@@ -2,10 +2,10 @@
 
 use serde_json::{Value, json};
 use tempfile::tempdir;
-use tetra::agent::{AgentCommand, backend, modules};
+use tetra::agent::{AgentCommand, Dispatcher, backend};
 
 fn dispatch(module: &str, action: &str, payload: Value) -> tetra::agent::AgentResponse {
-    modules::default_dispatcher().dispatch(AgentCommand {
+    Dispatcher::full().dispatch(AgentCommand {
         id: format!("{module}-{action}"),
         module: module.into(),
         action: action.into(),
@@ -67,7 +67,7 @@ fn dispatcher_rejects_unknown_modules_and_empty_signatures() {
     assert!(!unknown.ok);
     assert!(unknown.error.as_deref().unwrap().contains("unknown module"));
 
-    let empty_signature = modules::default_dispatcher().dispatch(AgentCommand {
+    let empty_signature = Dispatcher::full().dispatch(AgentCommand {
         id: "empty-signature".into(),
         module: "settings".into(),
         action: "get_system".into(),
