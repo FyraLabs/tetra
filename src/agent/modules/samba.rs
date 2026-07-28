@@ -7,18 +7,15 @@
 //! `samba_share_t` in the same request that defines the share — otherwise
 //! SELinux will deny smbd access to the path on enforcing hosts.
 
-use std::{fs, path::PathBuf};
-
-use anyhow::{Context, Result};
-use serde::Deserialize;
+use anyhow::Result;
 use serde_json::{Value, json};
 
-use crate::agent::{
-    AgentModule,
-    module_support::{
-        ModuleInfo, ModuleStatus, SelinuxOptions, apply_selinux, handle_metadata, parse_payload,
-        unsupported_action,
+use crate::{
+    agent::{
+        AgentModule,
+        module_support::{ModuleInfo, ModuleStatus, apply_selinux, parse_payload},
     },
+    types::{DryRunRequest, SambaConfigRequest, SambaWriteConfigRequest},
 };
 
 /// Samba module entry point registered under feature `samba`.
@@ -43,39 +40,6 @@ const INFO: ModuleInfo = ModuleInfo {
     privileged_actions: &["set_config", "reload", "enable", "disable"],
 };
 
-/// Payload for read actions (`list_shares`, `get_config`). Defaults to
-/// `/etc/samba/smb.conf` when no path is supplied.
-#[derive(Debug, Deserialize)]
-struct ConfigPayload {
-    #[serde(default = "default_smb_conf")]
-    path: PathBuf,
-}
-
-/// Payload for `set_config`, which overwrites the smb.conf file with the
-/// supplied `contents`.
-///
-/// The `selinux` object typically points at the share directory declared
-/// inside `contents` (not the config file itself) so the share path gets
-/// labeled `samba_share_t`.
-#[derive(Debug, Deserialize)]
-struct SetConfigPayload {
-    #[serde(default = "default_smb_conf")]
-    path: PathBuf,
-    contents: String,
-    #[serde(default)]
-    dry_run: bool,
-    #[serde(default)]
-    selinux: Option<SelinuxOptions>,
-}
-
-/// Payload for the systemd service actions (`reload`, `enable`,
-/// `disable`), which only need the `dry_run` flag.
-#[derive(Debug, Deserialize)]
-struct DryRunPayload {
-    #[serde(default)]
-    dry_run: bool,
-}
-
 /// Dispatches `samba` actions. Config reads/writes target `smb.conf`;
 /// service actions shell out to `systemctl` against `smb.service`.
 impl AgentModule for SambaModule {
@@ -86,30 +50,27 @@ impl AgentModule for SambaModule {
     fn handle(&self, action: &str, payload: Value, user: Option<&str>) -> Result<Value> {
         // Standard metadata fast-path: `capabilities` and `plan` are answered
         // from `INFO` without touching the system.
-        if let Some(response) = handle_metadata(INFO, action, &payload) {
+        if let Some(response) = INFO.metadata_response(action, &payload) {
             return Ok(response);
         }
 
         match action {
             "list_shares" => {
-                let payload: ConfigPayload = parse_payload(payload)?;
-                let contents = read_config(&payload.path)?;
+                let payload: SambaConfigRequest = parse_payload(payload)?;
+                let contents = payload.read()?;
                 Ok(json!({ "path": payload.path, "shares": parse_samba_shares(&contents) }))
             }
             "get_config" => {
-                let payload: ConfigPayload = parse_payload(payload)?;
-                let contents = read_config(&payload.path)?;
+                let payload: SambaConfigRequest = parse_payload(payload)?;
+                let contents = payload.read()?;
                 Ok(json!({ "path": payload.path, "contents": contents }))
             }
             "set_config" => {
-                let payload: SetConfigPayload = parse_payload(payload)?;
-                if !payload.dry_run {
-                    // The whole file is replaced; callers are expected to
-                    // build the full desired smb.conf (including `[global]`)
-                    // rather than patch a single share in place.
-                    fs::write(&payload.path, payload.contents)
-                        .with_context(|| format!("failed to write `{}`", payload.path.display()))?;
-                }
+                let payload: SambaWriteConfigRequest = parse_payload(payload)?;
+                // The whole file is replaced; callers are expected to build the
+                // full desired smb.conf (including `[global]`) rather than
+                // patch a single share in place.
+                payload.write()?;
                 // The default relabel target is the config file path; callers
                 // wanting to label the share directory pass an explicit `path`
                 // inside the selinux object pointing at e.g. `/srv/media`.
@@ -126,30 +87,20 @@ impl AgentModule for SambaModule {
                 }))
             }
             "reload" => {
-                let payload: DryRunPayload = parse_payload(payload)?;
+                let payload: DryRunRequest = parse_payload(payload)?;
                 crate::cmd!((payload.dry_run) { &INFO, action, user } "systemctl" ["reload-or-restart", "smb.service"] json)
             }
             "enable" => {
-                let payload: DryRunPayload = parse_payload(payload)?;
+                let payload: DryRunRequest = parse_payload(payload)?;
                 crate::cmd!((payload.dry_run) { &INFO, action, user } "systemctl" ["enable", "--now", "smb.service"] json)
             }
             "disable" => {
-                let payload: DryRunPayload = parse_payload(payload)?;
+                let payload: DryRunRequest = parse_payload(payload)?;
                 crate::cmd!((payload.dry_run) { &INFO, action, user } "systemctl" ["disable", "--now", "smb.service"] json)
             }
-            _ => unsupported_action(INFO.name, action),
+            _ => INFO.unsupported_action(action),
         }
     }
-}
-
-/// Default smb.conf location used when a read/write action omits `path`.
-fn default_smb_conf() -> PathBuf {
-    PathBuf::from("/etc/samba/smb.conf")
-}
-
-/// Reads the smb.conf file as UTF-8 text with a context-rich error.
-fn read_config(path: &PathBuf) -> Result<String> {
-    fs::read_to_string(path).with_context(|| format!("failed to read `{}`", path.display()))
 }
 
 /// Extracts share section names from smb.conf contents.
@@ -170,6 +121,8 @@ fn parse_samba_shares(contents: &str) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use super::*;
 
     #[test]

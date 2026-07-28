@@ -36,9 +36,7 @@
 //! `systemctl daemon-reload`; the caller does that through the separate
 //! `services` module's `daemon_reload` action once writes are confirmed.
 
-use crate::agent::module_support::{
-    SelinuxOptions, apply_selinux, handle_metadata, parse_payload, safe_join, unsupported_action,
-};
+use crate::agent::module_support::{SelinuxOptions, apply_selinux, parse_payload, safe_join};
 use crate::prelude::*;
 
 /// Agent module backing the `quadlets` feature. See the module-level docs
@@ -239,37 +237,21 @@ impl AgentModule for QuadletsModule {
         INFO
     }
 
-    // NOTE: we could maybe split this into helpers, but i'm not sure that's necessary
-    #[allow(clippy::too_many_lines)]
     fn handle(&self, action: &str, payload: Value, _user: Option<&str>) -> Result<Value> {
-        if let Some(response) = handle_metadata(INFO, action, &payload) {
+        if let Some(response) = INFO.metadata_response(action, &payload) {
             return Ok(response);
         }
 
+        Self::handle_action(action, payload)
+    }
+}
+
+impl QuadletsModule {
+    #[allow(clippy::too_many_lines)]
+    fn handle_action(action: &str, payload: Value) -> Result<Value> {
         match action {
-            "list" => {
-                let payload: BasePayload = parse_payload(payload)?;
-                let base_dir = quadlet_base_dir(payload.base_dir, payload.scope)?;
-                Ok(jsonf! { base_dir, "files": QuadletFile::list(&base_dir)? })
-            }
-            "list_files" => {
-                let payload: BasePayload = parse_payload(payload)?;
-                let base_dir = quadlet_base_dir(payload.base_dir, payload.scope)?;
-                let files_base_dir =
-                    quadlet_files_base_dir(payload.files_base_dir, payload.scope, None)?;
-                let mut files = ManagedFile::list(&base_dir)?;
-                files.extend(list_companion_files(&files_base_dir)?);
-                // Quadlet entries first, then companions, each group sorted by
-                // filename. This pins a bundle's unit file to the top of its
-                // companion list in the dashboard.
-                files.sort_by(|left, right| {
-                    left.quadlet
-                        .cmp(&right.quadlet)
-                        .reverse()
-                        .then_with(|| left.filename.cmp(&right.filename))
-                });
-                Ok(jsonf! { base_dir, files_base_dir, files })
-            }
+            "list" => Self::list(payload),
+            "list_files" => Self::list_files(payload),
             "read" => {
                 let payload: FilePayload = parse_payload(payload)?;
                 // Companion files are addressed by their full relative path
@@ -409,8 +391,30 @@ impl AgentModule for QuadletsModule {
                     payload.dry_run, selinux,
                 })
             }
-            _ => unsupported_action(INFO.name, action),
+            _ => INFO.unsupported_action(action),
         }
+    }
+
+    fn list(payload: Value) -> Result<Value> {
+        let payload: BasePayload = parse_payload(payload)?;
+        let base_dir = quadlet_base_dir(payload.base_dir, payload.scope)?;
+        Ok(jsonf! { base_dir, "files": QuadletFile::list(&base_dir)? })
+    }
+
+    fn list_files(payload: Value) -> Result<Value> {
+        let payload: BasePayload = parse_payload(payload)?;
+        let base_dir = quadlet_base_dir(payload.base_dir, payload.scope)?;
+        let files_base_dir = quadlet_files_base_dir(payload.files_base_dir, payload.scope, None)?;
+        let mut files = ManagedFile::list(&base_dir)?;
+        files.extend(list_companion_files(&files_base_dir)?);
+        // Quadlet entries first, then companions, each group sorted by filename.
+        files.sort_by(|left, right| {
+            left.quadlet
+                .cmp(&right.quadlet)
+                .reverse()
+                .then_with(|| left.filename.cmp(&right.filename))
+        });
+        Ok(jsonf! { base_dir, files_base_dir, files })
     }
 }
 

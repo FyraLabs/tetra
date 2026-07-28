@@ -16,14 +16,17 @@
 //! `domains` / `domain` JSON fields so callers do not have to.
 
 use anyhow::Result;
-use serde::Deserialize;
 use serde_json::{Value, json};
 
-use crate::agent::{
-    AgentModule,
-    module_support::{
-        ModuleInfo, ModuleStatus, NamedPayload, handle_metadata, parse_payload, unsupported_action,
+use crate::{
+    agent::{
+        AgentModule,
+        module_support::{
+            ModuleInfo, ModuleStatus, NamedPayload, handle_metadata, parse_payload,
+            unsupported_action,
+        },
     },
+    types::{VirtualMachineCreateRequest, VirtualMachineLogsRequest},
 };
 
 /// Marker type for the `virtual_machines` module. Stateless; all behavior lives
@@ -49,24 +52,6 @@ const INFO: ModuleInfo = ModuleInfo {
     ],
     privileged_actions: &["start", "stop", "restart", "create", "delete"],
 };
-
-/// Payload for `create`: a path to a libvirt domain XML file to register with
-/// `virsh define`. The XML is not sent inline because it can be large and is
-/// usually already present on the host (e.g. rendered by the recipes module).
-#[derive(Debug, Deserialize)]
-struct CreatePayload {
-    xml_path: String,
-    #[serde(default)]
-    dry_run: bool,
-}
-
-/// Payload for `logs`: only the trailing line count (defaults to 100). The
-/// journal source is fixed to `libvirtd.service`.
-#[derive(Debug, Deserialize)]
-struct LogsPayload {
-    #[serde(default = "default_log_lines")]
-    lines: u16,
-}
 
 impl AgentModule for VirtualMachinesModule {
     fn info(&self) -> ModuleInfo {
@@ -111,7 +96,7 @@ impl AgentModule for VirtualMachinesModule {
                 }))
             }
             "logs" => {
-                let payload: LogsPayload = parse_payload(payload)?;
+                let payload: VirtualMachineLogsRequest = parse_payload(payload)?;
                 // Logs come from the libvirtd unit journal, not `virsh`, since
                 // virsh itself does not expose host-side daemon logs.
                 crate::cmd!({ &INFO, action, user } "journalctl" [
@@ -140,7 +125,7 @@ impl AgentModule for VirtualMachinesModule {
             // `create` maps to `define`: register a persistent domain from the
             // given XML file. See the module docs for why we avoid `virsh create`.
             "create" => {
-                let payload: CreatePayload = parse_payload(payload)?;
+                let payload: VirtualMachineCreateRequest = parse_payload(payload)?;
                 crate::cmd!((payload.dry_run) { &INFO, action, user } "virsh" ["define", &payload.xml_path] json)
             }
             // `delete` maps to `undefine`: remove the domain registration. It
@@ -152,10 +137,6 @@ impl AgentModule for VirtualMachinesModule {
             _ => unsupported_action(INFO.name, action),
         }
     }
-}
-
-const fn default_log_lines() -> u16 {
-    100
 }
 
 /// Parses `virsh list --all` output into domain objects.

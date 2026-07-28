@@ -42,6 +42,36 @@ impl ModuleInfo {
     pub fn is_privileged(&self, action: &str) -> bool {
         self.privileged_actions.contains(&action)
     }
+
+    /// Answer a shared metadata action, returning `None` for module-specific
+    /// actions so the caller can continue its own dispatch.
+    #[must_use]
+    pub fn metadata_response(&self, action: &str, payload: &Value) -> Option<Value> {
+        match action {
+            "capabilities" => Some(json!(self)),
+            "plan" => Some(jsonf! {
+                "module": self.name,
+                self.feature,
+                self.status,
+                "requested": payload,
+            }),
+            _ => None,
+        }
+    }
+
+    /// Select the user for an action: privileged actions always run as root.
+    #[must_use]
+    pub fn effective_user<'a>(&self, action: &str, user: Option<&'a str>) -> Option<&'a str> {
+        (!self.is_privileged(action)).then_some(user).flatten()
+    }
+
+    /// Create the uniform unsupported-action error used by all modules.
+    ///
+    /// # Errors
+    /// This method always returns an error.
+    pub fn unsupported_action(&self, action: &str) -> Result<Value> {
+        bail!("unsupported {} action `{action}`", self.name)
+    }
 }
 
 /// Handle the shared `capabilities` and `plan` meta-actions that every
@@ -57,16 +87,7 @@ impl ModuleInfo {
 /// caller can fall through to its own match.
 #[must_use]
 pub fn handle_metadata(info: ModuleInfo, action: &str, payload: &Value) -> Option<Value> {
-    match action {
-        "capabilities" => Some(json!(info)),
-        "plan" => Some(jsonf! {
-            "module": info.name,
-            info.feature,
-            info.status,
-            "requested": payload,
-        }),
-        _ => None,
-    }
+    info.metadata_response(action, payload)
 }
 
 /// Bail with a consistent "unknown action" error message. Centralizing this
@@ -276,15 +297,11 @@ where
 #[inline]
 #[must_use]
 pub fn effective_user<'a>(
-    info: &'a ModuleInfo,
-    action: &'a str,
+    info: &ModuleInfo,
+    action: &str,
     user: Option<&'a str>,
 ) -> Option<&'a str> {
-    if info.privileged_actions.contains(&action) {
-        None
-    } else {
-        user
-    }
+    info.effective_user(action, user)
 }
 
 /// Apply SELinux file-context labeling to a path as part of a module action.

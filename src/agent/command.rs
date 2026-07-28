@@ -1,3 +1,4 @@
+use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -27,6 +28,35 @@ pub struct AgentCommand {
     /// after session authentication; not part of the signed wire format.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub user: Option<String>,
+}
+
+impl AgentCommand {
+    /// Reject malformed signature metadata before routing the command.
+    ///
+    /// Actual cryptographic verification is performed by authenticated
+    /// transports, which have the session context required to verify it.
+    ///
+    /// # Errors
+    /// Returns an error when a signature field is present but empty.
+    pub fn validate(&self) -> Result<()> {
+        if self.signature.as_deref() == Some("") {
+            bail!("command signature cannot be empty");
+        }
+
+        Ok(())
+    }
+
+    /// Whether this is the dispatcher-owned capabilities query.
+    #[must_use]
+    pub fn requests_capabilities(&self) -> bool {
+        self.module == "agent" && self.action == "capabilities"
+    }
+
+    /// Return the authenticated host user, if one was assigned by the transport.
+    #[must_use]
+    pub fn user(&self) -> Option<&str> {
+        self.user.as_deref()
+    }
 }
 
 /// The response to an [`AgentCommand`].

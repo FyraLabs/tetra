@@ -9,8 +9,9 @@
 
 use crate::prelude::*;
 
-use crate::agent::module_support::{
-    ModuleInfo, ModuleStatus, SelinuxOptions, apply_selinux, handle_metadata, unsupported_action,
+use crate::{
+    agent::module_support::{ModuleInfo, ModuleStatus, apply_selinux},
+    types::{FileReadRequest, FileWriteRequest},
 };
 
 /// Marker type for the files module. Stateless; all behavior lives in the
@@ -26,51 +27,28 @@ const INFO: ModuleInfo = ModuleInfo {
     privileged_actions: &["write"],
 };
 
-/// Payload for the `read` action: just the path to read from the host.
-#[derive(Debug, Deserialize)]
-struct ReadPayload {
-    path: PathBuf,
-}
-
-/// Payload for the `write` action. `dry_run` skips the filesystem mutation but
-/// still echoes the planned result; `selinux` optionally relabels the written
-/// file via the shared `apply_selinux` helper.
-#[derive(Debug, Deserialize)]
-struct WritePayload {
-    path: PathBuf,
-    contents: String,
-    #[serde(default)]
-    dry_run: bool,
-    #[serde(default)]
-    selinux: Option<SelinuxOptions>,
-}
-
 impl AgentModule for FileModule {
     fn info(&self) -> ModuleInfo {
         INFO
     }
 
     fn handle(&self, action: &str, payload: Value, _user: Option<&str>) -> Result<Value> {
-        // Delegate `capabilities`/`plan` to the shared metadata handler first.
-        if let Some(response) = handle_metadata(INFO, action, &payload) {
+        // Delegate `capabilities`/`plan` to the module descriptor first.
+        if let Some(response) = INFO.metadata_response(action, &payload) {
             return Ok(response);
         }
 
         match action {
             "read" => {
-                let payload: ReadPayload = serde_json::from_value(payload)?;
-                let contents = fs::read_to_string(&payload.path)
-                    .with_context(|| format!("failed to read `{}`", payload.path.display()))?;
+                let payload: FileReadRequest = serde_json::from_value(payload)?;
+                let contents = payload.read()?;
                 Ok(jsonf! { payload.path, contents })
             }
             "write" => {
-                let payload: WritePayload = serde_json::from_value(payload)?;
+                let payload: FileWriteRequest = serde_json::from_value(payload)?;
                 // Skip the actual write in dry-run; the SELinux plan below is
                 // still computed and echoed back so callers can preview it.
-                if !payload.dry_run {
-                    fs::write(&payload.path, payload.contents)
-                        .with_context(|| format!("failed to write `{}`", payload.path.display()))?;
-                }
+                payload.write()?;
                 // `apply_selinux` is a no-op when no options are supplied, so
                 // calling it unconditionally is safe. It returns a list of
                 // command-result objects (empty when nothing was requested).
@@ -81,7 +59,7 @@ impl AgentModule for FileModule {
                 )?;
                 Ok(jsonf! { payload.path, "written": !payload.dry_run, payload.dry_run, selinux })
             }
-            _ => unsupported_action(INFO.name, action),
+            _ => INFO.unsupported_action(action),
         }
     }
 }
