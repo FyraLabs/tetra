@@ -15,9 +15,7 @@
 //! `list` and `status` additionally parse virsh's text output into stable
 //! `domains` / `domain` JSON fields so callers do not have to.
 
-use crate::agent::module_support::{
-    ModuleInfo, ModuleStatus, NamedPayload, handle_metadata, parse_payload, unsupported_action,
-};
+use crate::agent::module_support::{ModuleInfo, ModuleStatus, NamedPayload, handle_metadata};
 use crate::prelude::*;
 use crate::types::{VirtualMachineCreateRequest, VirtualMachineLogsRequest};
 
@@ -115,10 +113,6 @@ actions!(Action [payload user] => {
     Delete: NamedPayload => crate::cmd!((payload.dry_run) { &INFO, "delete", user } "virsh" ["undefine", &payload.name] json),
 });
 
-const fn default_log_lines() -> u16 {
-    100
-}
-
 /// Parses `virsh list --all` output into domain objects.
 ///
 /// The table has a header row, a `---` separator, then one row per domain in
@@ -173,8 +167,6 @@ fn parse_virsh_dominfo(stdout: &str) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
-
     #[test]
     fn dry_run_start_does_not_call_virsh() {
         let response = Start(NamedPayload {

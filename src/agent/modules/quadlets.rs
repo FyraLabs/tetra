@@ -128,7 +128,6 @@ impl Mod for QuadletsModule {
 actions!(Action [payload user] => {
     List {
         base_dir: Option<PathBuf>,
-        files_base_dir: Option<PathBuf>,
         #[serde(default)]
         scope: QuadletScope,
     } => {
@@ -185,7 +184,7 @@ actions!(Action [payload user] => {
         let path = safe_join(&base_dir, &payload.filename)?;
         let contents = fs::read_to_string(&path)
             .with_context(|| format!("failed to read `{}`", path.display()))?;
-        Ok(jsonf! { base_dir, payload.filename, contents })
+        Ok(jsonf! { base_dir, payload.filename, contents, payload.dry_run })
     },
     Write {
         base_dir: Option<PathBuf>,
@@ -226,7 +225,20 @@ actions!(Action [payload user] => {
         #[serde(default)]
         dry_run: bool,
     } => {
-        let base_dir = quadlet_base_dir(payload.base_dir, payload.scope)?;
+        let bundle_name = if payload.companion {
+            None
+        } else {
+            Some(quadlet_bundle_name(&payload.filename)?)
+        };
+        let base_dir = if payload.companion {
+            quadlet_files_base_dir(
+                payload.files_base_dir,
+                payload.scope,
+                bundle_name.as_deref(),
+            )?
+        } else {
+            quadlet_base_dir(payload.base_dir, payload.scope)?
+        };
         let path = safe_join(&base_dir, &payload.filename)?;
         if !payload.dry_run {
             fs::remove_file(&path)
@@ -239,15 +251,8 @@ actions!(Action [payload user] => {
         })
     },
     Validate {
-        base_dir: Option<PathBuf>,
-        #[serde(default)]
-        scope: QuadletScope,
         filename: String,
         contents: String,
-        #[serde(default)]
-        dry_run: bool,
-        #[serde(default)]
-        selinux: Option<SelinuxOptions>,
     } => {
         validate_quadlet(&payload.filename, &payload.contents)?;
         Ok(jsonf! { payload.filename, "valid": true })

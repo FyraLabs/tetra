@@ -41,6 +41,7 @@ impl VsockAgentConfig {
     }
 
     #[cfg(not(target_os = "linux"))]
+    #[allow(clippy::unused_self)]
     fn serve_with_dispatcher(&self, _dispatcher: &Arc<Dispatcher>) -> Result<()> {
         bail!("agent-vsock-serve is only supported on Linux")
     }
@@ -154,7 +155,7 @@ mod tests {
         .unwrap();
         let response: serde_json::Value = serde_json::from_str(&response_text).unwrap();
 
-        println!("{}", response);
+        println!("{response}");
 
         assert_eq!(response["id"], "cmd-1");
         assert_eq!(response["ok"], true);

@@ -141,7 +141,7 @@ mod tests {
         let path = dir.path().join("smb.conf");
 
         let response = SetConfig(SambaWriteConfigRequest {
-            path: path.clone(),
+            path,
             contents: "[media]\npath = /srv/media\n".into(),
             dry_run: true,
             selinux: Some(SelinuxOptions {

@@ -120,9 +120,12 @@ actions!(Action [payload user] => {
     } => {
         let site = SiteMetadata::new(&payload.domain, &payload.upstream, payload.tls)?;
         Ok(jsonf! {
+            payload.config_dir,
             "filename": site_filename(&site.domain),
             "contents": site.render()?,
             site,
+            payload.dry_run,
+            payload.reload,
         })
     },
     Write {

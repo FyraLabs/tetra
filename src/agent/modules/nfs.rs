@@ -148,7 +148,7 @@ mod tests {
         let path = dir.path().join("exports");
 
         let response = SetConfig(NfsWriteConfigRequest {
-            path: path.clone(),
+            path,
             contents: "/srv/export *(rw)\n".into(),
             dry_run: true,
             selinux: Some(SelinuxOptions {

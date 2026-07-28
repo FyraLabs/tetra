@@ -55,7 +55,10 @@ actions!(Action [payload user] => {
         path: PathBuf,
         #[serde(default)]
         dry_run: bool,
-    } => crate::cmd!({ &INFO, "status", user } "df" ["-h", payload.path.to_string_lossy().as_ref()] json),
+    } => {
+        let result = crate::cmd!({ &INFO, "status", user } "df" ["-h", payload.path.to_string_lossy().as_ref()] json)?;
+        Ok(jsonf! { result, payload.dry_run })
+    },
     Mount {
         source: String,
         target: String,

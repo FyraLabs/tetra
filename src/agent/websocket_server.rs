@@ -618,7 +618,6 @@ mod tests {
     };
     use ed25519_dalek::SigningKey;
     use futures_util::{SinkExt, StreamExt};
-    use serde_json::json;
     use tempfile::tempdir;
     use tokio::net::TcpStream;
     use tokio_tungstenite::connect_async;

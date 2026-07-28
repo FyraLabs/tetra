@@ -147,7 +147,7 @@ mod tests {
         let path = dir.path().join("connection.nmconnection");
 
         let response = SetConfig(NetworkWriteConfigRequest {
-            path: path.clone(),
+            path,
             contents: "[connection]\nid=new\n".into(),
             dry_run: true,
             selinux: Some(SelinuxOptions {
