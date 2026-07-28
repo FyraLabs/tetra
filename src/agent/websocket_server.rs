@@ -787,7 +787,7 @@ mod tests {
             id: "cmd-settings".into(),
             module: "settings".into(),
             action: "get_system".into(),
-            payload: json!({}),
+            payload: serde_json::Value::Null,
             signature: None,
             user: None,
         };

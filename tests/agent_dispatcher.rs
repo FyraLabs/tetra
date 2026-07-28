@@ -48,7 +48,7 @@ async fn kameo_backend_dispatches_commands() {
         id: "backend-settings".into(),
         module: "settings".into(),
         action: "get_system".into(),
-        payload: json!({}),
+        payload: Value::Null,
         signature: None,
         user: None,
     })
@@ -71,7 +71,7 @@ fn dispatcher_rejects_unknown_modules_and_empty_signatures() {
         id: "empty-signature".into(),
         module: "settings".into(),
         action: "get_system".into(),
-        payload: json!({}),
+        payload: Value::Null,
         signature: Some(String::new()),
         user: None,
     });
@@ -87,7 +87,7 @@ fn dispatcher_rejects_unknown_modules_and_empty_signatures() {
 
 #[test]
 fn settings_module_returns_host_shape() {
-    let response = dispatch("settings", "get_system", json!({}));
+    let response = dispatch("settings", "get_system", Value::Null);
 
     assert!(response.ok, "{response:?}");
     let payload = response.payload.unwrap();

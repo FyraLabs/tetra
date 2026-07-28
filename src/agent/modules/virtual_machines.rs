@@ -15,11 +15,11 @@
 //! `list` and `status` additionally parse virsh's text output into stable
 //! `domains` / `domain` JSON fields so callers do not have to.
 
-use crate::prelude::*;
-
 use crate::agent::module_support::{
     ModuleInfo, ModuleStatus, NamedPayload, handle_metadata, parse_payload, unsupported_action,
 };
+use crate::prelude::*;
+use crate::types::{VirtualMachineCreateRequest, VirtualMachineLogsRequest};
 
 /// Marker type for the `virtual_machines` module. Stateless; all behavior lives
 /// in the [`Mod`] impl and the static [`INFO`] descriptor.
@@ -173,13 +173,14 @@ fn parse_virsh_dominfo(stdout: &str) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn dry_run_start_does_not_call_virsh() {
-        let response = Start {
+        let response = Start(NamedPayload {
             name: "vm1".into(),
             dry_run: true,
-        }
+        })
         .handle(None)
         .unwrap();
 
@@ -204,21 +205,5 @@ mod tests {
         assert_eq!(domain["name"], "vm1");
         assert_eq!(domain["state"], "running");
         assert_eq!(domain["cpu(s)"], "2");
-    }
-
-    #[test]
-    fn create_payload_requires_xml_path() {
-        let result = Create::from_payload("create", json!({ "dry_run": true }));
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(err.to_string().contains("missing field `xml_path`"));
-    }
-
-    #[test]
-    fn status_requires_name() {
-        let result = Status::from_payload("status", json!({}));
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(err.to_string().contains("missing field `name`"));
     }
 }

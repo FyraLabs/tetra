@@ -148,11 +148,13 @@ mod tests {
         let dispatcher = Dispatcher::full();
         let response_text = dispatch_command_text(
             &dispatcher,
-            r#"{"id":"cmd-1","module":"settings","action":"get_system","payload":{}}"#,
+            r#"{"id":"cmd-1","module":"settings","action":"get_system","payload":null}"#,
             1024,
         )
         .unwrap();
         let response: serde_json::Value = serde_json::from_str(&response_text).unwrap();
+
+        println!("{}", response);
 
         assert_eq!(response["id"], "cmd-1");
         assert_eq!(response["ok"], true);
