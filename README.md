@@ -23,6 +23,13 @@ Recipes are declared in YAML, and Quadlet generation uses Tera templates. A
 recipe declares metadata, UI parameters, requirements, and a list of resources
 to render.
 
+## Documentation
+
+- [Agent protocol reference](docs/agent-protocol.md) — Connection negotiation, authentication, and the full module action catalog.
+- [Recipe authoring guide](docs/recipes.md) — How to write recipes, parameters, templates, and resources.
+- [Architecture overview](docs/architecture.md) — Crate layout, dispatcher, queue, transports, and how to add a module.
+- [Troubleshooting](docs/troubleshooting.md) — Common issues with TLS, identity, WebSocket auth, recipe rendering, SELinux, and queue backpressure.
+
 ## Feature Flags
 
 Default build features:
