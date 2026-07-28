@@ -1,15 +1,15 @@
-//! Network interface inspection and `NetworkManager` keyfile management.
+//! Network interface inspection and NetworkManager keyfile management.
 //!
 //! This module splits host networking into two concerns:
 //!
 //! - *Live state* (`interfaces`, `status`) is read from `/sys/class/net` sysfs
 //!   and `ip -json addr show`, so callers can see what is currently up.
 //! - *Persistent configuration* (`get_config`/`set_config`) is managed as
-//!   `NetworkManager` *keyfiles*: INI-style `.nmconnection` profiles under
+//!   NetworkManager *keyfiles*: INI-style `.nmconnection` profiles under
 //!   `/etc/NetworkManager/system-connections/`. The agent reads and writes
 //!   those files directly rather than driving `nmcli`, which keeps the wire
 //!   format transparent and lets the control plane template profiles. After a
-//!   write, callers invoke `reload` to tell `NetworkManager` to pick up the new
+//!   write, callers invoke `reload` to tell NetworkManager to pick up the new
 //!   profile via `systemctl reload-or-restart NetworkManager.service`.
 //!
 //! `set_config` supports the shared `selinux` options so written keyfiles can
