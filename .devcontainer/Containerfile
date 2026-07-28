@@ -1,0 +1,20 @@
+FROM ghcr.io/ultramarine-linux/ultramarine:44
+
+# Native build tools and host-management CLIs used by Tetra's modules.
+RUN dnf do -y --action=install \
+    clang-devel \
+    cmake \
+    git \
+    iproute \
+    make \
+    ninja \
+    pkgconf-pkg-config \
+    rustup \
+    systemd \
+    systemd-devel \
+    which
+
+# Install Rust directly rather than through the Dev Containers feature. Podman's
+# classic Docker-compatible builder does not support that feature's bind mount.
+RUN rustup-init --profile minimal --default-toolchain stable -y
+ENV PATH="/root/.cargo/bin:${PATH}"
