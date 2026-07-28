@@ -1,6 +1,6 @@
 [package]
 name = "tetra"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 license = "LGPL-2.1-or-later"
 description = "A modular host agent for Ultramarine Server and cloud hosts"
@@ -17,7 +17,8 @@ default = [
     "samba",
     "nfs",
     "users",
-    "virtual-machines",
+    "storage",
+    "network",
 ]
 files = []
 recipes = []
