@@ -14,13 +14,11 @@
 //! - `create`/`update` deliberately omit flags the caller did not set, so
 //!   shadow-utils defaults apply for anything left unspecified.
 
-use crate::agent::module_support::{
-    NamedPayload, handle_metadata, parse_payload, unsupported_action,
-};
 use crate::prelude::*;
 
 /// Marker type for the users module. Stateless; all behavior lives in the
-/// [`AgentModule`] impl and the static [`INFO`] descriptor.
+/// [`Mod`] impl and the static [`INFO`] descriptor.
+#[derive(Clone, Copy, Debug)]
 pub struct UsersModule;
 
 const INFO: ModuleInfo = ModuleInfo {
@@ -42,100 +40,64 @@ const INFO: ModuleInfo = ModuleInfo {
     privileged_actions: &["create", "update", "delete", "set_password", "groups"],
 };
 
-/// Payload for `create`. All optional fields are forwarded to `useradd` only
-/// when present, so unspecified attributes fall back to `useradd` defaults.
-#[derive(Debug, Deserialize)]
-struct CreatePayload {
-    name: String,
-    shell: Option<String>,
-    home: Option<String>,
-    /// Creates a system account (UID pulled from the system range) via
-    /// `useradd --system`.
-    #[serde(default)]
-    system: bool,
-    #[serde(default)]
-    dry_run: bool,
-}
-
-/// Payload for `update`. `groups`, when present, is joined with commas and
-/// passed to `usermod --groups`, which *replaces* the user's supplementary
-/// group list rather than appending.
-#[derive(Debug, Deserialize)]
-struct UpdatePayload {
-    name: String,
-    shell: Option<String>,
-    home: Option<String>,
-    groups: Option<Vec<String>>,
-    #[serde(default)]
-    dry_run: bool,
-}
-
-/// Payload for `set_password`. `password_hash` is a pre-computed crypt hash as
-/// stored in `/etc/shadow`; the agent does not hash plaintext.
-#[derive(Debug, Deserialize)]
-struct SetPasswordPayload {
-    name: String,
-    password_hash: String,
-    #[serde(default)]
-    dry_run: bool,
-}
-
-impl AgentModule for UsersModule {
+impl Mod for UsersModule {
     fn info(&self) -> ModuleInfo {
         INFO
     }
 
     fn handle(&self, action: &str, payload: Value, user: Option<&str>) -> Result<Value> {
-        // Delegate `capabilities`/`plan` to the shared metadata handler first.
-        if let Some(response) = handle_metadata(INFO, action, &payload) {
-            return Ok(response);
-        }
-
-        match action {
-            // `/etc/passwd` is the source of truth for local accounts; the
-            // password field is deliberately not surfaced (it is `x` under
-            // shadow passwords, with the real hash in `/etc/shadow`).
-            "list" => Ok(jsonf! { "users": parse_passwd(&read_file("/etc/passwd")?) }),
-            "groups" => Ok(jsonf! { "groups": parse_group(&read_file("/etc/group")?) }),
-            // `id` exits non-zero for an unknown account, so `status` doubles as
-            // an existence check via the wrapped command's exit status.
-            "status" => {
-                let payload: NamedPayload = parse_payload(payload)?;
-                crate::cmd!({ &INFO, action, user } "id" [&payload.name] json)
-            }
-            "create" => {
-                let payload: CreatePayload = parse_payload(payload)?;
-                let mut args = Vec::new();
-                // `useradd` spells the home flag `--home-dir` (unlike
-                // `usermod`'s `--home` below).
-                flag!(args payload: system [shell] ["--home-dir" home]);
-                args.push(payload.name);
-                crate::cmd!((payload.dry_run) { &INFO, action, user } "useradd" => &args ; json)
-            }
-            "update" => {
-                let payload: UpdatePayload = parse_payload(payload)?;
-                let mut args = Vec::new();
-                flag!(args payload: [shell] [home]);
-                args.extend(
-                    (payload.groups.into_iter()).flat_map(|g| ["--groups".to_owned(), g.join(",")]),
-                );
-                args.push(payload.name);
-                crate::cmd!((payload.dry_run) { &INFO, action, user } "usermod" => &args ; json)
-            }
-            "delete" => {
-                let payload: NamedPayload = parse_payload(payload)?;
-                crate::cmd!((payload.dry_run) { &INFO, action, user } "userdel" [&payload.name] json)
-            }
-            "set_password" => {
-                let payload: SetPasswordPayload = parse_payload(payload)?;
-                // The hash is passed through verbatim; `usermod --password`
-                // expects the same string `/etc/shadow` would store.
-                crate::cmd!((payload.dry_run) { &INFO, action, user } "usermod" ["--password", &payload.password_hash, &payload.name] json)
-            }
-            _ => unsupported_action(INFO.name, action),
-        }
+        Action::from_payload(action, payload)?.handle(user)
     }
 }
+
+actions!(Action [payload user] => {
+    List => Ok(jsonf! { "users": parse_passwd(&read_file("/etc/passwd")?) }),
+    Groups => Ok(jsonf! { "groups": parse_group(&read_file("/etc/group")?) }),
+    Status { name: String } => crate::cmd!({ &INFO, "status", user } "id" [&payload.name] json),
+    Create {
+        name: String,
+        shell: Option<String>,
+        home: Option<String>,
+        #[serde(default)]
+        system: bool,
+        #[serde(default)]
+        dry_run: bool,
+    } => {
+        let mut args = Vec::new();
+        // `useradd` spells the home flag `--home-dir` (unlike
+        // `usermod`'s `--home` below).
+        flag!(args payload: system [shell] ["--home-dir" home]);
+        args.push(payload.name);
+        crate::cmd!((payload.dry_run) { &INFO, "create", user } "useradd" => &args ; json)
+    },
+    Update {
+        name: String,
+        shell: Option<String>,
+        home: Option<String>,
+        groups: Option<Vec<String>>,
+        #[serde(default)]
+        dry_run: bool,
+    } => {
+        let mut args = Vec::new();
+        flag!(args payload: [shell] [home]);
+        if let Some(groups) = payload.groups {
+            args.extend(["--groups".into(), groups.join(",")]);
+        }
+        args.push(payload.name);
+        crate::cmd!((payload.dry_run) { &INFO, "update", user } "usermod" => &args ; json)
+    },
+    Delete {
+        name: String,
+        #[serde(default)]
+        dry_run: bool,
+    } => crate::cmd!((payload.dry_run) { &INFO, "delete", user } "userdel" [&payload.name] json),
+    SetPassword {
+        name: String,
+        password_hash: String,
+        #[serde(default)]
+        dry_run: bool,
+    } => crate::cmd!((payload.dry_run) { &INFO, "set_password", user } "usermod" ["--password", &payload.password_hash, &payload.name] json),
+});
 
 /// Small helper to read a host file with a context-bearing error. Used for
 /// `/etc/passwd` and `/etc/group`.
@@ -210,13 +172,15 @@ mod tests {
 
     #[test]
     fn dry_run_create_does_not_call_useradd() {
-        let response = UsersModule
-            .handle(
-                "create",
-                jsonf! { "name": "testuser", "dry_run": true },
-                None,
-            )
-            .unwrap();
+        let response = Create {
+            name: "testuser".into(),
+            shell: None,
+            home: None,
+            system: false,
+            dry_run: true,
+        }
+        .handle(None)
+        .unwrap();
 
         assert_eq!(response["command"], "useradd testuser");
         assert_eq!(response["dry_run"], true);

@@ -14,12 +14,11 @@
 
 use crate::prelude::*;
 
-use crate::agent::module_support::{handle_metadata, parse_payload, unsupported_action};
-
 /// SELinux module entry point registered under feature `selinux`.
 ///
 /// Stateless: every action is a fresh invocation of an underlying SELinux
 /// tool, so there is nothing to hold across requests.
+#[derive(Clone, Copy, Debug)]
 pub struct SelinuxModule;
 
 /// Static capability metadata published via the `capabilities`/`plan` actions.
@@ -49,163 +48,91 @@ const INFO: ModuleInfo = ModuleInfo {
     ],
 };
 
-/// Payload for `set_boolean`.
-///
-/// `persistent` defaults to `true` because most callers want a change to
-/// survive reboot; opt out explicitly with `"persistent": false` for a
-/// runtime-only tweak (useful when validating a policy change before
-/// committing it).
-#[derive(Debug, Deserialize)]
-struct SetBooleanPayload {
-    name: String,
-    value: bool,
-    #[serde(default = "default_persistent")]
-    persistent: bool,
-    #[serde(default)]
-    dry_run: bool,
-}
-
-/// Payload for `add_file_context`.
-///
-/// `path_pattern` is passed verbatim to `semanage fcontext -a`. Unlike the
-/// shared `SelinuxOptions` flow used by other modules, this module does **not**
-/// auto-derive the `PATH(/.*)?` recursive form — the caller supplies the exact
-/// regex pattern semanage will store. This keeps the rule-adding action honest
-/// about what is being registered: callers may want `(/.*)?`, `/.+`, or a bare
-/// path with no recursion, and silently rewriting the pattern would hide that
-/// choice from the operator reading the audit log.
-#[derive(Debug, Deserialize)]
-struct FileContextPayload {
-    path_pattern: String,
-    context_type: String,
-    #[serde(default)]
-    dry_run: bool,
-}
-
-/// Payload for `delete_file_context`.
-///
-/// The pattern must match what was originally added, including any `(/.*)?`
-/// suffix — `semanage fcontext -d` deletes by exact pattern match.
-#[derive(Debug, Deserialize)]
-struct DeleteFileContextPayload {
-    path_pattern: String,
-    #[serde(default)]
-    dry_run: bool,
-}
-
-/// Payload for `restore_context` (`restorecon`).
-///
-/// `restorecon` walks the filesystem at `path` and relabels each entry to
-/// whatever the active policy — including any fcontext rules added via
-/// `add_file_context` — says it should be. It is the second half of the
-/// standard add-rule-then-relabel flow: registering an fcontext changes the
-/// policy, but existing inodes keep their old labels until `restorecon` runs.
-#[derive(Debug, Deserialize)]
-struct RestoreContextPayload {
-    path: String,
-    #[serde(default)]
-    recursive: bool,
-    #[serde(default)]
-    dry_run: bool,
-}
-
-/// Dispatches `selinux` actions to the underlying tools.
-///
-/// Read actions (`status`, `enforce`, `booleans`, `file_contexts`) always run
-/// the real tool even under `dry_run` — they have no side effects, and the
-/// parsed output is what the caller actually wants. Mutating actions
-/// (`set_boolean`, `add_file_context`, `delete_file_context`,
-/// `restore_context`) honor `dry_run` and short-circuit before exec.
-impl AgentModule for SelinuxModule {
+impl Mod for SelinuxModule {
     fn info(&self) -> ModuleInfo {
         INFO
     }
 
     fn handle(&self, action: &str, payload: Value, user: Option<&str>) -> Result<Value> {
-        // Standard metadata fast-path: `capabilities` and `plan` are answered
-        // from `INFO` without touching the system.
-        if let Some(response) = handle_metadata(INFO, action, &payload) {
-            return Ok(response);
-        }
-
-        match action {
-            "status" => {
-                let result = crate::cmd!({&INFO, action, user} "sestatus")?;
-                Ok(jsonf! {
-                    result.command, result.status, result.stdout, result.stderr, result.dry_run,
-                    "selinux": parse_sestatus(&result.stdout),
-                })
-            }
-            "enforce" => {
-                let result = crate::cmd!({&INFO, action, user} "getenforce")?;
-                Ok(jsonf! {
-                    result.command, result.status, result.stdout, result.stderr, result.dry_run,
-                    "mode": result.stdout.trim(),
-                })
-            }
-            "booleans" => {
-                let result = crate::cmd!({&INFO, action, user} "getsebool" ["-a"])?;
-                Ok(jsonf! {
-                    result.command, result.status, result.stdout, result.stderr, result.dry_run,
-                    "booleans": parse_getsebool(&result.stdout),
-                })
-            }
-            "set_boolean" => {
-                let payload: SetBooleanPayload = parse_payload(payload)?;
-                let mut args = Vec::new();
-                // -P persists the boolean to /etc/selinux/targeted/... so it
-                // survives reboot; without it the change lives only in the
-                // running policy and is lost on the next load.
-                if payload.persistent {
-                    args.push("-P".to_owned());
-                }
-                args.push(payload.name);
-                args.push(boolean_value(payload.value).to_owned());
-                crate::cmd!({&INFO, action, user} (payload.dry_run) "setsebool" &args ; json)
-            }
-            "file_contexts" => {
-                // `semanage fcontext -l` dumps every fcontext rule the policy
-                // knows about; `parse_semanage_fcontext` below turns the
-                // tabular output into structured JSON.
-                let result = crate::cmd!({&INFO, action, user} "semanage" ["fcontext", "-l"])?;
-                Ok(jsonf! {
-                    result.command, result.status, result.stdout, result.stderr, result.dry_run,
-                    "file_contexts": parse_semanage_fcontext(&result.stdout),
-                })
-            }
-            "add_file_context" => {
-                let payload: FileContextPayload = parse_payload(payload)?;
-                // The pattern is forwarded unchanged; the caller is
-                // responsible for the regex shape (e.g. `/srv(/.*)?`).
-                crate::cmd!((payload.dry_run){&INFO, action, user} "semanage" [
-                    "fcontext",
-                    "-a",
-                    "-t",
-                    &payload.context_type,
-                    &payload.path_pattern,
-                ] json)
-            }
-            "delete_file_context" => {
-                let payload: DeleteFileContextPayload = parse_payload(payload)?;
-                crate::cmd!((payload.dry_run){&INFO, action, user} "semanage" ["fcontext", "-d", &payload.path_pattern] json)
-            }
-            "restore_context" => {
-                let payload: RestoreContextPayload = parse_payload(payload)?;
-                let mut args = Vec::new();
-                if payload.recursive {
-                    args.push("-R".to_owned());
-                }
-                // -v is always on so the response stdout lists every relabeled
-                // path — that listing is what operators expect to audit a
-                // relabeling run against.
-                args.push("-v".to_owned());
-                args.push(payload.path);
-                crate::cmd!((payload.dry_run){&INFO, action, user} "restorecon" &args ; json)
-            }
-            _ => unsupported_action(INFO.name, action),
-        }
+        Action::from_payload(action, payload)?.handle(user)
     }
 }
+
+actions!(Action [payload user] => {
+    Status => {
+        let result = crate::cmd!({&INFO, "status", user} "sestatus")?;
+        Ok(jsonf! {
+            result.command, result.status, result.stdout, result.stderr, result.dry_run,
+            "selinux": parse_sestatus(&result.stdout),
+        })
+    },
+    Enforce => {
+        let result = crate::cmd!({&INFO, "enforce", user} "getenforce")?;
+        Ok(jsonf! {
+            result.command, result.status, result.stdout, result.stderr, result.dry_run,
+            "mode": result.stdout.trim(),
+        })
+    },
+    Booleans => {
+        let result = crate::cmd!({&INFO, "booleans", user} "getsebool" ["-a"])?;
+        Ok(jsonf! {
+            result.command, result.status, result.stdout, result.stderr, result.dry_run,
+            "booleans": parse_getsebool(&result.stdout),
+        })
+    },
+    SetBoolean {
+        name: String,
+        value: bool,
+        #[serde(default = "default_persistent")]
+        persistent: bool,
+        #[serde(default)]
+        dry_run: bool,
+    } => {
+        let mut args = Vec::new();
+        if payload.persistent {
+            args.push("-P".to_owned());
+        }
+        args.push(payload.name);
+        args.push(boolean_value(payload.value).to_owned());
+        crate::cmd!({&INFO, "set_boolean", user} (payload.dry_run) "setsebool" => &args ; json)
+    },
+    FileContexts => {
+        let result = crate::cmd!({&INFO, "file_contexts", user} "semanage" ["fcontext", "-l"])?;
+        Ok(jsonf! {
+            result.command, result.status, result.stdout, result.stderr, result.dry_run,
+            "file_contexts": parse_semanage_fcontext(&result.stdout),
+        })
+    },
+    AddFileContext {
+        path_pattern: String,
+        context_type: String,
+        #[serde(default)]
+        dry_run: bool,
+    } => crate::cmd!((payload.dry_run){&INFO, "add_file_context", user} "semanage" [
+        "fcontext",
+        "-a",
+        "-t",
+        &payload.context_type,
+        &payload.path_pattern,
+    ] json),
+    DeleteFileContext {
+        path_pattern: String,
+        #[serde(default)]
+        dry_run: bool,
+    } => crate::cmd!((payload.dry_run){&INFO, "delete_file_context", user} "semanage" ["fcontext", "-d", &payload.path_pattern] json),
+    RestoreContext {
+        path: String,
+        #[serde(default)]
+        recursive: bool,
+        #[serde(default)]
+        dry_run: bool,
+    } => {
+        let mut args = Vec::new();
+        args.extend(payload.recursive.then_some("-R"));
+        args.extend(["-v", &payload.path]);
+        crate::cmd!((payload.dry_run){&INFO, "restore_context", user} "restorecon" => &args ; json)
+    },
+});
 
 const fn default_persistent() -> bool {
     true
@@ -288,7 +215,6 @@ fn normalize_key(key: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::AgentModule;
 
     #[test]
     fn parses_sestatus_output() {
@@ -323,13 +249,14 @@ mod tests {
 
     #[test]
     fn dry_run_set_boolean_does_not_call_setsebool() {
-        let response = SelinuxModule
-            .handle(
-                "set_boolean",
-                jsonf! { "name": "virt_use_nfs", "value": true, "dry_run": true },
-                None,
-            )
-            .unwrap();
+        let response = SetBoolean {
+            name: "virt_use_nfs".into(),
+            value: true,
+            persistent: true,
+            dry_run: true,
+        }
+        .handle(None)
+        .unwrap();
 
         assert_eq!(response["command"], "setsebool -P virt_use_nfs on");
         assert_eq!(response["dry_run"], true);
@@ -338,15 +265,62 @@ mod tests {
 
     #[test]
     fn dry_run_restore_context_does_not_call_restorecon() {
-        let response = SelinuxModule
-            .handle(
-                "restore_context",
-                jsonf! { "path": "/srv/tetra", "recursive": true, "dry_run": true },
-                None,
-            )
-            .unwrap();
+        let response = RestoreContext {
+            path: "/srv/tetra".into(),
+            recursive: true,
+            dry_run: true,
+        }
+        .handle(None)
+        .unwrap();
 
         assert_eq!(response["command"], "restorecon -R -v /srv/tetra");
+        assert_eq!(response["dry_run"], true);
+        assert!(response["status"].is_null());
+    }
+
+    #[test]
+    fn status_parses_selinux_state() {
+        let response = Status.handle(None).unwrap();
+        assert!(response["selinux"].is_object());
+        assert!(response["command"].as_str().unwrap().contains("sestatus"));
+    }
+
+    #[test]
+    fn enforce_returns_current_mode() {
+        let response = Enforce.handle(None).unwrap();
+        assert!(response["mode"].is_string());
+        let mode = response["mode"].as_str().unwrap();
+        assert!(mode == "Enforcing" || mode == "Permissive" || mode == "Disabled");
+    }
+
+    #[test]
+    fn add_file_context_dry_run_previews_command() {
+        let response = AddFileContext {
+            path_pattern: "/srv/app(/.*)?".into(),
+            context_type: "container_file_t".into(),
+            dry_run: true,
+        }
+        .handle(None)
+        .unwrap();
+
+        assert_eq!(
+            response["command"],
+            "semanage fcontext -a -t container_file_t /srv/app(/.*)?"
+        );
+        assert_eq!(response["dry_run"], true);
+        assert!(response["status"].is_null());
+    }
+
+    #[test]
+    fn delete_file_context_dry_run_previews_command() {
+        let response = DeleteFileContext {
+            path_pattern: "/srv/app(/.*)?".into(),
+            dry_run: true,
+        }
+        .handle(None)
+        .unwrap();
+
+        assert_eq!(response["command"], "semanage fcontext -d /srv/app(/.*)?");
         assert_eq!(response["dry_run"], true);
         assert!(response["status"].is_null());
     }

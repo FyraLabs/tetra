@@ -15,7 +15,7 @@ use kameo::{
     message::{Context, Message},
 };
 
-use super::{AgentCommand, AgentResponse, Dispatcher, messages::DispatchCommand, modules};
+use super::{AgentCommand, AgentResponse, Dispatcher, messages::DispatchCommand};
 
 /// Kameo actor that owns the [`Dispatcher`] and handles [`DispatchCommand`]s.
 ///
@@ -38,14 +38,14 @@ impl AgentBackend {
     /// ([`modules::default_dispatcher`]).
     #[must_use]
     pub fn with_default_modules() -> Self {
-        Self::new(modules::default_dispatcher())
+        Self::new(Dispatcher::full())
     }
 
     /// Spawn an actor backed by the default module set and return a handle
     /// the caller can `ask` from any async task.
     #[must_use]
     pub fn spawn_default() -> ActorRef<Self> {
-        Self::spawn(modules::default_dispatcher())
+        Self::spawn(Dispatcher::full())
     }
 }
 

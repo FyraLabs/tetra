@@ -1,11 +1,7 @@
 //! Shared domain types used by Tetra's agent modules
 
-use std::{fs, path::PathBuf};
-
-use anyhow::{Context, Result};
-use serde::Deserialize;
-
 use crate::agent::module_support::SelinuxOptions;
+use crate::prelude::*;
 
 #[derive(Debug, Deserialize)]
 pub struct FileReadRequest {
@@ -169,7 +165,7 @@ impl SambaWriteConfigRequest {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ServiceScope {
     #[default]

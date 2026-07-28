@@ -134,7 +134,7 @@ mod tests {
                     id: "queued".into(),
                     module: "settings".into(),
                     action: "get_system".into(),
-                    payload: jsonf! {},
+                    payload: Value::Null,
                     signature: None,
                     user: None,
                 },
@@ -166,7 +166,7 @@ mod tests {
                 id: "queue-settings".into(),
                 module: "settings".into(),
                 action: "get_system".into(),
-                payload: jsonf! {},
+                payload: Value::Null,
                 signature: None,
                 user: None,
             })

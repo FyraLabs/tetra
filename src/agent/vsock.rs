@@ -12,7 +12,7 @@ use anyhow::{Result, bail};
 
 #[cfg(any(test, target_os = "linux"))]
 use super::AgentCommand;
-use super::{Dispatcher, modules};
+use super::Dispatcher;
 
 /// Configuration for the vsock agent smoke-test server (`agent-vsock-serve`).
 ///
@@ -37,10 +37,11 @@ impl VsockAgentConfig {
     /// the dependency set. Each connection runs on its own thread and dispatches
     /// through the shared [`Dispatcher`].
     pub fn serve(self) -> Result<()> {
-        self.serve_with_dispatcher(&Arc::new(modules::default_dispatcher()))
+        self.serve_with_dispatcher(&Arc::new(Dispatcher::full()))
     }
 
     #[cfg(not(target_os = "linux"))]
+    #[allow(clippy::unused_self)]
     fn serve_with_dispatcher(&self, _dispatcher: &Arc<Dispatcher>) -> Result<()> {
         bail!("agent-vsock-serve is only supported on Linux")
     }
@@ -145,14 +146,16 @@ mod tests {
 
     #[test]
     fn dispatches_one_command_text_frame() {
-        let dispatcher = modules::default_dispatcher();
+        let dispatcher = Dispatcher::full();
         let response_text = dispatch_command_text(
             &dispatcher,
-            r#"{"id":"cmd-1","module":"settings","action":"get_system","payload":{}}"#,
+            r#"{"id":"cmd-1","module":"settings","action":"get_system","payload":null}"#,
             1024,
         )
         .unwrap();
         let response: serde_json::Value = serde_json::from_str(&response_text).unwrap();
+
+        println!("{response}");
 
         assert_eq!(response["id"], "cmd-1");
         assert_eq!(response["ok"], true);
@@ -161,7 +164,7 @@ mod tests {
 
     #[test]
     fn rejects_oversized_command_text() {
-        let dispatcher = modules::default_dispatcher();
+        let dispatcher = Dispatcher::full();
         let error = dispatch_command_text(&dispatcher, &json!({ "id": "x" }).to_string(), 1)
             .unwrap_err()
             .to_string();

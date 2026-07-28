@@ -106,7 +106,7 @@ impl WebSocketServerConfig {
                 self.listen
             )
         })?;
-        let dispatcher = super::modules::default_dispatcher();
+        let dispatcher = crate::agent::Dispatcher::full();
         let privileged_actions = build_privilege_map(&dispatcher);
         let queue = DispatchQueue::spawn(AgentBackend::spawn(dispatcher), DEFAULT_QUEUE_CAPACITY);
 
@@ -618,7 +618,6 @@ mod tests {
     };
     use ed25519_dalek::SigningKey;
     use futures_util::{SinkExt, StreamExt};
-    use serde_json::json;
     use tempfile::tempdir;
     use tokio::net::TcpStream;
     use tokio_tungstenite::connect_async;
@@ -787,7 +786,7 @@ mod tests {
             id: "cmd-settings".into(),
             module: "settings".into(),
             action: "get_system".into(),
-            payload: json!({}),
+            payload: serde_json::Value::Null,
             signature: None,
             user: None,
         };
