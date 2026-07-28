@@ -106,7 +106,7 @@ impl WebSocketServerConfig {
                 self.listen
             )
         })?;
-        let dispatcher = super::modules::default_dispatcher();
+        let dispatcher = crate::agent::Dispatcher::full();
         let privileged_actions = build_privilege_map(&dispatcher);
         let queue = DispatchQueue::spawn(AgentBackend::spawn(dispatcher), DEFAULT_QUEUE_CAPACITY);
 

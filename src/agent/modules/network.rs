@@ -17,12 +17,11 @@
 
 use crate::prelude::*;
 
-use crate::agent::module_support::{
-    SelinuxOptions, apply_selinux, handle_metadata, parse_payload, unsupported_action,
-};
+use crate::agent::module_support::{SelinuxOptions, apply_selinux};
 
 /// Marker type for the network module. Stateless; all behavior lives in the
-/// [`AgentModule`] impl and the static [`INFO`] descriptor.
+/// [`Mod`] impl and the static [`INFO`] descriptor.
+#[derive(Clone, Copy, Debug)]
 pub struct NetworkModule;
 
 const INFO: ModuleInfo = ModuleInfo {
@@ -42,103 +41,59 @@ const INFO: ModuleInfo = ModuleInfo {
     privileged_actions: &["set_config", "reload"],
 };
 
-/// Payload for `status`; the optional interface name narrows `ip addr show`
-/// to a single device via `dev <name>`. Omitting it lists all interfaces.
-#[derive(Debug, Deserialize)]
-struct InterfacePayload {
-    interface: Option<String>,
-}
-
-/// Payload for `get_config`: the keyfile path to read (typically under
-/// `/etc/NetworkManager/system-connections/`).
-#[derive(Debug, Deserialize)]
-struct ConfigPayload {
-    path: PathBuf,
-}
-
-/// Payload for `set_config`: writes `contents` to the keyfile at `path`. The
-/// `selinux` option relabels the file after the write; `dry_run` skips both.
-#[derive(Debug, Deserialize)]
-struct SetConfigPayload {
-    path: PathBuf,
-    contents: String,
-    #[serde(default)]
-    dry_run: bool,
-    #[serde(default)]
-    selinux: Option<SelinuxOptions>,
-}
-
-/// Payload for `reload`: only carries the standard `dry_run` flag, since the
-/// reload target (NetworkManager.service) is fixed.
-#[derive(Debug, Deserialize)]
-struct DryRunPayload {
-    #[serde(default)]
-    dry_run: bool,
-}
-
-impl AgentModule for NetworkModule {
+impl Mod for NetworkModule {
     fn info(&self) -> ModuleInfo {
         INFO
     }
 
     fn handle(&self, action: &str, payload: Value, user: Option<&str>) -> Result<Value> {
-        // Delegate `capabilities`/`plan` to the shared metadata handler first.
-        if let Some(response) = handle_metadata(INFO, action, &payload) {
-            return Ok(response);
-        }
-
-        match action {
-            // Sysfs-based snapshot of present interfaces. `unwrap_or_default`
-            // keeps the action resilient: a transient read failure yields an
-            // empty list rather than a 500 to the control plane.
-            "interfaces" => Ok(jsonf! { "interfaces": read_interfaces().unwrap_or_default() }),
-            "status" => {
-                let payload: InterfacePayload = parse_payload(payload)?;
-                // `ip -json addr show` returns structured JSON we can pass
-                // through verbatim; an optional `dev <name>` narrows the scope.
-                let mut args = vec!["-json".to_owned(), "addr".to_owned(), "show".to_owned()];
-                if let Some(interface) = payload.interface {
-                    args.push("dev".into());
-                    args.push(interface);
-                }
-                crate::cmd!({ &INFO, action, user } "ip" => &args ; JSON)
-            }
-            "get_config" => {
-                let payload: ConfigPayload = parse_payload(payload)?;
-                let contents = fs::read_to_string(&payload.path)
-                    .with_context(|| format!("failed to read `{}`", payload.path.display()))?;
-                Ok(jsonf! { payload.path, contents })
-            }
-            "set_config" => {
-                let payload: SetConfigPayload = parse_payload(payload)?;
-                // Only touch the filesystem outside dry-run; SELinux planning
-                // below still runs so the response previews the relabel.
-                if !payload.dry_run {
-                    fs::write(&payload.path, payload.contents)
-                        .with_context(|| format!("failed to write `{}`", payload.path.display()))?;
-                }
-                let selinux = apply_selinux(
-                    payload.selinux.as_ref(),
-                    Some(&payload.path),
-                    payload.dry_run,
-                )?;
-                Ok(jsonf! {
-                    payload.path,
-                    "written": !payload.dry_run,
-                    payload.dry_run,
-                    selinux,
-                })
-            }
-            "reload" => {
-                let payload: DryRunPayload = parse_payload(payload)?;
-                // `reload-or-restart` applies new keyfiles without dropping
-                // active connections when possible, falling back to a restart.
-                crate::cmd!((payload.dry_run) { &INFO, action, user } "systemctl" ["reload-or-restart", "NetworkManager.service"] ; json)
-            }
-            _ => unsupported_action(INFO.name, action),
-        }
+        Action::from_payload(action, payload)?.handle(user)
     }
 }
+
+actions!(Action [self user] => {
+    Interfaces => {
+        Ok(jsonf! { "interfaces": read_interfaces().unwrap_or_default() })
+    },
+    Status { interface: Option<String> } => {
+        let mut args = vec!["-json".to_owned(), "addr".to_owned(), "show".to_owned()];
+        if let Some(interface) = self.interface {
+            args.push("dev".into());
+            args.push(interface);
+        }
+        crate::cmd!({ &INFO, "status", user } "ip" => &args ; JSON)
+    },
+    GetConfig { path: PathBuf } => {
+        let contents = fs::read_to_string(&self.path)
+            .with_context(|| format!("failed to read `{}`", self.path.display()))?;
+        Ok(jsonf! { self.path, contents })
+    },
+    SetConfig {
+        path: PathBuf,
+        contents: String,
+        #[serde(default)]
+        dry_run: bool,
+        #[serde(default)]
+        selinux: Option<SelinuxOptions>,
+    } => {
+        if !self.dry_run {
+            fs::write(&self.path, self.contents)
+                .with_context(|| format!("failed to write `{}`", self.path.display()))?;
+        }
+        let selinux = apply_selinux(
+            self.selinux.as_ref(),
+            Some(&self.path),
+            self.dry_run,
+        )?;
+        Ok(jsonf! { self.path, "written": !self.dry_run, self.dry_run, selinux })
+    },
+    Reload {
+        #[serde(default)]
+        dry_run: bool,
+    } => {
+        crate::cmd!((self.dry_run) { &INFO, "reload", user } "systemctl" ["reload-or-restart", "NetworkManager.service"] ; json)
+    }
+});
 
 /// Reads the live interface list from `/sys/class/net` sysfs.
 ///
@@ -169,8 +124,6 @@ fn read_interfaces() -> Result<Vec<Value>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::AgentModule;
-    use serde_json::json;
 
     #[test]
     fn dry_run_set_config_does_not_write() {
@@ -178,23 +131,17 @@ mod tests {
         let path = dir.path().join("connection.nmconnection");
         fs::write(&path, "[connection]\nid=old\n").unwrap();
 
-        let response = NetworkModule
-            .handle(
-                "set_config",
-                json!({
-                    "path": path,
-                    "contents": "[connection]\nid=new\n",
-                    "dry_run": true
-                }),
-                None,
-            )
-            .unwrap();
+        let response = SetConfig {
+            path: path.clone(),
+            contents: "[connection]\nid=new\n".into(),
+            dry_run: true,
+            selinux: None,
+        }
+        .handle(None)
+        .unwrap();
 
         assert_eq!(response["written"], false);
-        assert_eq!(
-            fs::read_to_string(dir.path().join("connection.nmconnection")).unwrap(),
-            "[connection]\nid=old\n"
-        );
+        assert_eq!(fs::read_to_string(path).unwrap(), "[connection]\nid=old\n");
     }
 
     #[test]
@@ -202,20 +149,17 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("connection.nmconnection");
 
-        let response = NetworkModule
-            .handle(
-                "set_config",
-                json!({
-                    "path": path,
-                    "contents": "[connection]\nid=new\n",
-                    "dry_run": true,
-                    "selinux": {
-                        "context_type": "NetworkManager_etc_t"
-                    }
-                }),
-                None,
-            )
-            .unwrap();
+        let response = SetConfig {
+            path: path.clone(),
+            contents: "[connection]\nid=new\n".into(),
+            dry_run: true,
+            selinux: Some(SelinuxOptions {
+                context_type: Some("NetworkManager_etc_t".into()),
+                ..SelinuxOptions::default()
+            }),
+        }
+        .handle(None)
+        .unwrap();
 
         assert_eq!(response["selinux"].as_array().unwrap().len(), 2);
         assert!(
@@ -224,5 +168,12 @@ mod tests {
                 .unwrap()
                 .contains("semanage fcontext -a -t NetworkManager_etc_t")
         );
+    }
+
+    #[test]
+    fn reload_dry_run_does_not_restart_service() {
+        let response = Reload { dry_run: true }.handle(None).unwrap();
+        assert_eq!(response["dry_run"], true);
+        assert!(response["status"].is_null());
     }
 }

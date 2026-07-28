@@ -13,17 +13,13 @@
 use anyhow::Result;
 use itertools::Itertools;
 use serde::Deserialize;
-use serde_json::{Value, json};
+use serde_json::Value;
 
-use crate::agent::{
-    AgentModule,
-    module_support::{
-        ModuleInfo, ModuleStatus, handle_metadata, parse_payload, unsupported_action,
-    },
-};
+use crate::prelude::*;
 
 /// Marker type for the services module. Stateless; all behavior lives in the
-/// [`AgentModule`] impl and the static [`INFO`] descriptor.
+/// [`Mod`] impl and the static [`INFO`] descriptor.
+#[derive(Clone, Copy, Debug)]
 pub struct ServicesModule;
 
 const INFO: ModuleInfo = ModuleInfo {
@@ -54,38 +50,6 @@ const INFO: ModuleInfo = ModuleInfo {
     ],
 };
 
-/// Payload for `logs`: which service journal to read, in which scope, and how
-/// many trailing lines to return (defaults to 100).
-#[derive(Debug, Deserialize)]
-struct LogsPayload {
-    service: String,
-    #[serde(default)]
-    scope: ServiceScope,
-    #[serde(default = "default_log_lines")]
-    lines: u16,
-}
-
-/// Payload for `daemon_reload`. Unlike other mutations it carries no service
-/// name, since `daemon-reload` operates on the whole unit file tree.
-#[derive(Debug, Deserialize)]
-struct DaemonReloadPayload {
-    #[serde(default)]
-    scope: ServiceScope,
-    #[serde(default)]
-    dry_run: bool,
-}
-
-/// Payload for the single-service actions (`status`, `start`, `stop`,
-/// `restart`, `enable`, `disable`).
-#[derive(Debug, Deserialize)]
-struct ServicePayload {
-    service: String,
-    #[serde(default)]
-    scope: ServiceScope,
-    #[serde(default)]
-    dry_run: bool,
-}
-
 /// Selects the systemd instance to talk to. `System` (the default) targets the
 /// PID 1 system manager; `User` targets the requesting user's systemd, which we
 /// request by prepending `--user` to every `systemctl`/`journalctl` call.
@@ -98,84 +62,126 @@ enum ServiceScope {
     User,
 }
 
-impl AgentModule for ServicesModule {
+impl Mod for ServicesModule {
     fn info(&self) -> ModuleInfo {
         INFO
     }
 
     fn handle(&self, action: &str, payload: Value, user: Option<&str>) -> Result<Value> {
-        // Delegate `capabilities`/`plan` to the shared metadata handler first.
-        if let Some(response) = handle_metadata(INFO, action, &payload) {
-            return Ok(response);
-        }
-
-        match action {
-            // `list-units` is a read, so it is never dry-run. The flags below
-            // ask systemctl for machine-friendly output: `--plain` disables
-            // column alignment/headers, `--legend=false` drops the summary
-            // footer, and `--no-pager` avoids interactive pagers. We still
-            // return the raw stdout alongside the parsed `services` array so a
-            // controller can fall back to the verbatim table if needed.
-            "list" => {
-                let result = crate::cmd!({ &INFO, action, user } "systemctl" [
-                    "--no-pager",
-                    "--plain",
-                    "--legend=false",
-                    "list-units",
-                    "--type=service",
-                    "--all",
-                ])?;
-                Ok(json!({
-                    "command": result.command,
-                    "status": result.status,
-                    "stdout": result.stdout,
-                    "stderr": result.stderr,
-                    "dry_run": result.dry_run,
-                    "services": parse_systemctl_services(&result.stdout),
-                }))
-            }
-            "status" => {
-                let payload: ServicePayload = parse_payload(payload)?;
-                let args = systemctl_args(
-                    payload.scope,
-                    ["--no-pager", "--plain", "status", &payload.service],
-                );
-                crate::cmd!({ &INFO, action, user } "systemctl" => &args ; json)
-            }
-            "logs" => {
-                let payload: LogsPayload = parse_payload(payload)?;
-                // `journalctl -u <unit>` follows the unit's journal across
-                // whatever files it spans; `-n` caps the tail to keep payloads
-                // bounded. `logs` is a read and therefore never dry-run.
-                crate::cmd!({ &INFO, action, user } "journalctl" => &journalctl_args(
-                    payload.scope,
-                    [
-                        "--no-pager",
-                        "-u",
-                        &payload.service,
-                        "-n",
-                        &payload.lines.to_string(),
-                    ],
-                ); json)
-            }
-            "daemon_reload" => {
-                let payload: DaemonReloadPayload = parse_payload(payload)?;
-                let args = systemctl_args(payload.scope, ["daemon-reload"]);
-                crate::cmd!((payload.dry_run) { &INFO, action, user } "systemctl" => &args ; json)
-            }
-            // The five single-service mutations share one arm because their
-            // `systemctl` invocation has identical shape: `systemctl <action>
-            // <service>`. The `action` string is already a valid systemctl
-            // subcommand, which is why it can be forwarded directly.
-            "start" | "stop" | "restart" | "enable" | "disable" => {
-                let payload: ServicePayload = parse_payload(payload)?;
-                let args = systemctl_args(payload.scope, [action, &payload.service]);
-                crate::cmd!((payload.dry_run) { &INFO, action, user } "systemctl" => &args ; json)
-            }
-            _ => unsupported_action(INFO.name, action),
-        }
+        Action::from_payload(action, payload)?.handle(user)
     }
 }
+
+actions!(Action [self user] => {
+    List => {
+        let result = crate::cmd!({ &INFO, "list", user } "systemctl" [
+            "--no-pager",
+            "--plain",
+            "--legend=false",
+            "list-units",
+            "--type=service",
+            "--all",
+        ])?;
+        Ok(jsonf! {
+            "command": result.command,
+            "status": result.status,
+            "stdout": result.stdout,
+            "stderr": result.stderr,
+            "dry_run": result.dry_run,
+            "services": parse_systemctl_services(&result.stdout),
+        })
+    },
+    Status {
+        service: String,
+        #[serde(default)]
+        scope: ServiceScope,
+        #[serde(default)]
+        dry_run: bool,
+    } => {
+        let args = systemctl_args(
+            self.scope,
+            ["--no-pager", "--plain", "status", &self.service],
+        );
+        crate::cmd!({ &INFO, "status", user } "systemctl" => &args ; json)
+    },
+    Logs {
+        service: String,
+        #[serde(default)]
+        scope: ServiceScope,
+        #[serde(default = "default_log_lines")]
+        lines: u16,
+    } => {
+        crate::cmd!({ &INFO, "logs", user } "journalctl" => &journalctl_args(
+            self.scope,
+            [
+                "--no-pager",
+                "-u",
+                &self.service,
+                "-n",
+                &self.lines.to_string(),
+            ],
+        ); json)
+    },
+    DaemonReload {
+        #[serde(default)]
+        scope: ServiceScope,
+        #[serde(default)]
+        dry_run: bool,
+    } => {
+        let args = systemctl_args(self.scope, ["daemon-reload"]);
+        crate::cmd!((self.dry_run) { &INFO, "daemon_reload", user } "systemctl" => &args ; json)
+    },
+    Start {
+        service: String,
+        #[serde(default)]
+        scope: ServiceScope,
+        #[serde(default)]
+        dry_run: bool,
+    } => {
+        let args = systemctl_args(self.scope, ["start", &self.service]);
+        crate::cmd!((self.dry_run) { &INFO, "start", user } "systemctl" => &args ; json)
+    },
+    Stop {
+        service: String,
+        #[serde(default)]
+        scope: ServiceScope,
+        #[serde(default)]
+        dry_run: bool,
+    } => {
+        let args = systemctl_args(self.scope, ["stop", &self.service]);
+        crate::cmd!((self.dry_run) { &INFO, "stop", user } "systemctl" => &args ; json)
+    },
+    Restart {
+        service: String,
+        #[serde(default)]
+        scope: ServiceScope,
+        #[serde(default)]
+        dry_run: bool,
+    } => {
+        let args = systemctl_args(self.scope, ["restart", &self.service]);
+        crate::cmd!((self.dry_run) { &INFO, "restart", user } "systemctl" => &args ; json)
+    },
+    Enable {
+        service: String,
+        #[serde(default)]
+        scope: ServiceScope,
+        #[serde(default)]
+        dry_run: bool,
+    } => {
+        let args = systemctl_args(self.scope, ["enable", &self.service]);
+        crate::cmd!((self.dry_run) { &INFO, "enable", user } "systemctl" => &args ; json)
+    },
+    Disable {
+        service: String,
+        #[serde(default)]
+        scope: ServiceScope,
+        #[serde(default)]
+        dry_run: bool,
+    } => {
+        let args = systemctl_args(self.scope, ["disable", &self.service]);
+        crate::cmd!((self.dry_run) { &INFO, "disable", user } "systemctl" => &args ; json)
+    },
+});
 
 /// Prepends `--user` to a `systemctl` argument list when talking to the
 /// per-user systemd instance; system scope is the default and needs no flag.
@@ -225,13 +231,13 @@ fn parse_systemctl_services(stdout: &str) -> Vec<Value> {
         .filter_map(|line| {
             let mut it = line.split_whitespace();
             let (unit, load, active, sub) = it.next_tuple()?;
-            Some(json!({
-                "unit": unit,
-                "load": load,
-                "active": active,
-                "sub": sub,
+            Some(jsonf! {
+                unit,
+                load,
+                active,
+                sub,
                 "description": it.join(" "),
-            }))
+            })
         })
         .collect()
 }
@@ -239,7 +245,6 @@ fn parse_systemctl_services(stdout: &str) -> Vec<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::AgentModule;
 
     #[test]
     fn parses_systemctl_service_rows() {
@@ -252,13 +257,13 @@ mod tests {
 
     #[test]
     fn dry_run_start_does_not_call_systemctl() {
-        let response = ServicesModule
-            .handle(
-                "start",
-                json!({ "service": "sshd.service", "dry_run": true }),
-                None,
-            )
-            .unwrap();
+        let response = Start {
+            service: "sshd.service".into(),
+            scope: ServiceScope::System,
+            dry_run: true,
+        }
+        .handle(None)
+        .unwrap();
 
         assert_eq!(response["command"], "systemctl start sshd.service");
         assert_eq!(response["dry_run"], true);
@@ -267,9 +272,12 @@ mod tests {
 
     #[test]
     fn daemon_reload_supports_dry_run() {
-        let response = ServicesModule
-            .handle("daemon_reload", json!({ "dry_run": true }), None)
-            .unwrap();
+        let response = DaemonReload {
+            scope: ServiceScope::System,
+            dry_run: true,
+        }
+        .handle(None)
+        .unwrap();
 
         assert_eq!(response["command"], "systemctl daemon-reload");
         assert_eq!(response["dry_run"], true);
@@ -278,13 +286,13 @@ mod tests {
 
     #[test]
     fn user_scope_adds_systemctl_user_flag() {
-        let response = ServicesModule
-            .handle(
-                "start",
-                json!({ "service": "tetra-demo.service", "scope": "user", "dry_run": true }),
-                None,
-            )
-            .unwrap();
+        let response = Start {
+            service: "tetra-demo.service".into(),
+            scope: ServiceScope::User,
+            dry_run: true,
+        }
+        .handle(None)
+        .unwrap();
 
         assert_eq!(
             response["command"],

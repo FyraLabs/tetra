@@ -1,0 +1,166 @@
+// `settings` is always compiled — it provides the always-available `get_system`
+// action that other modules and the dashboard rely on for host identification.
+pub mod settings;
+pub use crate::prelude::*;
+pub use settings::SettingsModule;
+
+macro_rules! modules {
+    ($($m:ident),+$(,)?) => { ::preinterpret::preinterpret! {
+        $(
+            #[cfg(feature = [!kebab! $m])]
+            pub mod $m;
+            #[cfg(feature = [!kebab! $m])]
+            pub use $m::[!ident_camel! $m Module];
+        )+
+        pub const MODULES: phf::Map<&'static str, Module> = ::phf::phf_map! {
+            "settings" => Module::SettingsModule(SettingsModule),
+            $(
+                #[cfg(feature = [!kebab! $m])]
+                [!string! $m] => Module::[!ident_camel! $m Module]([!ident_camel! $m Module]),
+            )+
+        };
+        #[enum_dispatch::enum_dispatch]
+        #[derive(Clone, Debug)]
+        pub enum Module {
+            SettingsModule,
+            $(
+                #[cfg(feature = [!kebab! $m])]
+                [!ident_camel! $m Module],
+            )+
+        }
+    } }
+}
+
+modules![
+    files,
+    network,
+    nfs,
+    podman,
+    quadlets,
+    recipes,
+    reverse_proxy,
+    samba,
+    selinux,
+    services,
+    storage,
+    users,
+    virtual_machines,
+];
+
+/// A single host-management surface exposed to the dashboard.
+///
+/// Each module owns one slice of host state (settings, files, services,
+/// quadlets, …). The [`Dispatcher`] looks up a module by name and hands the
+/// command's `action` and `payload` to its `handle` method.
+///
+/// Modules are stateless: `handle` takes `&self`, so the same module can be
+/// invoked concurrently from multiple transport tasks. State lives in the
+/// host (systemd, the filesystem, etc.), not in the module.
+#[allow(clippy::missing_errors_doc)]
+#[enum_dispatch::enum_dispatch(Module)]
+pub trait Mod: Send + Sync {
+    /// Static metadata describing this module to the dashboard: name, feature
+    /// flag, description, status, and the actions it supports.
+    fn info(&self) -> ModuleInfo;
+
+    /// Convenience defaulting `name` to the name in [`info`](Self::info).
+    /// Overridable in case a module wants to register under an alias without
+    /// changing its reported metadata.
+    fn name(&self) -> &'static str {
+        self.info().name
+    }
+
+    /// Handle one action.
+    ///
+    /// - `action` is the command's `action` field
+    /// - `payload` is the command's `payload` (already parsed from JSON by the transport)
+    fn handle(&self, action: &str, payload: Value, user: Option<&str>) -> Result<Value>;
+}
+
+impl Module {
+    fn dispatch(
+        AgentCommand {
+            module,
+            action,
+            payload,
+            user,
+            ..
+        }: AgentCommand,
+    ) -> Result<Value> {
+        let Some(module) = MODULES.get(&module) else {
+            bail!("unsupported {module} action `{action}`");
+        };
+        module.handle(&action, payload, user.as_deref())
+    }
+}
+
+pub trait Act: Deserialize<'static> {
+    // fn is_priviledged(&self) -> bool;
+    fn handle(self, user: Option<&str>) -> Result<Value>;
+}
+
+#[macro_export]
+macro_rules! actions {
+    ($Action:ident [$self:ident $user:ident] => {$($inner:tt)*}) => {
+        $crate::actions!(@[$self $user $Action]{$($inner)*,}[]);
+    };
+    (@[$self:ident $user:ident $Action:ident]{$a:ident {$($struct:tt)*} => $body:expr, $($rest:tt)*}[$($done:ident)*]) => {
+        #[derive(Debug, ::serde::Deserialize)]
+        struct $a {$($struct)*}
+        impl $crate::prelude::Act for $a {
+            // fn is_priviledged(&self) -> bool { false }
+            fn handle($self, user: Option<&str>) -> Result<Value> {
+                #[allow(unused_variables)]
+                let $user = user;
+                $body
+            }
+        }
+        $crate::actions!(@[$self $user $Action]{$($rest)*}[$($done)* $a]);
+    };
+    (@[$self:ident $user:ident $Action:ident]{$a:ident => $body:expr, $($rest:tt)*}[$($done:ident)*]) => {
+        #[derive(Debug, ::serde::Deserialize)]
+        struct $a;
+        impl $crate::prelude::Act for $a {
+            // fn is_priviledged(&self) -> bool { false }
+            fn handle($self, user: Option<&str>) -> Result<Value> {
+                #[allow(unused_variables)]
+                let $user = user;
+                $body
+            }
+        }
+        $crate::actions!(@[$self $user $Action]{$($rest)*}[$($done)* $a]);
+    };
+    // (@[$self:ident $user:ident $Action:ident]{*$a:ident {$($struct:tt)*} => $body:expr, $($rest:tt)*}[$($done:ident)*]) => {
+    //     #[derive(Debug, ::serde::Deserialize)]
+    //     struct $a {$($struct)*}
+    //     impl $crate::prelude::Act for $a {
+    //         fn is_priviledged(&self) -> bool { true }
+    //         fn handle($self, user: Option<&str>) -> Result<Value> {
+    //             #[allow(unused_variables)]
+    //             let $user = user;
+    //             $body
+    //         }
+    //     }
+    //     $crate::actions!(@[$self $user $Action]{$($rest)*}[$($done)* $a]);
+    // };
+    (@[$self:ident $user:ident $Action:ident]{$(,)?}[$($done:ident)*]) => { ::preinterpret::preinterpret! {
+        #[derive(Debug, ::serde::Deserialize)]
+        #[serde(rename_all = "snake_case")]
+        enum $Action { $( $done($done), )* }
+        impl $crate::prelude::Act for $Action {
+            // fn is_priviledged(&self) -> bool { match self {
+            //     $( Self::$done(a) => a.is_priviledged(), )*
+            // }}
+            fn handle(self, user: Option<&str>) -> Result<::serde_json::Value> { match self {
+                $( Self::$done(a) => a.handle(user), )*
+            }}
+        }
+        impl $Action {
+            fn from_payload(action: &str, payload: Value) -> Result<impl Act> {
+                let act = ::serde_json::Value::Object([(action.into(), payload)].into_iter().collect());
+                let act: $Action = ::serde_json::from_value(act)?;
+                Ok(act)
+            }
+        }
+    } };
+}

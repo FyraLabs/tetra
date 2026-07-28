@@ -15,19 +15,11 @@
 //! `list` and `status` additionally parse virsh's text output into stable
 //! `domains` / `domain` JSON fields so callers do not have to.
 
-use anyhow::Result;
-use serde::Deserialize;
-use serde_json::{Value, json};
-
-use crate::agent::{
-    AgentModule,
-    module_support::{
-        ModuleInfo, ModuleStatus, NamedPayload, handle_metadata, parse_payload, unsupported_action,
-    },
-};
+use crate::prelude::*;
 
 /// Marker type for the `virtual_machines` module. Stateless; all behavior lives
-/// in the [`AgentModule`] impl and the static [`INFO`] descriptor.
+/// in the [`Mod`] impl and the static [`INFO`] descriptor.
+#[derive(Clone, Copy, Debug)]
 pub struct VirtualMachinesModule;
 
 const INFO: ModuleInfo = ModuleInfo {
@@ -50,109 +42,77 @@ const INFO: ModuleInfo = ModuleInfo {
     privileged_actions: &["start", "stop", "restart", "create", "delete"],
 };
 
-/// Payload for `create`: a path to a libvirt domain XML file to register with
-/// `virsh define`. The XML is not sent inline because it can be large and is
-/// usually already present on the host (e.g. rendered by the recipes module).
-#[derive(Debug, Deserialize)]
-struct CreatePayload {
-    xml_path: String,
-    #[serde(default)]
-    dry_run: bool,
-}
-
-/// Payload for `logs`: only the trailing line count (defaults to 100). The
-/// journal source is fixed to `libvirtd.service`.
-#[derive(Debug, Deserialize)]
-struct LogsPayload {
-    #[serde(default = "default_log_lines")]
-    lines: u16,
-}
-
-impl AgentModule for VirtualMachinesModule {
+impl Mod for VirtualMachinesModule {
     fn info(&self) -> ModuleInfo {
         INFO
     }
 
     fn handle(&self, action: &str, payload: Value, user: Option<&str>) -> Result<Value> {
-        // Delegate `capabilities`/`plan` to the shared metadata handler first.
-        if let Some(response) = handle_metadata(INFO, action, &payload) {
-            return Ok(response);
-        }
-
-        match action {
-            // `list --all` includes powered-off domains, not just running ones.
-            // `list` is a read and therefore never dry-run.
-            "list" => {
-                let result = crate::cmd!({ &INFO, action, user } "virsh" ["list", "--all"])?;
-                let domains = parse_virsh_list(&result.stdout);
-                Ok(json!({
-                    "command": result.command,
-                    "status": result.status,
-                    "stdout": result.stdout,
-                    "stderr": result.stderr,
-                    "dry_run": result.dry_run,
-                    "domains": domains,
-                }))
-            }
-            // `dominfo` prints `Key: Value` lines; `parse_virsh_dominfo`
-            // collapses them into a single JSON object under `domain`.
-            "status" => {
-                let payload: NamedPayload = parse_payload(payload)?;
-                let result =
-                    crate::cmd!({ &INFO, action, user } "virsh" ["dominfo", &payload.name])?;
-                let info = parse_virsh_dominfo(&result.stdout);
-                Ok(json!({
-                    "command": result.command,
-                    "status": result.status,
-                    "stdout": result.stdout,
-                    "stderr": result.stderr,
-                    "dry_run": result.dry_run,
-                    "domain": info,
-                }))
-            }
-            "logs" => {
-                let payload: LogsPayload = parse_payload(payload)?;
-                // Logs come from the libvirtd unit journal, not `virsh`, since
-                // virsh itself does not expose host-side daemon logs.
-                crate::cmd!({ &INFO, action, user } "journalctl" [
-                    "--no-pager",
-                    "-u",
-                    "libvirtd.service",
-                    "-n",
-                    &payload.lines.to_string()
-                ] json)
-            }
-            "start" => {
-                let payload: NamedPayload = parse_payload(payload)?;
-                crate::cmd!((payload.dry_run) { &INFO, action, user } "virsh" ["start", &payload.name] json)
-            }
-            // `stop` uses `shutdown` for a graceful guest-initiated shutdown
-            // rather than `destroy` (hard power-off).
-            "stop" => {
-                let payload: NamedPayload = parse_payload(payload)?;
-                crate::cmd!((payload.dry_run) { &INFO, action, user } "virsh" ["shutdown", &payload.name] json)
-            }
-            // `restart` uses `reboot`, the guest-graceful equivalent.
-            "restart" => {
-                let payload: NamedPayload = parse_payload(payload)?;
-                crate::cmd!((payload.dry_run) { &INFO, action, user } "virsh" ["reboot", &payload.name] json)
-            }
-            // `create` maps to `define`: register a persistent domain from the
-            // given XML file. See the module docs for why we avoid `virsh create`.
-            "create" => {
-                let payload: CreatePayload = parse_payload(payload)?;
-                crate::cmd!((payload.dry_run) { &INFO, action, user } "virsh" ["define", &payload.xml_path] json)
-            }
-            // `delete` maps to `undefine`: remove the domain registration. It
-            // does not delete disk images by default.
-            "delete" => {
-                let payload: NamedPayload = parse_payload(payload)?;
-                crate::cmd!((payload.dry_run) { &INFO, action, user } "virsh" ["undefine", &payload.name] json)
-            }
-            _ => unsupported_action(INFO.name, action),
-        }
+        Action::from_payload(action, payload)?.handle(user)
     }
 }
+
+actions!(Action [self user] => {
+    List => {
+        let result = crate::cmd!({ &INFO, "list", user } "virsh" ["list", "--all"])?;
+        let domains = parse_virsh_list(&result.stdout);
+        Ok(jsonf! {
+            "command": result.command,
+            "status": result.status,
+            "stdout": result.stdout,
+            "stderr": result.stderr,
+            "dry_run": result.dry_run,
+            domains,
+        })
+    },
+    Status { name: String } => {
+        let result = crate::cmd!({ &INFO, "status", user } "virsh" ["dominfo", &self.name])?;
+        let info = parse_virsh_dominfo(&result.stdout);
+        Ok(jsonf! {
+            "command": result.command,
+            "status": result.status,
+            "stdout": result.stdout,
+            "stderr": result.stderr,
+            "dry_run": result.dry_run,
+            "domain": info,
+        })
+    },
+    Logs {
+        #[serde(default = "default_log_lines")]
+        lines: u16,
+    } => crate::cmd!({ &INFO, "logs", user } "journalctl" [
+        "--no-pager",
+        "-u",
+        "libvirtd.service",
+        "-n",
+        &self.lines.to_string()
+    ] ; json),
+    Start {
+        name: String,
+        #[serde(default)]
+        dry_run: bool,
+    } => crate::cmd!((self.dry_run) { &INFO, "start", user } "virsh" ["start", &self.name] ; json),
+    Stop {
+        name: String,
+        #[serde(default)]
+        dry_run: bool,
+    } => crate::cmd!((self.dry_run) { &INFO, "stop", user } "virsh" ["shutdown", &self.name] ; json),
+    Restart {
+        name: String,
+        #[serde(default)]
+        dry_run: bool,
+    } => crate::cmd!((self.dry_run) { &INFO, "restart", user } "virsh" ["reboot", &self.name] ; json),
+    Create {
+        xml_path: String,
+        #[serde(default)]
+        dry_run: bool,
+    } => crate::cmd!((self.dry_run) { &INFO, "create", user } "virsh" ["define", &self.xml_path] ; json),
+    Delete {
+        name: String,
+        #[serde(default)]
+        dry_run: bool,
+    } => crate::cmd!((self.dry_run) { &INFO, "delete", user } "virsh" ["undefine", &self.name] ; json),
+});
 
 const fn default_log_lines() -> u16 {
     100
@@ -179,11 +139,11 @@ fn parse_virsh_list(stdout: &str) -> Vec<Value> {
             let mut fields = line.split_whitespace();
             let id = fields.next()?;
             let name = fields.next()?;
-            Some(json!({
+            Some(jsonf! {
                 "id": (id != "-").then_some(id),
                 "name": name,
                 "state": fields.collect::<Vec<_>>().join(" "),
-            }))
+            })
         })
         .collect()
 }
@@ -211,16 +171,16 @@ fn parse_virsh_dominfo(stdout: &str) -> Value {
 
 #[cfg(test)]
 mod tests {
-    use serde_json::json;
-
     use super::*;
-    use crate::agent::AgentModule;
 
     #[test]
     fn dry_run_start_does_not_call_virsh() {
-        let response = VirtualMachinesModule
-            .handle("start", json!({ "name": "vm1", "dry_run": true }), None)
-            .unwrap();
+        let response = Start {
+            name: "vm1".into(),
+            dry_run: true,
+        }
+        .handle(None)
+        .unwrap();
 
         assert_eq!(response["command"], "virsh start vm1");
         assert_eq!(response["dry_run"], true);
@@ -243,5 +203,21 @@ mod tests {
         assert_eq!(domain["name"], "vm1");
         assert_eq!(domain["state"], "running");
         assert_eq!(domain["cpu(s)"], "2");
+    }
+
+    #[test]
+    fn create_payload_requires_xml_path() {
+        let result = Create::from_payload("create", json!({ "dry_run": true }));
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("missing field `xml_path`"));
+    }
+
+    #[test]
+    fn status_requires_name() {
+        let result = Status::from_payload("status", json!({}));
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("missing field `name`"));
     }
 }

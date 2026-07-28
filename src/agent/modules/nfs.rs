@@ -9,11 +9,10 @@
 
 use crate::prelude::*;
 
-use crate::agent::module_support::{
-    SelinuxOptions, apply_selinux, handle_metadata, parse_payload, unsupported_action,
-};
+use crate::agent::module_support::{SelinuxOptions, apply_selinux};
 
 /// NFS module entry point registered under feature `nfs`.
+#[derive(Clone, Copy, Debug)]
 pub struct NfsModule;
 
 /// Static capability metadata published via `capabilities`/`plan`.
@@ -35,110 +34,70 @@ const INFO: ModuleInfo = ModuleInfo {
     privileged_actions: &["set_config", "reload", "enable", "disable"],
 };
 
-/// Payload for read actions (`list_exports`, `get_config`). Defaults to
-/// `/etc/exports` when no path is supplied.
-#[derive(Debug, Deserialize)]
-struct ConfigPayload {
-    #[serde(default = "default_exports_path")]
-    path: PathBuf,
-}
-
-/// Payload for `set_config`, which overwrites `/etc/exports` with the
-/// supplied `contents`.
-///
-/// The `selinux` object typically points at the export directory declared
-/// inside `contents` (not the exports file itself) so the path gets labeled
-/// `public_content_t` / `public_content_rw_t`.
-#[derive(Debug, Deserialize)]
-struct SetConfigPayload {
-    #[serde(default = "default_exports_path")]
-    path: PathBuf,
-    contents: String,
-    #[serde(default)]
-    dry_run: bool,
-    #[serde(default)]
-    selinux: Option<SelinuxOptions>,
-}
-
-/// Payload for service actions (`reload`, `enable`, `disable`), which only
-/// need the `dry_run` flag.
-#[derive(Debug, Deserialize)]
-struct DryRunPayload {
-    #[serde(default)]
-    dry_run: bool,
-}
-
-/// Dispatches `nfs` actions. Config reads/writes target `/etc/exports`;
-/// `reload` runs `exportfs -ra` so the kernel re-reads the file without a
-/// full service restart; `enable`/`disable` drive `nfs-server.service`.
-impl AgentModule for NfsModule {
+impl Mod for NfsModule {
     fn info(&self) -> ModuleInfo {
         INFO
     }
 
     fn handle(&self, action: &str, payload: Value, user: Option<&str>) -> Result<Value> {
-        // Standard metadata fast-path: `capabilities` and `plan` are answered
-        // from `INFO` without touching the system.
-        if let Some(response) = handle_metadata(INFO, action, &payload) {
-            return Ok(response);
-        }
-
-        match action {
-            "list_exports" => {
-                let payload: ConfigPayload = parse_payload(payload)?;
-                let contents = read_config(&payload.path)?;
-                Ok(jsonf! {
-                    payload.path,
-                    "exports": parse_exports(&contents),
-                })
-            }
-            "get_config" => {
-                let payload: ConfigPayload = parse_payload(payload)?;
-                let contents = read_config(&payload.path)?;
-                Ok(jsonf! { payload.path, contents })
-            }
-            "set_config" => {
-                let payload: SetConfigPayload = parse_payload(payload)?;
-                if !payload.dry_run {
-                    // The whole file is replaced; callers build the complete
-                    // desired `/etc/exports` rather than patching one export.
-                    fs::write(&payload.path, payload.contents)
-                        .with_context(|| format!("failed to write `{}`", payload.path.display()))?;
-                }
-                // Default relabel target is the exports file path; callers
-                // wanting to label the exported directory pass an explicit
-                // `path` inside the selinux object (e.g. `/srv/export`).
-                let selinux = apply_selinux(
-                    payload.selinux.as_ref(),
-                    Some(&payload.path),
-                    payload.dry_run,
-                )?;
-                Ok(jsonf! {
-                    payload.path,
-                    "written": !payload.dry_run,
-                    payload.dry_run,
-                    selinux,
-                })
-            }
-            "reload" => {
-                // `exportfs -ra` re-exports everything in /etc/exports in
-                // place, without bouncing nfs-server — that avoids dropping
-                // existing clients mid-reload.
-                let payload: DryRunPayload = parse_payload(payload)?;
-                crate::cmd!((payload.dry_run) { &INFO, action, user } "exportfs" ["-ra"] ; json)
-            }
-            "enable" => {
-                let payload: DryRunPayload = parse_payload(payload)?;
-                crate::cmd!((payload.dry_run) { &INFO, action, user } "systemctl" ["enable", "--now", "nfs-server.service"] ; json)
-            }
-            "disable" => {
-                let payload: DryRunPayload = parse_payload(payload)?;
-                crate::cmd!((payload.dry_run) { &INFO, action, user } "systemctl" ["disable", "--now", "nfs-server.service"] ; json)
-            }
-            _ => unsupported_action(INFO.name, action),
-        }
+        Action::from_payload(action, payload)?.handle(user)
     }
 }
+
+actions!(Action [self user] => {
+    ListExports {
+        #[serde(default = "default_exports_path")]
+        path: PathBuf,
+    } => {
+        let contents = read_config(&self.path)?;
+        Ok(jsonf! { self.path, "exports": parse_exports(&contents) })
+    },
+    GetConfig {
+        #[serde(default = "default_exports_path")]
+        path: PathBuf,
+    } => {
+        let contents = read_config(&self.path)?;
+        Ok(jsonf! { self.path, contents })
+    },
+    SetConfig {
+        #[serde(default = "default_exports_path")]
+        path: PathBuf,
+        contents: String,
+        #[serde(default)]
+        dry_run: bool,
+        #[serde(default)]
+        selinux: Option<SelinuxOptions>,
+    } => {
+        if !self.dry_run {
+            fs::write(&self.path, self.contents)
+                .with_context(|| format!("failed to write `{}`", self.path.display()))?;
+        }
+        let selinux = apply_selinux(
+            self.selinux.as_ref(),
+            Some(&self.path),
+            self.dry_run,
+        )?;
+        Ok(jsonf! { self.path, "written": !self.dry_run, self.dry_run, selinux })
+    },
+    Reload {
+        #[serde(default)]
+        dry_run: bool,
+    } => {
+        cmd!((self.dry_run) { &INFO, "reload", user } "exportfs" ["-ra"] json)
+    },
+    Enable {
+        #[serde(default)]
+        dry_run: bool,
+    } => {
+        cmd!((self.dry_run) { &INFO, "enable", user } "systemctl" ["enable", "--now", "nfs-server.service"] json)
+    },
+    Disable {
+        #[serde(default)]
+        dry_run: bool,
+    } => {
+        crate::cmd!((self.dry_run) { &INFO, "disable", user } "systemctl" ["disable", "--now", "nfs-server.service"] json)
+    }
+});
 
 /// Default `/etc/exports` location used when a read/write action omits
 /// `path`.
@@ -189,41 +148,37 @@ mod tests {
         let path = dir.path().join("exports");
         fs::write(&path, "/srv/media *(ro)\n").unwrap();
 
-        let response = NfsModule
-            .handle(
-                "set_config",
-                jsonf! { path, "contents": "/srv/media *(rw)\n", "dry_run": true },
-                None,
-            )
-            .unwrap();
+        let response = SetConfig {
+            path: path.clone(),
+            contents: "/srv/media *(rw)\n".into(),
+            dry_run: true,
+            selinux: None,
+        }
+        .handle(None)
+        .unwrap();
 
         assert_eq!(response["written"], false);
-        assert_eq!(
-            fs::read_to_string(dir.path().join("exports")).unwrap(),
-            "/srv/media *(ro)\n"
-        );
+        assert_eq!(fs::read_to_string(path).unwrap(), "/srv/media *(ro)\n");
     }
 
     #[test]
     fn set_config_can_apply_nfs_export_context() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("exports");
-        let response = NfsModule
-            .handle(
-                "set_config",
-                jsonf! {
-                    path,
-                    "contents": "/srv/export *(rw)\n",
-                    "dry_run": true,
-                    "selinux": {
-                        "path": "/srv/export",
-                        "context_type": "public_content_rw_t",
-                        "recursive": true
-                    }
-                },
-                None,
-            )
-            .unwrap();
+
+        let response = SetConfig {
+            path: path.clone(),
+            contents: "/srv/export *(rw)\n".into(),
+            dry_run: true,
+            selinux: Some(SelinuxOptions {
+                path: Some("/srv/export".into()),
+                context_type: Some("public_content_rw_t".into()),
+                recursive: true,
+                ..SelinuxOptions::default()
+            }),
+        }
+        .handle(None)
+        .unwrap();
 
         assert_eq!(
             response["selinux"][0]["command"],
@@ -233,5 +188,13 @@ mod tests {
             response["selinux"][1]["command"],
             "restorecon -R -v /srv/export"
         );
+    }
+
+    #[test]
+    fn reload_dry_run_does_not_execute_exportfs() {
+        let response = Reload { dry_run: true }.handle(None).unwrap();
+        assert_eq!(response["command"], "exportfs -ra");
+        assert_eq!(response["dry_run"], true);
+        assert!(response["status"].is_null());
     }
 }

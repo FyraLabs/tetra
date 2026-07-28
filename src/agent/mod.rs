@@ -34,5 +34,5 @@ pub mod websocket_server;
 
 pub use backend::AgentBackend;
 pub use command::{AgentCommand, AgentResponse};
-pub use dispatcher::{AgentModule, Dispatcher};
+pub use dispatcher::Dispatcher;
 pub use messages::DispatchCommand;

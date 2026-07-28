@@ -1,41 +1,8 @@
+use crate::prelude::*;
+use serde_json::json; // TODO: convert to jsonf
 use std::collections::BTreeMap;
 
-use anyhow::{Result, bail};
-use serde_json::{Value, json};
-
-use super::{AgentCommand, AgentResponse, module_support::ModuleInfo};
-
-/// A single host-management surface exposed to the dashboard.
-///
-/// Each module owns one slice of host state (settings, files, services,
-/// quadlets, …). The [`Dispatcher`] looks up a module by name and hands the
-/// command's `action` and `payload` to its `handle` method.
-///
-/// Modules are stateless: `handle` takes `&self`, so the same module can be
-/// invoked concurrently from multiple transport tasks. State lives in the
-/// host (systemd, the filesystem, etc.), not in the module.
-#[allow(clippy::missing_errors_doc)]
-pub trait AgentModule: Send + Sync {
-    /// Static metadata describing this module to the dashboard: name, feature
-    /// flag, description, status, and the actions it supports.
-    fn info(&self) -> ModuleInfo;
-
-    /// Convenience defaulting `name` to the name in [`info`](Self::info).
-    /// Overridable in case a module wants to register under an alias without
-    /// changing its reported metadata.
-    fn name(&self) -> &'static str {
-        self.info().name
-    }
-
-    /// Handle one action.
-    ///
-    /// - `action` is the command's `action` field
-    /// - `payload` is the command's `payload` (already parsed from JSON by the transport)
-    ///
-    /// Implementations conventionally start with [`super::module_support::handle_metadata`] to
-    /// serve the shared `capabilities`/`plan` meta-actions, then match on `action`.
-    fn handle(&self, action: &str, payload: Value, user: Option<&str>) -> Result<Value>;
-}
+use super::{AgentCommand, AgentResponse};
 
 /// Registry of modules that the dispatcher routes commands to.
 ///
@@ -46,7 +13,7 @@ pub trait AgentModule: Send + Sync {
 /// makes dashboard diffs stable.
 #[derive(Default)]
 pub struct Dispatcher {
-    modules: BTreeMap<String, Box<dyn AgentModule>>,
+    modules: BTreeMap<String, Box<dyn Mod>>,
 }
 
 impl Dispatcher {
@@ -54,17 +21,30 @@ impl Dispatcher {
     pub fn new() -> Self {
         Self::default()
     }
+    /// Create a new [`Dispatcher`] with all available modules.
+    ///
+    /// Use `--all-features` during compilation to actually enable all the modules.
+    /// This only includes modules available during compile time, according to the feature set.
+    #[must_use]
+    pub fn full() -> Self {
+        Self {
+            modules: super::modules::MODULES
+                .entries()
+                .map(|(&k, v)| (k.to_owned(), Box::new(v.clone()) as Box<dyn Mod>))
+                .collect(),
+        }
+    }
 
     /// Builder-style registration: `Dispatcher::new().with_module(Foo).with_module(Bar)`.
     #[must_use]
-    pub fn with_module<M: AgentModule + 'static>(mut self, module: M) -> Self {
+    pub fn with_module<M: Mod + 'static>(mut self, module: M) -> Self {
         self.register(module);
         self
     }
 
     /// Register a module under its `name()`. A later registration with the
     /// same name replaces the earlier one.
-    pub fn register<M: AgentModule + 'static>(&mut self, module: M) {
+    pub fn register<M: Mod + 'static>(&mut self, module: M) {
         self.modules
             .insert(module.name().to_owned(), Box::new(module));
     }
@@ -131,7 +111,7 @@ mod tests {
 
     struct Echo;
 
-    impl AgentModule for Echo {
+    impl Mod for Echo {
         fn info(&self) -> ModuleInfo {
             ModuleInfo {
                 name: "echo",

@@ -5,28 +5,13 @@
 //! (OS, architecture, family) via `get_system`. It is also the simplest
 //! reference implementation of the `AgentModule` trait for new contributors.
 
-use anyhow::Result;
-use serde::Deserialize;
-use serde_json::{Value, json};
-
-use crate::agent::{
-    AgentModule,
-    module_support::{
-        ModuleInfo, ModuleStatus, handle_metadata, parse_payload, unsupported_action,
-    },
-};
+use crate::prelude::*;
 
 /// Marker type for the always-on settings module. It carries no state: all
-/// behavior is expressed through the `AgentModule` impl and the static
+/// behavior is expressed through the `Mod` impl and the static
 /// [`INFO`] descriptor below.
+#[derive(Clone, Copy, Debug)]
 pub struct SettingsModule;
-
-#[derive(Debug, Deserialize)]
-struct SetHostnamePayload {
-    hostname: String,
-    #[serde(default)]
-    dry_run: bool,
-}
 
 const INFO: ModuleInfo = ModuleInfo {
     name: "settings",
@@ -40,33 +25,28 @@ const INFO: ModuleInfo = ModuleInfo {
     privileged_actions: &["set_hostname"],
 };
 
-impl AgentModule for SettingsModule {
+impl Mod for SettingsModule {
     fn info(&self) -> ModuleInfo {
         INFO
     }
 
     fn handle(&self, action: &str, payload: Value, user: Option<&str>) -> Result<Value> {
-        // Delegate the cross-module metadata actions (`capabilities`, `plan`)
-        // first. When matched, the early return skips the action match below;
-        // otherwise the payload is forwarded to the module-specific handlers.
-        if let Some(response) = handle_metadata(INFO, action, &payload) {
-            return Ok(response);
-        }
-
-        match action {
-            // `std::env::consts` are compile-time constants derived from the
-            // target triple, so `get_system` performs no host probe and is safe
-            // to call in any context.
-            "get_system" => Ok(json!({
-                "os": std::env::consts::OS,
-                "arch": std::env::consts::ARCH,
-                "family": std::env::consts::FAMILY,
-            })),
-            "set_hostname" => {
-                let payload: SetHostnamePayload = parse_payload(payload)?;
-                crate::cmd!({ &INFO, action, user } (payload.dry_run) "hostnamectl" ["set-hostname", &payload.hostname] json)
-            }
-            _ => unsupported_action(INFO.name, action),
-        }
+        Action::from_payload(action, payload)?.handle(user)
     }
 }
+
+actions!(Action [self user] => {
+    // `std::env::consts` are compile-time constants derived from the
+    // target triple, so `get_system` performs no host probe and is safe
+    // to call in any context.
+    GetSystem => Ok(jsonf! {
+        "os": std::env::consts::OS,
+        "arch": std::env::consts::ARCH,
+        "family": std::env::consts::FAMILY,
+    }),
+    SetHostname {
+        hostname: String,
+        #[serde(default)]
+        dry_run: bool,
+    } => crate::cmd!((self.dry_run) { &INFO, "set_hostname", user } "hostnamectl" ["set-hostname", &self.hostname] json),
+});

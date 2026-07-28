@@ -13,13 +13,14 @@
 
 use crate::prelude::*;
 
-use crate::agent::module_support::{handle_metadata, parse_payload, safe_join, unsupported_action};
+use crate::agent::module_support::safe_join;
 
 /// Agent module that manages Caddy reverse proxy snippets.
 ///
 /// Stateless: all persisted state lives as `*.caddy` files under the
 /// configured `config_dir`, with site metadata embedded in a header comment
 /// so the module can list and round-trip sites without a separate database.
+#[derive(Clone, Copy, Debug)]
 pub struct ReverseProxyModule;
 
 /// Static descriptor published via the shared `capabilities` and `plan`
@@ -56,51 +57,6 @@ fn default_config_dir() -> PathBuf {
     PathBuf::from(DEFAULT_CONFIG_DIR)
 }
 
-#[derive(Debug, Deserialize)]
-struct BasePayload {
-    #[serde(default = "default_config_dir")]
-    config_dir: PathBuf,
-}
-
-/// Payload for `render` and `write`: describes one site to proxy.
-///
-/// `tls` defaults to `true` because Caddy provisions automatic HTTPS by
-/// default; callers opt out for local-only sites or when TLS is terminated
-/// upstream.
-#[derive(Debug, Deserialize)]
-struct SitePayload {
-    #[serde(default = "default_config_dir")]
-    config_dir: PathBuf,
-    domain: String,
-    upstream: String,
-    #[serde(default = "default_tls")]
-    tls: bool,
-    #[serde(default)]
-    dry_run: bool,
-    /// Reload Caddy after the change. The dashboard typically sets this so a
-    /// single command applies the new config; batch operations may prefer to
-    /// reload once at the end via the dedicated `reload` action.
-    #[serde(default)]
-    reload: bool,
-}
-
-#[derive(Debug, Deserialize)]
-struct DeletePayload {
-    #[serde(default = "default_config_dir")]
-    config_dir: PathBuf,
-    domain: String,
-    #[serde(default)]
-    dry_run: bool,
-    #[serde(default)]
-    reload: bool,
-}
-
-#[derive(Debug, Deserialize)]
-struct ReloadPayload {
-    #[serde(default)]
-    dry_run: bool,
-}
-
 /// In-memory and on-disk representation of a managed site. Serialized as
 /// JSON into a `# tetra: ...` comment header in the snippet so `list_sites`
 /// can recover the original parameters without re-parsing the Caddy block.
@@ -135,118 +91,119 @@ impl SiteMetadata {
     }
 }
 
-/// Dispatches reverse-proxy actions. Mutating actions persist `*.caddy`
-/// files under `config_dir` and optionally reload Caddy.
-impl AgentModule for ReverseProxyModule {
+impl Mod for ReverseProxyModule {
     fn info(&self) -> ModuleInfo {
         INFO
     }
 
     fn handle(&self, action: &str, payload: Value, user: Option<&str>) -> Result<Value> {
-        // Answer the shared `capabilities`/`plan` metadata actions first.
-        if let Some(response) = handle_metadata(INFO, action, &payload) {
-            return Ok(response);
-        }
-
-        match action {
-            "list" => {
-                let payload: BasePayload = parse_payload(payload)?;
-                let config_dir = &payload.config_dir;
-                Ok(jsonf! { config_dir, "sites": list_sites(config_dir)? })
-            }
-            // `render` only produces the snippet text; it does not touch disk.
-            // Use `write` to persist (and optionally reload).
-            "render" => {
-                let payload: SitePayload = parse_payload(payload)?;
-                let site = SiteMetadata::new(&payload.domain, &payload.upstream, payload.tls)?;
-                Ok(jsonf! {
-                    "filename": site_filename(&site.domain),
-                    "contents": site.render()?,
-                     site,
-                })
-            }
-            "write" => {
-                let payload: SitePayload = parse_payload(payload)?;
-                let config_dir = &payload.config_dir;
-                let site = SiteMetadata::new(&payload.domain, &payload.upstream, payload.tls)?;
-                let filename = site_filename(&site.domain);
-                // `safe_join` rejects absolute paths and `..` traversal, so
-                // even a hostile domain (already blocked by `validate_domain`)
-                // cannot escape `config_dir` — defense in depth.
-                let path = safe_join(config_dir, &filename)?;
-                let contents = {
-                    let site: &SiteMetadata = &site;
-                    site.render()
-                }?;
-
-                if !payload.dry_run {
-                    fs::create_dir_all(config_dir)
-                        .with_context(|| format!("failed to create `{}`", config_dir.display()))?;
-                    fs::write(&path, &contents)
-                        .with_context(|| format!("failed to write `{}`", path.display()))?;
-                }
-
-                // Reload only when explicitly requested, so callers can batch
-                // writes and reload once at the end.
-                // Persisting the site and reloading Caddy are separate outcomes.
-                // A container or development userspace may not run systemd even
-                // though the managed file was written successfully, so preserve
-                // the write result and report reload failure as structured data.
-                let (reload, reload_error) = if payload.reload {
-                    match reload_caddy(action, payload.dry_run, user) {
-                        Ok(result) => (Some(result), None),
-                        Err(error) => (None, Some(error.to_string())),
-                    }
-                } else {
-                    (None, None)
-                };
-
-                Ok(jsonf! {
-                    config_dir, filename, path, contents, site,
-                    "written": !payload.dry_run,
-                    payload.dry_run, reload, reload_error,
-                })
-            }
-            "delete" => {
-                let payload: DeletePayload = parse_payload(payload)?;
-                let config_dir = &payload.config_dir;
-                let domain = validate_domain(&payload.domain)?;
-                let filename = site_filename(&domain);
-                let path = safe_join(config_dir, &filename)?;
-
-                // Guard on `path.exists()` so deleting a missing site is a
-                // no-op rather than an error.
-                if !payload.dry_run && path.exists() {
-                    fs::remove_file(&path)
-                        .with_context(|| format!("failed to delete `{}`", path.display()))?;
-                }
-
-                // As with writes, deletion is successful once the managed file
-                // is removed. A missing systemd bus is returned as a reload
-                // warning instead of making the persisted deletion look failed.
-                let (reload, reload_error) = if payload.reload {
-                    match reload_caddy(action, payload.dry_run, user) {
-                        Ok(result) => (Some(result), None),
-                        Err(error) => (None, Some(error.to_string())),
-                    }
-                } else {
-                    (None, None)
-                };
-
-                Ok(jsonf! {
-                    config_dir, filename, path,
-                    "deleted": !payload.dry_run,
-                    payload.dry_run, reload, reload_error,
-                })
-            }
-            "reload" => {
-                let payload: ReloadPayload = parse_payload(payload)?;
-                reload_caddy(action, payload.dry_run, user)
-            }
-            _ => unsupported_action(INFO.name, action),
-        }
+        Action::from_payload(action, payload)?.handle(user)
     }
 }
+
+actions!(Action [self user] => {
+    List {
+        #[serde(default = "default_config_dir")]
+        config_dir: PathBuf,
+    } => Ok(jsonf! { self.config_dir, "sites": list_sites(&self.config_dir)? }),
+    Render {
+        #[serde(default = "default_config_dir")]
+        config_dir: PathBuf,
+        domain: String,
+        upstream: String,
+        #[serde(default = "default_tls")]
+        tls: bool,
+        #[serde(default)]
+        dry_run: bool,
+        #[serde(default)]
+        reload: bool,
+    } => {
+        let site = SiteMetadata::new(&self.domain, &self.upstream, self.tls)?;
+        Ok(jsonf! {
+            "filename": site_filename(&site.domain),
+            "contents": site.render()?,
+            site,
+        })
+    },
+    Write {
+        #[serde(default = "default_config_dir")]
+        config_dir: PathBuf,
+        domain: String,
+        upstream: String,
+        #[serde(default = "default_tls")]
+        tls: bool,
+        #[serde(default)]
+        dry_run: bool,
+        #[serde(default)]
+        reload: bool,
+    } => {
+        let config_dir = &self.config_dir;
+        let site = SiteMetadata::new(&self.domain, &self.upstream, self.tls)?;
+        let filename = site_filename(&site.domain);
+        let path = safe_join(config_dir, &filename)?;
+        let contents = site.render()?;
+
+        if !self.dry_run {
+            fs::create_dir_all(config_dir)
+                .with_context(|| format!("failed to create `{}`", config_dir.display()))?;
+            fs::write(&path, &contents)
+                .with_context(|| format!("failed to write `{}`", path.display()))?;
+        }
+
+        let (reload, reload_error) = if self.reload {
+            match reload_caddy("write", self.dry_run, user) {
+                Ok(result) => (Some(result), None),
+                Err(error) => (None, Some(error.to_string())),
+            }
+        } else {
+            (None, None)
+        };
+
+        Ok(jsonf! {
+            config_dir, filename, path, contents, site,
+            "written": !self.dry_run,
+            self.dry_run, reload, reload_error,
+        })
+    },
+    Delete {
+        #[serde(default = "default_config_dir")]
+        config_dir: PathBuf,
+        domain: String,
+        #[serde(default)]
+        dry_run: bool,
+        #[serde(default)]
+        reload: bool,
+    } => {
+        let config_dir = &self.config_dir;
+        let domain = validate_domain(&self.domain)?;
+        let filename = site_filename(&domain);
+        let path = safe_join(config_dir, &filename)?;
+
+        if !self.dry_run && path.exists() {
+            fs::remove_file(&path)
+                .with_context(|| format!("failed to delete `{}`", path.display()))?;
+        }
+
+        let (reload, reload_error) = if self.reload {
+            match reload_caddy("delete", self.dry_run, user) {
+                Ok(result) => (Some(result), None),
+                Err(error) => (None, Some(error.to_string())),
+            }
+        } else {
+            (None, None)
+        };
+
+        Ok(jsonf! {
+            config_dir, filename, path,
+            "deleted": !self.dry_run,
+            self.dry_run, reload, reload_error,
+        })
+    },
+    Reload {
+        #[serde(default)]
+        dry_run: bool,
+    } => reload_caddy("reload", self.dry_run, user)
+});
 
 /// Serde default for `tls`. Caddy auto-provisions HTTPS, so TLS is the
 /// safe default; callers must explicitly opt out.
@@ -365,24 +322,25 @@ fn list_sites(config_dir: &Path) -> Result<Vec<Value>> {
 /// restarting (which would drop active connections). Dry runs report the
 /// command that would run without invoking systemctl.
 fn reload_caddy(action: &str, dry_run: bool, user: Option<&str>) -> Result<Value> {
-    crate::cmd!({ &INFO, action, user } (dry_run) "systemctl" ["reload", "caddy.service"] json)
+    crate::cmd!((dry_run) { &INFO, action, user } "systemctl" ["reload", "caddy.service"] json)
 }
 
 #[cfg(test)]
 mod tests {
-    use serde_json::json;
-
     use super::*;
 
     #[test]
     fn renders_caddy_site() {
-        let response = ReverseProxyModule
-            .handle(
-                "render",
-                json!({ "domain": "app.example.com", "upstream": "127.0.0.1:8080" }),
-                None,
-            )
-            .unwrap();
+        let response = Render {
+            config_dir: default_config_dir(),
+            domain: "app.example.com".into(),
+            upstream: "127.0.0.1:8080".into(),
+            tls: true,
+            dry_run: false,
+            reload: false,
+        }
+        .handle(None)
+        .unwrap();
 
         assert!(
             response["contents"]
@@ -401,20 +359,19 @@ mod tests {
     #[test]
     fn dry_run_write_does_not_create_file() {
         let dir = tempfile::tempdir().unwrap();
-        let response = ReverseProxyModule
-            .handle(
-                "write",
-                json!({
-                    "config_dir": dir.path(),
-                    "domain": "demo.example.com",
-                    "upstream": "127.0.0.1:3000",
-                    "dry_run": true
-                }),
-                None,
-            )
-            .unwrap();
+        let path = dir.path().join("demo_example_com.caddy");
+        let response = Write {
+            config_dir: dir.path().to_path_buf(),
+            domain: "demo.example.com".into(),
+            upstream: "127.0.0.1:3000".into(),
+            tls: true,
+            dry_run: true,
+            reload: false,
+        }
+        .handle(None)
+        .unwrap();
 
         assert_eq!(response["written"], false);
-        assert!(!dir.path().join("demo_example_com.caddy").exists());
+        assert!(!path.exists());
     }
 }

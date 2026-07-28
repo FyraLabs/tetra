@@ -9,13 +9,12 @@
 
 use crate::prelude::*;
 
-use crate::agent::module_support::{
-    ModuleInfo, ModuleStatus, SelinuxOptions, apply_selinux, handle_metadata, unsupported_action,
-};
+use crate::agent::module_support::{SelinuxOptions, apply_selinux};
 
 /// Marker type for the files module. Stateless; all behavior lives in the
-/// [`AgentModule`] impl and the static [`INFO`] descriptor.
-pub struct FileModule;
+/// [`Mod`] impl and the static [`INFO`] descriptor.
+#[derive(Clone, Copy, Debug)]
+pub struct FilesModule;
 
 const INFO: ModuleInfo = ModuleInfo {
     name: "files",
@@ -26,65 +25,47 @@ const INFO: ModuleInfo = ModuleInfo {
     privileged_actions: &["write"],
 };
 
-/// Payload for the `read` action: just the path to read from the host.
-#[derive(Debug, Deserialize)]
-struct ReadPayload {
-    path: PathBuf,
-}
-
-/// Payload for the `write` action. `dry_run` skips the filesystem mutation but
-/// still echoes the planned result; `selinux` optionally relabels the written
-/// file via the shared `apply_selinux` helper.
-#[derive(Debug, Deserialize)]
-struct WritePayload {
-    path: PathBuf,
-    contents: String,
-    #[serde(default)]
-    dry_run: bool,
-    #[serde(default)]
-    selinux: Option<SelinuxOptions>,
-}
-
-impl AgentModule for FileModule {
+impl Mod for FilesModule {
     fn info(&self) -> ModuleInfo {
         INFO
     }
 
-    fn handle(&self, action: &str, payload: Value, _user: Option<&str>) -> Result<Value> {
-        // Delegate `capabilities`/`plan` to the shared metadata handler first.
-        if let Some(response) = handle_metadata(INFO, action, &payload) {
-            return Ok(response);
-        }
-
-        match action {
-            "read" => {
-                let payload: ReadPayload = serde_json::from_value(payload)?;
-                let contents = fs::read_to_string(&payload.path)
-                    .with_context(|| format!("failed to read `{}`", payload.path.display()))?;
-                Ok(jsonf! { payload.path, contents })
-            }
-            "write" => {
-                let payload: WritePayload = serde_json::from_value(payload)?;
-                // Skip the actual write in dry-run; the SELinux plan below is
-                // still computed and echoed back so callers can preview it.
-                if !payload.dry_run {
-                    fs::write(&payload.path, payload.contents)
-                        .with_context(|| format!("failed to write `{}`", payload.path.display()))?;
-                }
-                // `apply_selinux` is a no-op when no options are supplied, so
-                // calling it unconditionally is safe. It returns a list of
-                // command-result objects (empty when nothing was requested).
-                let selinux = apply_selinux(
-                    payload.selinux.as_ref(),
-                    Some(&payload.path),
-                    payload.dry_run,
-                )?;
-                Ok(jsonf! { payload.path, "written": !payload.dry_run, payload.dry_run, selinux })
-            }
-            _ => unsupported_action(INFO.name, action),
-        }
+    fn handle(&self, action: &str, payload: Value, user: Option<&str>) -> Result<Value> {
+        Action::from_payload(action, payload)?.handle(user)
     }
 }
+
+actions!(Action [self user] => {
+    Read { path: PathBuf } => {
+        let contents = fs::read_to_string(&self.path)
+            .with_context(|| format!("failed to read `{}`", self.path.display()))?;
+        Ok(jsonf! { self.path, contents })
+    },
+    Write {
+        path: PathBuf,
+        contents: String,
+        #[serde(default)]
+        dry_run: bool,
+        #[serde(default)]
+        selinux: Option<SelinuxOptions>,
+    } => {
+        // Skip the actual write in dry-run; the SELinux plan below is
+        // still computed and echoed back so callers can preview it.
+        if !self.dry_run {
+            fs::write(&self.path, self.contents)
+                .with_context(|| format!("failed to write `{}`", self.path.display()))?;
+        }
+        // `apply_selinux` is a no-op when no options are supplied, so
+        // calling it unconditionally is safe. It returns a list of
+        // command-result objects (empty when nothing was requested).
+        let selinux = apply_selinux(
+            self.selinux.as_ref(),
+            Some(&self.path),
+            self.dry_run,
+        )?;
+        Ok(jsonf! { self.path, "written": !self.dry_run, self.dry_run, selinux })
+    }
+});
 
 #[cfg(test)]
 mod tests {
@@ -94,13 +75,14 @@ mod tests {
     fn dry_run_write_does_not_create_file() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("managed.conf");
-        let response = FileModule
-            .handle(
-                "write",
-                jsonf! { path, "contents": "enabled=true\n", "dry_run": true },
-                None,
-            )
-            .unwrap();
+        let response = Write {
+            path,
+            contents: "enabled=true\n".into(),
+            dry_run: true,
+            selinux: None,
+        }
+        .handle(None)
+        .unwrap();
 
         assert_eq!(response["written"], false);
         assert_eq!(response["dry_run"], true);
@@ -111,20 +93,17 @@ mod tests {
     fn write_can_apply_selinux_context() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("managed.conf");
-        let response = FileModule
-            .handle(
-                "write",
-                jsonf! {
-                    path,
-                    "contents": "enabled=true\n",
-                    "dry_run": true,
-                    "selinux": {
-                        "context_type": "container_file_t"
-                    }
-                },
-                None,
-            )
-            .unwrap();
+        let response = Write {
+            path,
+            contents: "enabled=true\n".to_owned(),
+            dry_run: true,
+            selinux: Some(SelinuxOptions {
+                context_type: Some("container_file_t".to_owned()),
+                ..SelinuxOptions::default()
+            }),
+        }
+        .handle(None)
+        .unwrap();
 
         assert_eq!(response["selinux"].as_array().unwrap().len(), 2);
         assert!(
