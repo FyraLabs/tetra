@@ -14,6 +14,7 @@ use super::{AgentCommand, AgentResponse, module_support::ModuleInfo};
 /// Modules are stateless: `handle` takes `&self`, so the same module can be
 /// invoked concurrently from multiple transport tasks. State lives in the
 /// host (systemd, the filesystem, etc.), not in the module.
+#[allow(clippy::missing_errors_doc)]
 pub trait AgentModule: Send + Sync {
     /// Static metadata describing this module to the dashboard: name, feature
     /// flag, description, status, and the actions it supports.
@@ -26,11 +27,13 @@ pub trait AgentModule: Send + Sync {
         self.info().name
     }
 
-    /// Handle one action. `action` is the command's `action` field; `payload`
-    /// is the command's `payload` (already parsed from JSON by the transport).
-    /// Implementations conventionally start with
-    /// [`handle_metadata`](super::module_support::handle_metadata) to serve the
-    /// shared `capabilities`/`plan` meta-actions, then match on `action`.
+    /// Handle one action.
+    ///
+    /// - `action` is the command's `action` field
+    /// - `payload` is the command's `payload` (already parsed from JSON by the transport)
+    ///
+    /// Implementations conventionally start with [`super::module_support::handle_metadata`] to
+    /// serve the shared `capabilities`/`plan` meta-actions, then match on `action`.
     fn handle(&self, action: &str, payload: Value, user: Option<&str>) -> Result<Value>;
 }
 
@@ -47,27 +50,30 @@ pub struct Dispatcher {
 }
 
 impl Dispatcher {
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Builder-style registration: `Dispatcher::new().with_module(Foo).with_module(Bar)`.
-    pub fn with_module(mut self, module: impl AgentModule + 'static) -> Self {
+    #[must_use]
+    pub fn with_module<M: AgentModule + 'static>(mut self, module: M) -> Self {
         self.register(module);
         self
     }
 
     /// Register a module under its `name()`. A later registration with the
     /// same name replaces the earlier one.
-    pub fn register(&mut self, module: impl AgentModule + 'static) {
+    pub fn register<M: AgentModule + 'static>(&mut self, module: M) {
         self.modules
-            .insert(module.name().to_string(), Box::new(module));
+            .insert(module.name().to_owned(), Box::new(module));
     }
 
     /// Dispatch one command: route it to the matching module, or to the
     /// built-in `agent.capabilities` action. Any error becomes an
     /// `AgentResponse::error` with the same command `id` — the caller always
     /// gets a well-formed response, never a panic.
+    #[must_use]
     pub fn dispatch(&self, command: AgentCommand) -> AgentResponse {
         match self.try_dispatch(&command) {
             Ok(payload) => AgentResponse::ok(command.id, payload),
@@ -77,6 +83,7 @@ impl Dispatcher {
 
     /// Snapshot of every module's [`ModuleInfo`]. Used to answer
     /// `agent.capabilities`; also useful for diagnostics and tests.
+    #[must_use]
     pub fn capabilities(&self) -> Vec<ModuleInfo> {
         self.modules.values().map(|module| module.info()).collect()
     }

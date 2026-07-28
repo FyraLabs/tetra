@@ -17,7 +17,7 @@ use crate::agent::{
     AgentModule,
     module_support::{
         ModuleInfo, ModuleStatus, SelinuxOptions, apply_selinux, handle_metadata, parse_payload,
-        run_command_or_dry_run_for_module, unsupported_action,
+        unsupported_action,
     },
 };
 
@@ -86,7 +86,7 @@ impl AgentModule for SambaModule {
     fn handle(&self, action: &str, payload: Value, user: Option<&str>) -> Result<Value> {
         // Standard metadata fast-path: `capabilities` and `plan` are answered
         // from `INFO` without touching the system.
-        if let Some(response) = handle_metadata(INFO, action, payload.clone())? {
+        if let Some(response) = handle_metadata(INFO, action, &payload) {
             return Ok(response);
         }
 
@@ -127,36 +127,15 @@ impl AgentModule for SambaModule {
             }
             "reload" => {
                 let payload: DryRunPayload = parse_payload(payload)?;
-                run_command_or_dry_run_for_module(
-                    &INFO,
-                    action,
-                    "systemctl",
-                    ["reload-or-restart", "smb.service"],
-                    payload.dry_run,
-                    user,
-                )
+                crate::cmd!((payload.dry_run) { &INFO, action, user } "systemctl" ["reload-or-restart", "smb.service"] json)
             }
             "enable" => {
                 let payload: DryRunPayload = parse_payload(payload)?;
-                run_command_or_dry_run_for_module(
-                    &INFO,
-                    action,
-                    "systemctl",
-                    ["enable", "--now", "smb.service"],
-                    payload.dry_run,
-                    user,
-                )
+                crate::cmd!((payload.dry_run) { &INFO, action, user } "systemctl" ["enable", "--now", "smb.service"] json)
             }
             "disable" => {
                 let payload: DryRunPayload = parse_payload(payload)?;
-                run_command_or_dry_run_for_module(
-                    &INFO,
-                    action,
-                    "systemctl",
-                    ["disable", "--now", "smb.service"],
-                    payload.dry_run,
-                    user,
-                )
+                crate::cmd!((payload.dry_run) { &INFO, action, user } "systemctl" ["disable", "--now", "smb.service"] json)
             }
             _ => unsupported_action(INFO.name, action),
         }
@@ -184,7 +163,7 @@ fn parse_samba_shares(contents: &str) -> Vec<String> {
         .lines()
         .map(str::trim)
         .filter(|line| line.starts_with('[') && line.ends_with(']'))
-        .map(|line| line.trim_matches(&['[', ']'][..]).to_string())
+        .map(|line| line.trim_matches(&['[', ']'][..]).to_owned())
         .filter(|name| !name.eq_ignore_ascii_case("global"))
         .collect()
 }

@@ -14,19 +14,10 @@
 //! - `create`/`update` deliberately omit flags the caller did not set, so
 //!   shadow-utils defaults apply for anything left unspecified.
 
-use std::fs;
-
-use anyhow::{Context, Result};
-use serde::Deserialize;
-use serde_json::{Value, json};
-
-use crate::agent::{
-    AgentModule,
-    module_support::{
-        ModuleInfo, ModuleStatus, NamedPayload, handle_metadata, parse_payload,
-        run_command_for_module, run_command_or_dry_run_for_module, unsupported_action,
-    },
+use crate::agent::module_support::{
+    NamedPayload, handle_metadata, parse_payload, unsupported_action,
 };
+use crate::prelude::*;
 
 /// Marker type for the users module. Stateless; all behavior lives in the
 /// [`AgentModule`] impl and the static [`INFO`] descriptor.
@@ -96,7 +87,7 @@ impl AgentModule for UsersModule {
 
     fn handle(&self, action: &str, payload: Value, user: Option<&str>) -> Result<Value> {
         // Delegate `capabilities`/`plan` to the shared metadata handler first.
-        if let Some(response) = handle_metadata(INFO, action, payload.clone())? {
+        if let Some(response) = handle_metadata(INFO, action, &payload) {
             return Ok(response);
         }
 
@@ -104,84 +95,42 @@ impl AgentModule for UsersModule {
             // `/etc/passwd` is the source of truth for local accounts; the
             // password field is deliberately not surfaced (it is `x` under
             // shadow passwords, with the real hash in `/etc/shadow`).
-            "list" => Ok(json!({ "users": parse_passwd(&read_file("/etc/passwd")?) })),
-            "groups" => Ok(json!({ "groups": parse_group(&read_file("/etc/group")?) })),
+            "list" => Ok(jsonf! { "users": parse_passwd(&read_file("/etc/passwd")?) }),
+            "groups" => Ok(jsonf! { "groups": parse_group(&read_file("/etc/group")?) }),
             // `id` exits non-zero for an unknown account, so `status` doubles as
             // an existence check via the wrapped command's exit status.
             "status" => {
                 let payload: NamedPayload = parse_payload(payload)?;
-                run_command_for_module(&INFO, action, "id", [&payload.name], user)
+                crate::cmd!({ &INFO, action, user } "id" [&payload.name] json)
             }
             "create" => {
                 let payload: CreatePayload = parse_payload(payload)?;
                 let mut args = Vec::new();
-                if payload.system {
-                    args.push("--system".to_string());
-                }
-                if let Some(shell) = payload.shell {
-                    args.extend(["--shell".into(), shell]);
-                }
                 // `useradd` spells the home flag `--home-dir` (unlike
                 // `usermod`'s `--home` below).
-                if let Some(home) = payload.home {
-                    args.extend(["--home-dir".into(), home]);
-                }
+                flag!(args payload: system [shell] ["--home-dir" home]);
                 args.push(payload.name);
-                run_command_or_dry_run_for_module(
-                    &INFO,
-                    action,
-                    "useradd",
-                    args,
-                    payload.dry_run,
-                    user,
-                )
+                crate::cmd!((payload.dry_run) { &INFO, action, user } "useradd" => &args ; json)
             }
             "update" => {
                 let payload: UpdatePayload = parse_payload(payload)?;
                 let mut args = Vec::new();
-                if let Some(shell) = payload.shell {
-                    args.extend(["--shell".into(), shell]);
-                }
-                // `usermod` spells the home flag `--home`.
-                if let Some(home) = payload.home {
-                    args.extend(["--home".into(), home]);
-                }
-                if let Some(groups) = payload.groups {
-                    args.extend(["--groups".into(), groups.join(",")]);
-                }
+                flag!(args payload: [shell] [home]);
+                args.extend(
+                    (payload.groups.into_iter()).flat_map(|g| ["--groups".to_owned(), g.join(",")]),
+                );
                 args.push(payload.name);
-                run_command_or_dry_run_for_module(
-                    &INFO,
-                    action,
-                    "usermod",
-                    args,
-                    payload.dry_run,
-                    user,
-                )
+                crate::cmd!((payload.dry_run) { &INFO, action, user } "usermod" => &args ; json)
             }
             "delete" => {
                 let payload: NamedPayload = parse_payload(payload)?;
-                run_command_or_dry_run_for_module(
-                    &INFO,
-                    action,
-                    "userdel",
-                    [&payload.name],
-                    payload.dry_run,
-                    user,
-                )
+                crate::cmd!((payload.dry_run) { &INFO, action, user } "userdel" [&payload.name] json)
             }
             "set_password" => {
                 let payload: SetPasswordPayload = parse_payload(payload)?;
                 // The hash is passed through verbatim; `usermod --password`
                 // expects the same string `/etc/shadow` would store.
-                run_command_or_dry_run_for_module(
-                    &INFO,
-                    action,
-                    "usermod",
-                    ["--password", &payload.password_hash, &payload.name],
-                    payload.dry_run,
-                    user,
-                )
+                crate::cmd!((payload.dry_run) { &INFO, action, user } "usermod" ["--password", &payload.password_hash, &payload.name] json)
             }
             _ => unsupported_action(INFO.name, action),
         }
@@ -206,14 +155,14 @@ fn parse_passwd(contents: &str) -> Vec<Value> {
         .filter_map(|line| {
             let fields: Vec<_> = line.split(':').collect();
             (fields.len() >= 7).then(|| {
-                json!({
+                jsonf! {
                     "name": fields[0],
                     "uid": fields[2],
                     "gid": fields[3],
                     "gecos": fields[4],
                     "home": fields[5],
                     "shell": fields[6],
-                })
+                }
             })
         })
         .collect()
@@ -231,11 +180,11 @@ fn parse_group(contents: &str) -> Vec<Value> {
         .filter_map(|line| {
             let fields: Vec<_> = line.split(':').collect();
             (fields.len() >= 4).then(|| {
-                json!({
+                jsonf! {
                     "name": fields[0],
                     "gid": fields[2],
                     "members": fields[3].split(',').filter(|member| !member.is_empty()).collect::<Vec<_>>(),
-                })
+                }
             })
         })
         .collect()
@@ -264,7 +213,7 @@ mod tests {
         let response = UsersModule
             .handle(
                 "create",
-                json!({ "name": "testuser", "dry_run": true }),
+                jsonf! { "name": "testuser", "dry_run": true },
                 None,
             )
             .unwrap();

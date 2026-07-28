@@ -27,7 +27,7 @@ use crate::{
         AgentModule,
         module_support::{ModuleInfo, ModuleStatus, handle_metadata, unsupported_action},
     },
-    catalog::{self, RenderOptions},
+    catalog::{AppRecipe, RenderOptions, RenderedResource},
 };
 
 /// Agent module that wraps the recipe catalog for remote rendering.
@@ -111,14 +111,14 @@ impl AgentModule for RecipeModule {
     fn handle(&self, action: &str, payload: Value, _user: Option<&str>) -> Result<Value> {
         // Every module first answers the shared `capabilities`/`plan`
         // metadata actions before dispatching its own action set.
-        if let Some(response) = handle_metadata(INFO, action, payload.clone())? {
+        if let Some(response) = handle_metadata(INFO, action, &payload) {
             return Ok(response);
         }
 
         match action {
             "render" => {
                 let payload: RenderPayload = serde_json::from_value(payload)?;
-                let resources = catalog::render_from_files(&RenderOptions {
+                let resources = RenderedResource::from_files(&RenderOptions {
                     recipe_path: payload.recipe_path,
                     values_path: payload.values_path,
                     templates_dir: payload.templates_dir,
@@ -129,12 +129,9 @@ impl AgentModule for RecipeModule {
             }
             "render_inline" => {
                 let payload: InlineRenderPayload = serde_json::from_value(payload)?;
-                let recipe = catalog::load_recipe_from_str(&payload.recipe)?;
-                let resources = catalog::render_recipe_with_templates(
-                    &recipe,
-                    &payload.values,
-                    &payload.templates,
-                )?;
+                let recipe = AppRecipe::load_str(&payload.recipe)?;
+                let resources =
+                    recipe.render_with_templates(&payload.values, &payload.templates)?;
                 // Echo the parsed recipe alongside the rendered resources so
                 // the dashboard can display normalized metadata (id, version,
                 // parameters) without re-parsing the YAML it just sent.
@@ -142,14 +139,14 @@ impl AgentModule for RecipeModule {
             }
             "context" => {
                 let payload: ContextPayload = serde_json::from_value(payload)?;
-                let recipe = catalog::load_recipe(payload.recipe_path)?;
-                let context = catalog::context_for_agent(&recipe, &payload.values)?;
+                let recipe = AppRecipe::load(payload.recipe_path)?;
+                let context = recipe.context_for_agent(&payload.values)?;
                 Ok(json!({ "context": context }))
             }
             "context_inline" => {
                 let payload: InlineContextPayload = serde_json::from_value(payload)?;
-                let recipe = catalog::load_recipe_from_str(&payload.recipe)?;
-                let context = catalog::context_for_agent(&recipe, &payload.values)?;
+                let recipe = AppRecipe::load_str(&payload.recipe)?;
+                let context = recipe.context_for_agent(&payload.values)?;
                 Ok(json!({ "recipe": recipe, "context": context }))
             }
             _ => unsupported_action(INFO.name, action),

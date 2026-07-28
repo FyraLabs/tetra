@@ -1,13 +1,7 @@
-use std::{
-    ffi::OsStr,
-    path::{Component, Path, PathBuf},
-    process::Command,
-};
+use crate::prelude::*;
+use std::{path::Component, process::Command};
 
-use anyhow::{Context, Result, bail};
-use serde::Deserialize;
-use serde::Serialize;
-use serde_json::{Value, json};
+use serde_json::json;
 
 /// Whether a module is shipping in this build or is a placeholder for a future
 /// feature. The dashboard uses this to grey out planned-but-unavailable
@@ -54,28 +48,30 @@ impl ModuleInfo {
 /// module supports.
 ///
 /// Convention: each module's `handle` method calls this first and returns
-/// `Ok(Some(...))` if it matched, then matches on its own module-specific
+/// `Some(...)` if it matched, then matches on its own module-specific
 /// actions. `plan` is a lightweight "what would you do with this payload?"
 /// endpoint — it returns the module metadata plus the echoed payload, so
 /// the dashboard can show a preview without committing to a dry run.
 ///
-/// Returns `Ok(None)` when the action isn't one of these meta-actions, so the
+/// Returns `None` when the action isn't one of these meta-actions, so the
 /// caller can fall through to its own match.
-pub fn handle_metadata(info: ModuleInfo, action: &str, payload: Value) -> Result<Option<Value>> {
+#[must_use]
+pub fn handle_metadata(info: ModuleInfo, action: &str, payload: &Value) -> Option<Value> {
     match action {
-        "capabilities" => Ok(Some(json!(info))),
-        "plan" => Ok(Some(json!({
+        "capabilities" => Some(json!(info)),
+        "plan" => Some(jsonf! {
             "module": info.name,
-            "feature": info.feature,
-            "status": info.status,
+            info.feature,
+            info.status,
             "requested": payload,
-        }))),
-        _ => Ok(None),
+        }),
+        _ => None,
     }
 }
 
 /// Bail with a consistent "unknown action" error message. Centralizing this
 /// keeps the error format uniform across modules.
+#[allow(clippy::missing_errors_doc)]
 pub fn unsupported_action(module: &str, action: &str) -> Result<Value> {
     bail!("unsupported {module} action `{action}`")
 }
@@ -118,6 +114,9 @@ pub struct SelinuxOptions {
 /// Deserialize a typed payload from a [`serde_json::Value`] with a consistent
 /// "invalid command payload" error message. Centralizing this keeps the
 /// per-module error surface uniform.
+///
+/// # Errors
+/// An error is returned if the payload cannot be deserialized.
 pub fn parse_payload<T: for<'de> Deserialize<'de>>(payload: Value) -> Result<T> {
     serde_json::from_value(payload).context("invalid command payload")
 }
@@ -127,72 +126,86 @@ pub fn parse_payload<T: for<'de> Deserialize<'de>>(payload: Value) -> Result<T> 
 /// by passing a user to the `_for_module` helpers.
 pub const DEFAULT_USER_SUPPORT: bool = cfg!(target_os = "linux");
 
-/// Run a host command and return its [`CommandResult`] as JSON, executing
-/// unconditionally (no dry-run support).
-pub fn run_command<I, S>(program: &str, args: I) -> Result<Value>
-where
-    I: IntoIterator<Item = S>,
-    S: AsRef<OsStr>,
-{
-    Ok(json!(run_command_output(program, args, false)?))
+/// Execute commands. Wrapper around [`run_command_output_as`].
+///
+/// # Usage
+/// - prefix `DRY_RUN` or `DRY_RUN(bool_expr)` to set dry run
+/// - prefix `{ &INFO, action, user }` to set default user
+/// - then add your program name (any expression)
+/// - add `=> args` for your arguments (`args` need to be `Copy`!)
+/// - add `; json` to wrap it around [`serde_json::json!`]
+/// - add `; JSON` to obtain json in the following format:
+/// ```ts
+/// {
+///     "command": result.command,
+///     "status": result.status,
+///     "stdout": result.stdout,
+///     "stderr": result.stderr,
+///     "dry_run": result.dry_run,
+///     "data": stdout,
+/// }
+/// ```
+///
+/// For aesthetic/formatting purposes, the macro partially accepts usages with elided `;` or `=>`.
+#[macro_export]
+macro_rules! cmd {
+    ($($idk:tt)+) => {
+        $crate::__cmd_inner!((false, None) $($idk)+)
+    };
 }
 
-/// Run a host command, or when `dry_run` is true, return what would have been
-/// run without executing it. The returned JSON always carries `dry_run` so the
-/// caller can distinguish a preview from a real result by inspecting the
-/// payload, not just by remembering what it asked for.
-pub fn run_command_or_dry_run<I, S>(program: &str, args: I, dry_run: bool) -> Result<Value>
-where
-    I: IntoIterator<Item = S>,
-    S: AsRef<OsStr>,
-{
-    Ok(json!(run_command_output_as(program, args, dry_run, None)?))
-}
-
-/// Run a host command that is expected to print JSON to stdout, and return a
-/// composite value that includes the parsed stdout (`data`) alongside the
-/// command metadata (status, raw stdout/stderr, dry_run flag).
-///
-/// This is the helper for commands like `podman inspect --format json` where
-/// the interesting content is structured — callers get the parsed value
-/// directly rather than re-parsing `stdout` themselves.
-pub fn run_command_json<I, S>(program: &str, args: I) -> Result<Value>
-where
-    I: IntoIterator<Item = S>,
-    S: AsRef<OsStr>,
-{
-    let result = run_command_output_as(program, args, false, None)?;
-    let data: Value =
-        serde_json::from_str(&result.stdout).context("failed to parse command stdout as JSON")?;
-    Ok(json!({
-        "command": result.command,
-        "status": result.status,
-        "stdout": result.stdout,
-        "stderr": result.stderr,
-        "dry_run": result.dry_run,
-        "data": data,
-    }))
-}
-
-/// Run a host command (or fake it for a dry run) and return a structured
-/// [`CommandResult`].
-///
-/// Dry-run mode short-circuits before spawning the process: the returned
-/// `CommandResult` carries the exact command string that *would* have been run
-/// (so the dashboard can show it), with empty stdout/stderr and `status: None`.
-///
-/// On a real run, a non-zero exit status is converted to an error with the
-/// trimmed stderr in the message — modules don't need to re-check exit codes.
-/// Run a host command (or fake it for a dry run) and return a structured
-/// [`CommandResult`].  When `default_user` is set and the action is not
-/// privileged, the command is executed via `runuser` so it runs under the
-/// configured unprivileged account rather than root.
-pub fn run_command_output<I, S>(program: &str, args: I, dry_run: bool) -> Result<CommandResult>
-where
-    I: IntoIterator<Item = S>,
-    S: AsRef<OsStr>,
-{
-    run_command_output_as(program, args, dry_run, None)
+#[macro_export]
+macro_rules! __cmd_inner {
+    (($dry_run:expr, $default_user:expr) DRY_RUN($dry:expr) $($idk:tt)+) => {
+        $crate::__cmd_inner!(($dry, $default_user) $($idk)+)
+    };
+    (($dry_run:expr, $default_user:expr) ($dry:expr) $($idk:tt)+) => {
+        $crate::__cmd_inner!(($dry, $default_user) $($idk)+)
+    };
+    (($dry_run:expr, $default_user:expr) DRY_RUN $($idk:tt)+) => {
+        $crate::__cmd_inner!((true, $default_user) $($idk)+)
+    };
+    (($dry_run:expr, $default_user:expr) { $info:expr, $act:expr, $user:expr } $($idk:tt)+) => {{
+        let default_user = $crate::agent::module_support::effective_user($info, $act, $user);
+        $crate::__cmd_inner!(($dry_run, default_user) $($idk)+)
+    }};
+    (($dry_run:expr, $default_user:expr) $program:literal $args:expr $(; $($idk:tt)*)?) => {
+        $crate::__cmd_inner!(
+            @{$($($idk)*)?}
+            $crate::agent::module_support::run_command_output_as($program, $args, $dry_run, $default_user)
+        )
+    };
+    (($dry_run:expr, $default_user:expr) $program:literal [$($args:tt)+] $($idk:tt)*) => {
+        $crate::__cmd_inner!(
+            @{$($idk)*}
+            $crate::agent::module_support::run_command_output_as($program, [$($args)+], $dry_run, $default_user)
+        )
+    };
+    (($dry_run:expr, $default_user:expr) $program:expr $(; $($idk:tt)*)?) => {
+        $crate::__cmd_inner!(
+            @{$($($idk)*)?}
+            $crate::agent::module_support::run_command_output_as($program, &[""; 0], $dry_run, $default_user)
+        )
+    };
+    (($dry_run:expr, $default_user:expr) $program:expr => $args:expr $(; $($idk:tt)*)?) => {
+        $crate::__cmd_inner!(
+            @{$($($idk)*)?}
+            $crate::agent::module_support::run_command_output_as($program, $args, $dry_run, $default_user)
+        )
+    };
+    (($dry_run:expr, $default_user:expr) $program:expr => [$($args:tt)+] $($idk:tt)*) => {
+        $crate::__cmd_inner!(
+            @{$($idk)*}
+            $crate::agent::module_support::run_command_output_as($program, [$($args)+], $dry_run, $default_user)
+        )
+    };
+    (@{}$final:expr) => { $final };
+    (@{json}$final:expr) => { $final.map(|obj| ::serde_json::json!(obj)) };
+    (@{JSON}$final:expr) => { $final.and_then(|result| {
+        let data: ::serde_json::Value =
+            ::serde_json::from_str(&result.stdout).context("failed to parse command stdout as JSON")?;
+        Ok($crate::jsonf! { result.command, result.status, result.stdout, result.stderr, result.dry_run, data })
+    }) };
 }
 
 /// Run a host command, optionally impersonating `default_user`.
@@ -202,6 +215,9 @@ where
 /// while executing day-to-day operations (podman inspect, reading configs)
 /// with unprivileged credentials.  Privileged actions bypass this wrapper
 /// by passing `default_user: None`.
+///
+/// # Errors
+/// An error is returned if the command fails to start, or if it exits with a non-zero status code.
 pub fn run_command_output_as<I, S>(
     program: &str,
     args: I,
@@ -209,14 +225,10 @@ pub fn run_command_output_as<I, S>(
     default_user: Option<&str>,
 ) -> Result<CommandResult>
 where
-    I: IntoIterator<Item = S>,
-    S: AsRef<OsStr>,
+    I: IntoIterator<Item = S> + Copy,
+    S: AsRef<OsStr> + std::fmt::Display,
 {
-    let args: Vec<String> = args
-        .into_iter()
-        .map(|arg| arg.as_ref().to_string_lossy().into_owned())
-        .collect();
-    let command = command_display(program, &args);
+    let command = command_display(program, args);
 
     if dry_run {
         return Ok(CommandResult {
@@ -231,11 +243,11 @@ where
     let output = match default_user {
         Some(user) if DEFAULT_USER_SUPPORT => Command::new("runuser")
             .args(["-u", user, "--", program])
-            .args(&args)
+            .args(args)
             .output()
             .with_context(|| format!("failed to run `{program}` as `{user}`")),
         _ => Command::new(program)
-            .args(&args)
+            .args(args)
             .output()
             .with_context(|| format!("failed to run `{program}`")),
     }?;
@@ -245,12 +257,7 @@ where
     let code = output.status.code();
 
     if !output.status.success() {
-        bail!(
-            "`{}` failed with status {:?}: {}",
-            command,
-            code,
-            stderr.trim()
-        );
+        bail!("`{command}` failed with status {code:?}: {}", stderr.trim());
     }
 
     Ok(CommandResult {
@@ -266,7 +273,9 @@ where
 ///
 /// Privileged actions always run as root (`None`). Unprivileged actions run as
 /// the supplied `user` when it is present, otherwise they fall back to root.
-fn effective_user<'a>(
+#[inline]
+#[must_use]
+pub fn effective_user<'a>(
     info: &'a ModuleInfo,
     action: &'a str,
     user: Option<&'a str>,
@@ -276,92 +285,6 @@ fn effective_user<'a>(
     } else {
         user
     }
-}
-
-/// Like [`run_command`], but respects [`ModuleInfo::privileged_actions`] and
-/// runs unprivileged actions as the supplied `user` when available.
-pub fn run_command_for_module<I, S>(
-    info: &ModuleInfo,
-    action: &str,
-    program: &str,
-    args: I,
-    user: Option<&str>,
-) -> Result<Value>
-where
-    I: IntoIterator<Item = S>,
-    S: AsRef<OsStr>,
-{
-    Ok(json!(run_command_output_as(
-        program,
-        args,
-        false,
-        effective_user(info, action, user)
-    )?))
-}
-
-/// Like [`run_command_or_dry_run`], but respects [`ModuleInfo::privileged_actions`]
-/// and runs unprivileged actions as the supplied `user` when available.
-pub fn run_command_or_dry_run_for_module<I, S>(
-    info: &ModuleInfo,
-    action: &str,
-    program: &str,
-    args: I,
-    dry_run: bool,
-    user: Option<&str>,
-) -> Result<Value>
-where
-    I: IntoIterator<Item = S>,
-    S: AsRef<OsStr>,
-{
-    Ok(json!(run_command_output_as(
-        program,
-        args,
-        dry_run,
-        effective_user(info, action, user)
-    )?))
-}
-
-/// Like [`run_command_json`], but respects [`ModuleInfo::privileged_actions`] and
-/// runs unprivileged actions as the supplied `user` when available.
-pub fn run_command_json_for_module<I, S>(
-    info: &ModuleInfo,
-    action: &str,
-    program: &str,
-    args: I,
-    user: Option<&str>,
-) -> Result<Value>
-where
-    I: IntoIterator<Item = S>,
-    S: AsRef<OsStr>,
-{
-    let result = run_command_output_as(program, args, false, effective_user(info, action, user))?;
-    let data: Value =
-        serde_json::from_str(&result.stdout).context("failed to parse command stdout as JSON")?;
-    Ok(json!({
-        "command": result.command,
-        "status": result.status,
-        "stdout": result.stdout,
-        "stderr": result.stderr,
-        "dry_run": result.dry_run,
-        "data": data,
-    }))
-}
-
-/// Like [`run_command_output`], but respects [`ModuleInfo::privileged_actions`] and
-/// runs unprivileged actions as the supplied `user` when available.
-pub fn run_command_output_for_module<I, S>(
-    info: &ModuleInfo,
-    action: &str,
-    program: &str,
-    args: I,
-    dry_run: bool,
-    user: Option<&str>,
-) -> Result<CommandResult>
-where
-    I: IntoIterator<Item = S>,
-    S: AsRef<OsStr>,
-{
-    run_command_output_as(program, args, dry_run, effective_user(info, action, user))
 }
 
 /// Apply SELinux file-context labeling to a path as part of a module action.
@@ -389,11 +312,28 @@ where
 /// Dry-run mode propagates to both `semanage` and `restorecon` calls, so a
 /// dry-run preview of the *whole* action (e.g. write smb.conf + label it)
 /// shows the exact commands without changing the host.
+///
+/// # Errors
+/// An error is returned if `context_type` is set but no pattern can be derived.
+/// Command errors are also propagated.
 pub fn apply_selinux(
     options: Option<&SelinuxOptions>,
     default_path: Option<&Path>,
     dry_run: bool,
 ) -> Result<Vec<Value>> {
+    // Build the default `semanage fcontext` pattern for `path`. Recursive
+    // labeling appends `(/.*)?` so that `restorecon` relabels the whole subtree;
+    // non-recursive labeling targets just the path itself.
+    let default_fcontext_pattern = |path: Option<&String>, recursive: bool| {
+        path.map(|path| {
+            if recursive {
+                format!("{path}(/.*)?")
+            } else {
+                path.to_owned()
+            }
+        })
+    };
+
     let Some(options) = options else {
         return Ok(Vec::new());
     };
@@ -406,36 +346,24 @@ pub fn apply_selinux(
         return Ok(Vec::new());
     }
 
-    let path = options
-        .path
-        .clone()
+    let path = (options.path.clone())
         .or_else(|| default_path.map(|path| path.to_string_lossy().into_owned()));
     let mut operations = Vec::new();
 
     if let Some(context_type) = &options.context_type {
-        let pattern = options
-            .path_pattern
-            .clone()
-            .or_else(|| {
-                path.as_ref()
-                    .map(|path| default_fcontext_pattern(path, options.recursive))
-            })
+        let pattern = (options.path_pattern.clone())
+            .or_else(|| default_fcontext_pattern(path.as_ref(), options.recursive))
             .context("SELinux context_type requires path, path_pattern, or default path")?;
-        operations.push(run_command_or_dry_run(
-            "semanage",
-            ["fcontext", "-a", "-t", context_type, &pattern],
-            dry_run,
-        )?);
+        operations.push(
+            cmd!((dry_run) "semanage" ["fcontext", "-a", "-t", context_type, &pattern] json)?,
+        );
     }
 
-    if let Some(path) = path {
+    if let Some(path) = path.as_deref() {
         let mut args = Vec::new();
-        if options.recursive {
-            args.push("-R".to_string());
-        }
-        args.push("-v".to_string());
-        args.push(path);
-        operations.push(run_command_or_dry_run("restorecon", args, dry_run)?);
+        args.extend(options.recursive.then_some("-R"));
+        args.extend_from_slice(&["-v", path]);
+        operations.push(cmd!((dry_run) "restorecon" &args ; json)?);
     }
 
     Ok(operations)
@@ -447,6 +375,9 @@ pub fn apply_selinux(
 /// This is the guard against path-traversal in module payloads — e.g. a
 /// Quadlet filename from the dashboard can't reach outside the Quadlet scan
 /// directory by sending `../../../etc/passwd`.
+///
+/// # Errors
+/// An error is returned if `name` is absolute or contains any parent-directory
 pub fn safe_join(base: &Path, name: &str) -> Result<PathBuf> {
     let path = Path::new(name);
     if path.is_absolute()
@@ -461,23 +392,14 @@ pub fn safe_join(base: &Path, name: &str) -> Result<PathBuf> {
 }
 
 /// Render a command and its args as a single space-joined display string.
-/// Used both for dry-run previews and for error messages (`\`foo bar\` failed`).
-pub fn command_display(program: &str, args: &[String]) -> String {
-    std::iter::once(program.to_string())
-        .chain(args.iter().cloned())
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-/// Build the default `semanage fcontext` pattern for `path`. Recursive
-/// labeling appends `(/.*)?` so that `restorecon` relabels the whole subtree;
-/// non-recursive labeling targets just the path itself.
-fn default_fcontext_pattern(path: &str, recursive: bool) -> String {
-    if recursive {
-        format!("{path}(/.*)?")
-    } else {
-        path.to_string()
-    }
+/// Used both for dry-run previews and for error messages (`` `foo bar` failed ``).
+#[must_use]
+pub fn command_display<I: IntoIterator<Item = S>, S: std::fmt::Display, P: std::fmt::Display>(
+    program: P,
+    args: I,
+) -> String {
+    let args = (args.into_iter()).map(|arg| Box::new(arg) as Box<dyn std::fmt::Display>);
+    (std::iter::once(Box::new(program) as Box<dyn std::fmt::Display>).chain(args)).join(" ")
 }
 
 /// The result of running (or dry-running) a host command. Serialized as JSON
@@ -530,21 +452,25 @@ mod tests {
             safe_join(base, "unit.container").unwrap(),
             base.join("unit.container")
         );
-        assert!(safe_join(base, "../unit.container").is_err());
-        assert!(safe_join(base, "/tmp/unit.container").is_err());
+        safe_join(base, "../unit.container").unwrap_err();
+        safe_join(base, "/tmp/unit.container").unwrap_err();
     }
 
     #[test]
     fn formats_command_display() {
         assert_eq!(
-            command_display("systemctl", &["status".into(), "nginx.service".into()]),
+            command_display("systemctl", ["status", "nginx.service"]),
             "systemctl status nginx.service"
         );
     }
 
     #[test]
     fn dry_run_command_does_not_execute() {
-        let result = run_command_output("definitely-not-a-real-command", ["arg"], true).unwrap();
+        let result = cmd!(DRY_RUN "definitely-not-a-real-command" ["arg"]).unwrap();
+        assert_eq!(result.command, "definitely-not-a-real-command arg");
+        assert!(result.dry_run);
+        assert_eq!(result.status, None);
+        let result = cmd!((true) "definitely-not-a-real-command" ["arg"]).unwrap();
         assert_eq!(result.command, "definitely-not-a-real-command arg");
         assert!(result.dry_run);
         assert_eq!(result.status, None);

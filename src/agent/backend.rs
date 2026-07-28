@@ -29,18 +29,21 @@ pub struct AgentBackend {
 impl AgentBackend {
     /// Wrap a pre-built dispatcher. Use this when a transport needs a
     /// non-default module set.
-    pub fn new(dispatcher: Dispatcher) -> Self {
+    #[must_use]
+    pub const fn new(dispatcher: Dispatcher) -> Self {
         Self { dispatcher }
     }
 
     /// Build a backend with the default feature-gated module set
     /// ([`modules::default_dispatcher`]).
+    #[must_use]
     pub fn with_default_modules() -> Self {
         Self::new(modules::default_dispatcher())
     }
 
     /// Spawn an actor backed by the default module set and return a handle
     /// the caller can `ask` from any async task.
+    #[must_use]
     pub fn spawn_default() -> ActorRef<Self> {
         Self::spawn(modules::default_dispatcher())
     }
@@ -53,11 +56,8 @@ impl Actor for AgentBackend {
     type Args = Dispatcher;
     type Error = Infallible;
 
-    async fn on_start(
-        dispatcher: Self::Args,
-        _actor_ref: ActorRef<Self>,
-    ) -> Result<Self, Self::Error> {
-        Ok(Self::new(dispatcher))
+    async fn on_start(args: Self::Args, _actor_ref: ActorRef<Self>) -> Result<Self, Self::Error> {
+        Ok(Self::new(args))
     }
 }
 
@@ -76,10 +76,14 @@ impl Message<DispatchCommand> for AgentBackend {
     }
 }
 
-/// Convenience for the `agent-dispatch` CLI: spawn a one-shot backend, dispatch
-/// a single command, and print the response. The actor is dropped when the
-/// returned future completes; the spawned task won't leak because nothing else
-/// holds the `ActorRef`.
+/// Convenience for the `agent-dispatch` CLI.
+///
+/// Spawns a one-shot backend, dispatches a single command, and returns the
+/// response. The actor is dropped when the returned future completes; the
+/// spawned task won't leak because nothing else holds the `ActorRef`.
+///
+/// # Errors
+/// See [`ActorRef::ask`].
 pub async fn dispatch_with_default_backend(command: AgentCommand) -> Result<AgentResponse> {
     let backend = AgentBackend::spawn_default();
     backend

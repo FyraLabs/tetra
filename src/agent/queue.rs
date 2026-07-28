@@ -11,6 +11,7 @@
 //! scheduler can split verified read-only operations into a bounded concurrent
 //! lane without weakening mutation ordering.
 
+use crate::prelude::*;
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
@@ -18,8 +19,6 @@ use std::sync::{
 
 use kameo::actor::ActorRef;
 use tokio::sync::{mpsc, oneshot};
-
-use super::{AgentBackend, AgentCommand, AgentResponse, DispatchCommand};
 
 /// Maximum number of commands waiting or being admitted to the dispatcher by
 /// default. Transports should report a retryable queue-full error instead of
@@ -39,6 +38,14 @@ pub enum QueueError {
     /// The worker stopped, typically because the process is shutting down.
     Closed,
 }
+impl<T> From<mpsc::error::TrySendError<T>> for QueueError {
+    fn from(value: mpsc::error::TrySendError<T>) -> Self {
+        match value {
+            mpsc::error::TrySendError::Full(_) => Self::Full,
+            mpsc::error::TrySendError::Closed(_) => Self::Closed,
+        }
+    }
+}
 
 struct QueuedCommand {
     command: AgentCommand,
@@ -53,6 +60,11 @@ pub struct DispatchQueue {
 }
 
 impl DispatchQueue {
+    /// Spawn a new dispatcher in the tokio global scope.
+    ///
+    /// # Panics
+    /// Dispatch queue capacity must be positive.
+    #[must_use]
     pub fn spawn(backend: ActorRef<AgentBackend>, capacity: usize) -> Self {
         assert!(capacity > 0, "dispatch queue capacity must be positive");
         let (sender, mut receiver) = mpsc::channel::<QueuedCommand>(capacity);
@@ -61,14 +73,14 @@ impl DispatchQueue {
 
         tokio::spawn(async move {
             while let Some(queued) = receiver.recv().await {
-                let response = match backend.ask(DispatchCommand(queued.command)).await {
-                    Ok(response) => response,
-                    Err(error) => AgentResponse::error("dispatch-error", error.to_string()),
-                };
+                let response = backend.ask(DispatchCommand(queued.command)).await;
+                let response = response.unwrap_or_else(|error| {
+                    AgentResponse::error("dispatch-error", error.to_string())
+                });
                 // The receiver may have disconnected after timing out. The
                 // command already ran, so dropping this response is correct;
                 // callers must use command IDs for idempotency/reconciliation.
-                let _ = queued.reply.send(response);
+                _ = queued.reply.send(response);
                 worker_pending.fetch_sub(1, Ordering::Release);
             }
         });
@@ -89,16 +101,12 @@ impl DispatchQueue {
         // Increment before making the item visible to the worker. Otherwise a
         // fast worker could decrement first and underflow the metric.
         self.pending.fetch_add(1, Ordering::Release);
-        if let Err(error) = self.sender.try_send(queued) {
-            self.pending.fetch_sub(1, Ordering::Release);
-            return Err(match error {
-                mpsc::error::TrySendError::Full(_) => QueueError::Full,
-                mpsc::error::TrySendError::Closed(_) => QueueError::Closed,
-            });
-        }
+        (self.sender.try_send(queued))
+            .inspect_err(|_| _ = self.pending.fetch_sub(1, Ordering::Release))?;
         receiver.await.map_err(|_| QueueError::Closed)
     }
 
+    #[must_use]
     pub fn metrics(&self) -> QueueMetrics {
         QueueMetrics {
             capacity: self.capacity,
@@ -110,7 +118,6 @@ impl DispatchQueue {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
 
     #[tokio::test]
     async fn queue_rejects_when_admission_capacity_is_exhausted() {
@@ -127,7 +134,7 @@ mod tests {
                     id: "queued".into(),
                     module: "settings".into(),
                     action: "get_system".into(),
-                    payload: json!({}),
+                    payload: jsonf! {},
                     signature: None,
                     user: None,
                 },
@@ -139,7 +146,7 @@ mod tests {
                 id: "queue-full".into(),
                 module: "settings".into(),
                 action: "get_system".into(),
-                payload: json!({}),
+                payload: jsonf! {},
                 signature: None,
                 user: None,
             })
@@ -159,7 +166,7 @@ mod tests {
                 id: "queue-settings".into(),
                 module: "settings".into(),
                 action: "get_system".into(),
-                payload: json!({}),
+                payload: jsonf! {},
                 signature: None,
                 user: None,
             })

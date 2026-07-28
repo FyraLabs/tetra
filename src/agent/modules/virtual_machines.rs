@@ -22,13 +22,11 @@ use serde_json::{Value, json};
 use crate::agent::{
     AgentModule,
     module_support::{
-        ModuleInfo, ModuleStatus, NamedPayload, handle_metadata, parse_payload,
-        run_command_for_module, run_command_or_dry_run_for_module, run_command_output_for_module,
-        unsupported_action,
+        ModuleInfo, ModuleStatus, NamedPayload, handle_metadata, parse_payload, unsupported_action,
     },
 };
 
-/// Marker type for the virtual_machines module. Stateless; all behavior lives
+/// Marker type for the `virtual_machines` module. Stateless; all behavior lives
 /// in the [`AgentModule`] impl and the static [`INFO`] descriptor.
 pub struct VirtualMachinesModule;
 
@@ -77,7 +75,7 @@ impl AgentModule for VirtualMachinesModule {
 
     fn handle(&self, action: &str, payload: Value, user: Option<&str>) -> Result<Value> {
         // Delegate `capabilities`/`plan` to the shared metadata handler first.
-        if let Some(response) = handle_metadata(INFO, action, payload.clone())? {
+        if let Some(response) = handle_metadata(INFO, action, &payload) {
             return Ok(response);
         }
 
@@ -85,14 +83,7 @@ impl AgentModule for VirtualMachinesModule {
             // `list --all` includes powered-off domains, not just running ones.
             // `list` is a read and therefore never dry-run.
             "list" => {
-                let result = run_command_output_for_module(
-                    &INFO,
-                    action,
-                    "virsh",
-                    ["list", "--all"],
-                    false,
-                    user,
-                )?;
+                let result = crate::cmd!({ &INFO, action, user } "virsh" ["list", "--all"])?;
                 let domains = parse_virsh_list(&result.stdout);
                 Ok(json!({
                     "command": result.command,
@@ -107,14 +98,8 @@ impl AgentModule for VirtualMachinesModule {
             // collapses them into a single JSON object under `domain`.
             "status" => {
                 let payload: NamedPayload = parse_payload(payload)?;
-                let result = run_command_output_for_module(
-                    &INFO,
-                    action,
-                    "virsh",
-                    ["dominfo", &payload.name],
-                    false,
-                    user,
-                )?;
+                let result =
+                    crate::cmd!({ &INFO, action, user } "virsh" ["dominfo", &payload.name])?;
                 let info = parse_virsh_dominfo(&result.stdout);
                 Ok(json!({
                     "command": result.command,
@@ -129,88 +114,47 @@ impl AgentModule for VirtualMachinesModule {
                 let payload: LogsPayload = parse_payload(payload)?;
                 // Logs come from the libvirtd unit journal, not `virsh`, since
                 // virsh itself does not expose host-side daemon logs.
-                run_command_for_module(
-                    &INFO,
-                    action,
-                    "journalctl",
-                    [
-                        "--no-pager",
-                        "-u",
-                        "libvirtd.service",
-                        "-n",
-                        &payload.lines.to_string(),
-                    ],
-                    user,
-                )
+                crate::cmd!({ &INFO, action, user } "journalctl" [
+                    "--no-pager",
+                    "-u",
+                    "libvirtd.service",
+                    "-n",
+                    &payload.lines.to_string()
+                ] json)
             }
             "start" => {
                 let payload: NamedPayload = parse_payload(payload)?;
-                run_command_or_dry_run_for_module(
-                    &INFO,
-                    action,
-                    "virsh",
-                    ["start", &payload.name],
-                    payload.dry_run,
-                    user,
-                )
+                crate::cmd!((payload.dry_run) { &INFO, action, user } "virsh" ["start", &payload.name] json)
             }
             // `stop` uses `shutdown` for a graceful guest-initiated shutdown
             // rather than `destroy` (hard power-off).
             "stop" => {
                 let payload: NamedPayload = parse_payload(payload)?;
-                run_command_or_dry_run_for_module(
-                    &INFO,
-                    action,
-                    "virsh",
-                    ["shutdown", &payload.name],
-                    payload.dry_run,
-                    user,
-                )
+                crate::cmd!((payload.dry_run) { &INFO, action, user } "virsh" ["shutdown", &payload.name] json)
             }
             // `restart` uses `reboot`, the guest-graceful equivalent.
             "restart" => {
                 let payload: NamedPayload = parse_payload(payload)?;
-                run_command_or_dry_run_for_module(
-                    &INFO,
-                    action,
-                    "virsh",
-                    ["reboot", &payload.name],
-                    payload.dry_run,
-                    user,
-                )
+                crate::cmd!((payload.dry_run) { &INFO, action, user } "virsh" ["reboot", &payload.name] json)
             }
             // `create` maps to `define`: register a persistent domain from the
             // given XML file. See the module docs for why we avoid `virsh create`.
             "create" => {
                 let payload: CreatePayload = parse_payload(payload)?;
-                run_command_or_dry_run_for_module(
-                    &INFO,
-                    action,
-                    "virsh",
-                    ["define", &payload.xml_path],
-                    payload.dry_run,
-                    user,
-                )
+                crate::cmd!((payload.dry_run) { &INFO, action, user } "virsh" ["define", &payload.xml_path] json)
             }
             // `delete` maps to `undefine`: remove the domain registration. It
             // does not delete disk images by default.
             "delete" => {
                 let payload: NamedPayload = parse_payload(payload)?;
-                run_command_or_dry_run_for_module(
-                    &INFO,
-                    action,
-                    "virsh",
-                    ["undefine", &payload.name],
-                    payload.dry_run,
-                    user,
-                )
+                crate::cmd!((payload.dry_run) { &INFO, action, user } "virsh" ["undefine", &payload.name] json)
             }
             _ => unsupported_action(INFO.name, action),
         }
     }
 }
 
-fn default_log_lines() -> u16 {
+const fn default_log_lines() -> u16 {
     100
 }
 
@@ -259,7 +203,7 @@ fn parse_virsh_dominfo(stdout: &str) -> Value {
         };
         object.insert(
             key.trim().to_lowercase().replace(' ', "_"),
-            Value::String(value.trim().to_string()),
+            Value::String(value.trim().to_owned()),
         );
     }
     Value::Object(object)

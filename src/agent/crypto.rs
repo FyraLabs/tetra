@@ -33,6 +33,9 @@ struct SignedCommand<'a> {
 }
 
 /// Produce the exact bytes that Ed25519 signs and verifies.
+///
+/// # Errors
+/// Errs if `session_id` or `nonce` is empty.
 pub fn canonical_command_bytes(
     command: &AgentCommand,
     session_id: &str,
@@ -58,6 +61,10 @@ pub fn canonical_command_bytes(
 }
 
 /// Sign a command context and return an URL-safe base64 signature.
+///
+/// # Errors
+/// Propagated from [`canonical_command_bytes`]:
+/// > Errs if `session_id` or `nonce` is empty.
 pub fn sign_command(
     signing_key: &SigningKey,
     command: &AgentCommand,
@@ -71,6 +78,7 @@ pub fn sign_command(
 }
 
 /// Sign a connection challenge during WebSocket authentication.
+#[must_use]
 pub fn sign_challenge(
     signing_key: &SigningKey,
     protocol_version: &str,
@@ -89,6 +97,9 @@ pub fn sign_challenge(
 }
 
 /// Verify a dashboard signature over a connection challenge.
+///
+/// # Errors
+/// An error is returned if the signature is invalid, or the verification failed.
 pub fn verify_challenge_signature(
     verifying_key: &VerifyingKey,
     signature: &str,
@@ -96,11 +107,7 @@ pub fn verify_challenge_signature(
     session_id: &str,
     challenge: &str,
 ) -> Result<()> {
-    let encoded = URL_SAFE_NO_PAD
-        .decode(signature)
-        .map_err(|_| anyhow::anyhow!("challenge signature is not valid base64url"))?;
-    let signature = Signature::from_slice(&encoded)
-        .map_err(|_| anyhow::anyhow!("challenge signature has invalid length"))?;
+    let signature = decode_signature(signature)?;
     verifying_key
         .verify(
             &crate::agent::protocol::challenge_bytes(protocol_version, session_id, challenge),
@@ -110,6 +117,9 @@ pub fn verify_challenge_signature(
 }
 
 /// Verify an URL-safe base64 Ed25519 signature.
+///
+/// # Errors
+/// An error is returned if the signature is invalid, or the verification failed.
 pub fn verify_command_signature(
     verifying_key: &VerifyingKey,
     signature: &str,
@@ -119,15 +129,20 @@ pub fn verify_command_signature(
     timestamp: i64,
     nonce: &str,
 ) -> Result<()> {
+    let signature = decode_signature(signature)?;
+    let bytes = canonical_command_bytes(command, session_id, sequence, timestamp, nonce)?;
+    verifying_key
+        .verify(&bytes, &signature)
+        .map_err(|_| anyhow::anyhow!("command signature verification failed"))
+}
+
+fn decode_signature(signature: &str) -> Result<Signature, anyhow::Error> {
     let encoded = URL_SAFE_NO_PAD
         .decode(signature)
         .map_err(|_| anyhow::anyhow!("command signature is not valid base64url"))?;
     let signature = Signature::from_slice(&encoded)
         .map_err(|_| anyhow::anyhow!("command signature has invalid length"))?;
-    let bytes = canonical_command_bytes(command, session_id, sequence, timestamp, nonce)?;
-    verifying_key
-        .verify(&bytes, &signature)
-        .map_err(|_| anyhow::anyhow!("command signature verification failed"))
+    Ok(signature)
 }
 
 /// Recursively sort JSON object keys. Arrays retain their order because array
@@ -149,11 +164,15 @@ fn canonicalize(value: Value) -> Value {
 }
 
 /// Return a compact public-key fingerprint for enrollment and logs.
+#[must_use]
 pub fn public_key_fingerprint(verifying_key: &VerifyingKey) -> String {
     URL_SAFE_NO_PAD.encode(verifying_key.as_bytes())
 }
 
 /// Parse a URL-safe base64 public key.
+///
+/// # Errors
+/// Returns and error if the public key is not valid base64url or does not contain 32 bytes.
 pub fn parse_verifying_key(encoded: &str) -> Result<VerifyingKey> {
     let bytes = URL_SAFE_NO_PAD
         .decode(encoded)
@@ -183,12 +202,13 @@ mod tests {
 
     #[test]
     fn canonicalization_is_independent_of_object_key_order() {
+        let nonce = format!("nonce-{}", 1);
         let left = canonical_command_bytes(
             &command(json!({"z": 1, "a": {"y": true, "b": false}})),
             "session-1",
             1,
             1_700_000_000,
-            "nonce-1",
+            &nonce,
         )
         .unwrap();
         let right = canonical_command_bytes(
@@ -196,7 +216,7 @@ mod tests {
             "session-1",
             1,
             1_700_000_000,
-            "nonce-1",
+            &nonce,
         )
         .unwrap();
         assert_eq!(left, right);
@@ -207,8 +227,8 @@ mod tests {
         let signing_key = SigningKey::from_bytes(&[7_u8; 32]);
         let verifying_key = signing_key.verifying_key();
         let command = command(json!({"value": 42}));
-        let signature =
-            sign_command(&signing_key, &command, "session-1", 1, 100, "nonce-1").unwrap();
+        let nonce = format!("nonce-{}", 1);
+        let signature = sign_command(&signing_key, &command, "session-1", 1, 100, &nonce).unwrap();
 
         verify_command_signature(
             &verifying_key,
@@ -217,21 +237,19 @@ mod tests {
             "session-1",
             1,
             100,
-            "nonce-1",
+            &nonce,
         )
         .unwrap();
-        assert!(
-            verify_command_signature(
-                &verifying_key,
-                &signature,
-                &command,
-                "session-1",
-                2,
-                100,
-                "nonce-1",
-            )
-            .is_err()
-        );
+        verify_command_signature(
+            &verifying_key,
+            &signature,
+            &command,
+            "session-1",
+            2,
+            100,
+            &nonce,
+        )
+        .unwrap_err();
     }
 
     #[test]

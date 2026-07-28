@@ -14,7 +14,7 @@ use serde_json::Value;
 /// `signature` is reserved for future command signing. It is currently only
 /// checked for emptiness (see [`Dispatcher::dispatch`](super::Dispatcher)); a
 /// non-empty value is accepted but not yet verified against a key.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct AgentCommand {
     pub id: String,
     pub module: String,
@@ -33,7 +33,7 @@ pub struct AgentCommand {
 ///
 /// Exactly one of `payload` (success) or `error` (failure) is set; the
 /// `skip_serializing_if` attributes keep the wire format compact.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentResponse {
     pub id: String,
     pub ok: bool,
@@ -45,7 +45,7 @@ pub struct AgentResponse {
 
 impl AgentResponse {
     /// Build a successful response carrying `payload`, echoing the command `id`.
-    pub fn ok(id: impl Into<String>, payload: Value) -> Self {
+    pub fn ok<S: Into<String>>(id: S, payload: Value) -> Self {
         Self {
             id: id.into(),
             ok: true,
@@ -56,7 +56,7 @@ impl AgentResponse {
 
     /// Build an error response carrying a human-readable `error` message,
     /// echoing the command `id`.
-    pub fn error(id: impl Into<String>, error: impl Into<String>) -> Self {
+    pub fn error<S: Into<String>, E: Into<String>>(id: S, error: E) -> Self {
         Self {
             id: id.into(),
             ok: false,

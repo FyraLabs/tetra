@@ -15,18 +15,10 @@
 //! `set_config` supports the shared `selinux` options so written keyfiles can
 //! be relabeled (e.g. `NetworkManager_etc_t`) on SELinux-enabled hosts.
 
-use std::{fs, path::PathBuf};
+use crate::prelude::*;
 
-use anyhow::{Context, Result};
-use serde::Deserialize;
-use serde_json::{Value, json};
-
-use crate::agent::{
-    AgentModule,
-    module_support::{
-        ModuleInfo, ModuleStatus, SelinuxOptions, apply_selinux, handle_metadata, parse_payload,
-        run_command_json_for_module, run_command_or_dry_run_for_module, unsupported_action,
-    },
+use crate::agent::module_support::{
+    SelinuxOptions, apply_selinux, handle_metadata, parse_payload, unsupported_action,
 };
 
 /// Marker type for the network module. Stateless; all behavior lives in the
@@ -91,7 +83,7 @@ impl AgentModule for NetworkModule {
 
     fn handle(&self, action: &str, payload: Value, user: Option<&str>) -> Result<Value> {
         // Delegate `capabilities`/`plan` to the shared metadata handler first.
-        if let Some(response) = handle_metadata(INFO, action, payload.clone())? {
+        if let Some(response) = handle_metadata(INFO, action, &payload) {
             return Ok(response);
         }
 
@@ -99,23 +91,23 @@ impl AgentModule for NetworkModule {
             // Sysfs-based snapshot of present interfaces. `unwrap_or_default`
             // keeps the action resilient: a transient read failure yields an
             // empty list rather than a 500 to the control plane.
-            "interfaces" => Ok(json!({ "interfaces": read_interfaces().unwrap_or_default() })),
+            "interfaces" => Ok(jsonf! { "interfaces": read_interfaces().unwrap_or_default() }),
             "status" => {
                 let payload: InterfacePayload = parse_payload(payload)?;
                 // `ip -json addr show` returns structured JSON we can pass
                 // through verbatim; an optional `dev <name>` narrows the scope.
-                let mut args = vec!["-json".to_string(), "addr".to_string(), "show".to_string()];
+                let mut args = vec!["-json".to_owned(), "addr".to_owned(), "show".to_owned()];
                 if let Some(interface) = payload.interface {
                     args.push("dev".into());
                     args.push(interface);
                 }
-                run_command_json_for_module(&INFO, action, "ip", args, user)
+                crate::cmd!({ &INFO, action, user } "ip" => &args ; JSON)
             }
             "get_config" => {
                 let payload: ConfigPayload = parse_payload(payload)?;
                 let contents = fs::read_to_string(&payload.path)
                     .with_context(|| format!("failed to read `{}`", payload.path.display()))?;
-                Ok(json!({ "path": payload.path, "contents": contents }))
+                Ok(jsonf! { payload.path, contents })
             }
             "set_config" => {
                 let payload: SetConfigPayload = parse_payload(payload)?;
@@ -130,25 +122,18 @@ impl AgentModule for NetworkModule {
                     Some(&payload.path),
                     payload.dry_run,
                 )?;
-                Ok(json!({
-                    "path": payload.path,
+                Ok(jsonf! {
+                    payload.path,
                     "written": !payload.dry_run,
-                    "dry_run": payload.dry_run,
-                    "selinux": selinux,
-                }))
+                    payload.dry_run,
+                    selinux,
+                })
             }
             "reload" => {
                 let payload: DryRunPayload = parse_payload(payload)?;
                 // `reload-or-restart` applies new keyfiles without dropping
                 // active connections when possible, falling back to a restart.
-                run_command_or_dry_run_for_module(
-                    &INFO,
-                    action,
-                    "systemctl",
-                    ["reload-or-restart", "NetworkManager.service"],
-                    payload.dry_run,
-                    user,
-                )
+                crate::cmd!((payload.dry_run) { &INFO, action, user } "systemctl" ["reload-or-restart", "NetworkManager.service"] ; json)
             }
             _ => unsupported_action(INFO.name, action),
         }
@@ -170,16 +155,12 @@ fn read_interfaces() -> Result<Vec<Value>> {
         let operstate = fs::read_to_string(entry.path().join("operstate"))
             .unwrap_or_default()
             .trim()
-            .to_string();
+            .to_owned();
         let address = fs::read_to_string(entry.path().join("address"))
             .unwrap_or_default()
             .trim()
-            .to_string();
-        interfaces.push(json!({
-            "name": name,
-            "operstate": operstate,
-            "mac": address,
-        }));
+            .to_owned();
+        interfaces.push(jsonf! { name, operstate, "mac": address });
     }
     interfaces.sort_by(|left, right| left["name"].as_str().cmp(&right["name"].as_str()));
     Ok(interfaces)
@@ -189,6 +170,7 @@ fn read_interfaces() -> Result<Vec<Value>> {
 mod tests {
     use super::*;
     use crate::agent::AgentModule;
+    use serde_json::json;
 
     #[test]
     fn dry_run_set_config_does_not_write() {

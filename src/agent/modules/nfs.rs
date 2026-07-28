@@ -7,18 +7,10 @@
 //! `public_content_rw_t`) in the same request — otherwise SELinux denies nfsd
 //! access to the path on enforcing hosts.
 
-use std::{fs, path::PathBuf};
+use crate::prelude::*;
 
-use anyhow::{Context, Result};
-use serde::Deserialize;
-use serde_json::{Value, json};
-
-use crate::agent::{
-    AgentModule,
-    module_support::{
-        ModuleInfo, ModuleStatus, SelinuxOptions, apply_selinux, handle_metadata, parse_payload,
-        run_command_or_dry_run_for_module, unsupported_action,
-    },
+use crate::agent::module_support::{
+    SelinuxOptions, apply_selinux, handle_metadata, parse_payload, unsupported_action,
 };
 
 /// NFS module entry point registered under feature `nfs`.
@@ -87,7 +79,7 @@ impl AgentModule for NfsModule {
     fn handle(&self, action: &str, payload: Value, user: Option<&str>) -> Result<Value> {
         // Standard metadata fast-path: `capabilities` and `plan` are answered
         // from `INFO` without touching the system.
-        if let Some(response) = handle_metadata(INFO, action, payload.clone())? {
+        if let Some(response) = handle_metadata(INFO, action, &payload) {
             return Ok(response);
         }
 
@@ -95,12 +87,15 @@ impl AgentModule for NfsModule {
             "list_exports" => {
                 let payload: ConfigPayload = parse_payload(payload)?;
                 let contents = read_config(&payload.path)?;
-                Ok(json!({ "path": payload.path, "exports": parse_exports(&contents) }))
+                Ok(jsonf! {
+                    payload.path,
+                    "exports": parse_exports(&contents),
+                })
             }
             "get_config" => {
                 let payload: ConfigPayload = parse_payload(payload)?;
                 let contents = read_config(&payload.path)?;
-                Ok(json!({ "path": payload.path, "contents": contents }))
+                Ok(jsonf! { payload.path, contents })
             }
             "set_config" => {
                 let payload: SetConfigPayload = parse_payload(payload)?;
@@ -118,48 +113,27 @@ impl AgentModule for NfsModule {
                     Some(&payload.path),
                     payload.dry_run,
                 )?;
-                Ok(json!({
-                    "path": payload.path,
+                Ok(jsonf! {
+                    payload.path,
                     "written": !payload.dry_run,
-                    "dry_run": payload.dry_run,
-                    "selinux": selinux,
-                }))
+                    payload.dry_run,
+                    selinux,
+                })
             }
             "reload" => {
                 // `exportfs -ra` re-exports everything in /etc/exports in
                 // place, without bouncing nfs-server — that avoids dropping
                 // existing clients mid-reload.
                 let payload: DryRunPayload = parse_payload(payload)?;
-                run_command_or_dry_run_for_module(
-                    &INFO,
-                    action,
-                    "exportfs",
-                    ["-ra"],
-                    payload.dry_run,
-                    user,
-                )
+                crate::cmd!((payload.dry_run) { &INFO, action, user } "exportfs" ["-ra"] ; json)
             }
             "enable" => {
                 let payload: DryRunPayload = parse_payload(payload)?;
-                run_command_or_dry_run_for_module(
-                    &INFO,
-                    action,
-                    "systemctl",
-                    ["enable", "--now", "nfs-server.service"],
-                    payload.dry_run,
-                    user,
-                )
+                crate::cmd!((payload.dry_run) { &INFO, action, user } "systemctl" ["enable", "--now", "nfs-server.service"] ; json)
             }
             "disable" => {
                 let payload: DryRunPayload = parse_payload(payload)?;
-                run_command_or_dry_run_for_module(
-                    &INFO,
-                    action,
-                    "systemctl",
-                    ["disable", "--now", "nfs-server.service"],
-                    payload.dry_run,
-                    user,
-                )
+                crate::cmd!((payload.dry_run) { &INFO, action, user } "systemctl" ["disable", "--now", "nfs-server.service"] ; json)
             }
             _ => unsupported_action(INFO.name, action),
         }
@@ -190,10 +164,10 @@ fn parse_exports(contents: &str) -> Vec<Value> {
         .filter_map(|line| {
             let mut fields = line.split_whitespace();
             let path = fields.next()?;
-            Some(json!({
-                "path": path,
+            Some(jsonf! {
+                path,
                 "clients": fields.collect::<Vec<_>>(),
-            }))
+            })
         })
         .collect()
 }
@@ -218,7 +192,7 @@ mod tests {
         let response = NfsModule
             .handle(
                 "set_config",
-                json!({ "path": path, "contents": "/srv/media *(rw)\n", "dry_run": true }),
+                jsonf! { path, "contents": "/srv/media *(rw)\n", "dry_run": true },
                 None,
             )
             .unwrap();
@@ -237,8 +211,8 @@ mod tests {
         let response = NfsModule
             .handle(
                 "set_config",
-                json!({
-                    "path": path,
+                jsonf! {
+                    path,
                     "contents": "/srv/export *(rw)\n",
                     "dry_run": true,
                     "selinux": {
@@ -246,7 +220,7 @@ mod tests {
                         "context_type": "public_content_rw_t",
                         "recursive": true
                     }
-                }),
+                },
                 None,
             )
             .unwrap();

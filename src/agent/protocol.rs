@@ -3,22 +3,14 @@
 //! WebSocket framing will use these types in the next transport increment. The
 //! validator is transport-neutral so outbound WSS and inbound development WSS
 //! cannot accidentally implement different replay rules.
-
-use std::{
-    collections::{HashSet, VecDeque},
-    time::{SystemTime, UNIX_EPOCH},
-};
-
-use super::{AgentCommand, crypto::verify_command_signature};
-use anyhow::{Result, bail, ensure};
+use crate::prelude::*;
 use ed25519_dalek::VerifyingKey;
-use serde::{Deserialize, Serialize};
 
 pub const PROTOCOL_VERSION: &str = "2026-07-auth-v1";
 pub const DEFAULT_CLOCK_SKEW_SECONDS: i64 = 5 * 60;
 pub const DEFAULT_NONCE_LIMIT: usize = 4096;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AuthFrame {
     EnrollmentRequired {
@@ -123,8 +115,8 @@ pub struct AuthenticatedSession {
 }
 
 impl AuthenticatedSession {
-    pub fn new(
-        session_id: impl Into<String>,
+    pub fn new<S: Into<String>>(
+        session_id: S,
         verifying_key: VerifyingKey,
         user: Option<String>,
         policy: SessionPolicy,
@@ -147,10 +139,12 @@ impl AuthenticatedSession {
         })
     }
 
+    #[must_use]
     pub fn user(&self) -> Option<&str> {
         self.user.as_deref()
     }
 
+    #[must_use]
     pub fn session_id(&self) -> &str {
         &self.session_id
     }
@@ -180,8 +174,9 @@ impl AuthenticatedSession {
             "command sequence is not next"
         );
         ensure!(nonce.len() >= 16, "command nonce is too short");
+        let skew = now.saturating_sub(*timestamp).abs();
         ensure!(
-            (now - *timestamp).abs() <= self.policy.clock_skew_seconds,
+            skew <= self.policy.clock_skew_seconds,
             "command timestamp is outside the allowed clock skew"
         );
         ensure!(
@@ -209,20 +204,26 @@ impl AuthenticatedSession {
             .ok_or_else(|| anyhow::anyhow!("command sequence exhausted"))?;
         self.nonces.insert(nonce.clone());
         self.nonce_order.push_back(nonce.clone());
-        while self.nonce_order.len() > self.policy.nonce_limit {
-            if let Some(oldest) = self.nonce_order.pop_front() {
-                self.nonces.remove(&oldest);
-            }
+        let nounces = self.nonce_order.len();
+        if let excess @ 1.. = nounces.saturating_sub(self.policy.nonce_limit) {
+            (self.nonce_order.drain(..excess)).for_each(|old| _ = self.nonces.remove(&old));
         }
         Ok(command)
     }
 }
 
-pub fn unix_timestamp() -> Result<i64> {
-    Ok(SystemTime::now()
+/// Returns the current Unix timestamp in seconds since the epoch.
+///
+/// # Panics
+/// Panics if the system clock is before the Unix epoch.
+#[must_use]
+pub fn unix_timestamp() -> i64 {
+    SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map_err(|_| anyhow::anyhow!("system clock is before Unix epoch"))?
-        .as_secs() as i64)
+        .expect("system clock is before Unix epoch")
+        .as_secs()
+        .try_into()
+        .expect("unix_timestamp overflow when casting u64 → i64")
 }
 
 #[derive(Serialize)]
@@ -234,6 +235,12 @@ struct SignedChallenge<'a> {
 
 /// Canonical challenge bytes signed during authentication. A struct fixes field
 /// order, avoiding JSON-map implementation differences between Rust and Node.
+///
+/// # Panics
+///
+/// Panics if the challenge struct cannot be serialized to JSON. This should
+/// never happen because it only contains `&str` fields.
+#[must_use]
 pub fn challenge_bytes(protocol_version: &str, session_id: &str, challenge: &str) -> Vec<u8> {
     serde_json::to_vec(&SignedChallenge {
         protocol_version,
@@ -249,6 +256,10 @@ mod tests {
     use crate::agent::{AgentCommand, crypto::sign_command};
     use ed25519_dalek::SigningKey;
     use serde_json::json;
+
+    fn test_nonce(n: u64) -> String {
+        format!("nonce-{n:012}")
+    }
 
     fn signed_frame(key: &SigningKey, sequence: u64, timestamp: i64, nonce: &str) -> AuthFrame {
         let mut command = AgentCommand {
@@ -284,10 +295,10 @@ mod tests {
         )
         .unwrap();
         session
-            .accept_command(&signed_frame(&key, 0, 1000, "nonce-000000000001"), 1000)
+            .accept_command(&signed_frame(&key, 0, 1000, &test_nonce(1)), 1000)
             .unwrap();
         session
-            .accept_command(&signed_frame(&key, 1, 1001, "nonce-000000000002"), 1001)
+            .accept_command(&signed_frame(&key, 1, 1001, &test_nonce(2)), 1001)
             .unwrap();
     }
 
@@ -301,19 +312,15 @@ mod tests {
             SessionPolicy::default(),
         )
         .unwrap();
-        let first = signed_frame(&key, 0, 1000, "nonce-000000000001");
+        let first = signed_frame(&key, 0, 1000, &test_nonce(1));
         session.accept_command(&first, 1000).unwrap();
-        assert!(session.accept_command(&first, 1000).is_err());
-        assert!(
-            session
-                .accept_command(&signed_frame(&key, 2, 1000, "nonce-000000000002"), 1000)
-                .is_err()
-        );
-        assert!(
-            session
-                .accept_command(&signed_frame(&key, 1, 0, "nonce-000000000003"), 1000)
-                .is_err()
-        );
+        session.accept_command(&first, 1000).unwrap_err();
+        session
+            .accept_command(&signed_frame(&key, 2, 1000, &test_nonce(2)), 1000)
+            .unwrap_err();
+        session
+            .accept_command(&signed_frame(&key, 1, 0, &test_nonce(3)), 1000)
+            .unwrap_err();
     }
 
     #[test]
@@ -330,10 +337,10 @@ mod tests {
         )
         .unwrap();
         session
-            .accept_command(&signed_frame(&key, 0, 1000, "nonce-000000000001"), 1000)
+            .accept_command(&signed_frame(&key, 0, 1000, &test_nonce(1)), 1000)
             .unwrap();
         session
-            .accept_command(&signed_frame(&key, 1, 1000, "nonce-000000000002"), 1000)
+            .accept_command(&signed_frame(&key, 1, 1000, &test_nonce(2)), 1000)
             .unwrap();
         assert_eq!(session.nonces.len(), 1);
     }

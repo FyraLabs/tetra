@@ -5,8 +5,6 @@ use futures_util::{SinkExt, StreamExt};
 
 use rand::RngExt;
 use serde::{Deserialize, Serialize};
-#[cfg(test)]
-use serde_json::{Value, json};
 use tokio::time::sleep;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
@@ -23,7 +21,7 @@ const PROTOCOL_VERSION: &str = "2026-06-29";
 /// Upper bound for reconnect backoff. Without this a long partition could
 /// push the delay into hours; capping at 60s keeps the agent responsive to a
 /// control-plane restart.
-const MAX_RECONNECT_DELAY: Duration = Duration::from_secs(60);
+const MAX_RECONNECT_DELAY: Duration = Duration::from_mins(1);
 
 /// Configuration for the outbound WSS control-plane connection (`agent-connect`).
 ///
@@ -75,9 +73,71 @@ enum TransportFrame {
     },
 }
 
+impl TransportFrame {
+    /// Serialize and send one frame as a text message. We always send text (not
+    /// binary) so the frames are easy to inspect in a proxy or log.
+    async fn send<S>(&self, socket: &mut S) -> Result<()>
+    where
+        S: SinkExt<Message> + Unpin,
+        <S as futures_util::Sink<Message>>::Error: std::error::Error + Send + Sync + 'static,
+    {
+        let text = serde_json::to_string(&self).context("failed to serialize websocket frame")?;
+        socket
+            .send(Message::Text(text.into()))
+            .await
+            .context("failed to send websocket frame")
+    }
+
+    /// Dispatch one received frame. `Command` frames go to the backend actor and
+    /// the response is sent back as a `Response` frame; `Ping` is echoed as a
+    /// `Pong`; anything else (including `Hello`, `Response`, `Pong`, `Error`) is
+    /// rejected with an `Error` frame — the control plane should never send those
+    /// to an agent.
+    async fn handle<S>(self, socket: &mut S, queue: &DispatchQueue) -> Result<()>
+    where
+        S: SinkExt<Message> + Unpin,
+        <S as futures_util::Sink<Message>>::Error: std::error::Error + Send + Sync + 'static,
+    {
+        match self {
+            Self::Command { command } => match queue.dispatch(command).await {
+                Ok(response) => Self::Response { response }.send(socket).await?,
+                Err(QueueError::Full) => {
+                    Self::Error {
+                        error: "Tetra command queue is full; retry after backoff".into(),
+                    }
+                    .send(socket)
+                    .await?;
+                }
+                Err(QueueError::Closed) => {
+                    Self::Error {
+                        error: "Tetra command queue is unavailable".into(),
+                    }
+                    .send(socket)
+                    .await?;
+                    bail!("dispatch queue closed")
+                }
+            },
+            Self::Ping { id, sent_at } => {
+                Self::Pong { id, sent_at }.send(socket).await?;
+            }
+            Self::Hello { .. } | Self::Response { .. } | Self::Pong { .. } | Self::Error { .. } => {
+                Self::Error {
+                    error: "unsupported frame from control plane".into(),
+                }
+                .send(socket)
+                .await?;
+            }
+        }
+
+        Ok(())
+    }
+}
+
 /// Connect to the control plane, exchange frames until the session closes, and
-/// (if `reconnect`) reconnect with backoff. The outer loop is the reconnect
-/// loop; the inner [`connect_once`] is a single session.
+/// (if `reconnect`) reconnect with backoff.
+///
+/// The outer loop is the reconnect loop; the inner [`connect_once`] is a single
+/// session.
 pub async fn run(config: WebSocketAgentConfig) -> Result<()> {
     let url = match config.transport.endpoint()? {
         TransportEndpoint::WebSocket { url } => url,
@@ -86,7 +146,7 @@ pub async fn run(config: WebSocketAgentConfig) -> Result<()> {
         }
     };
 
-    validate_tls_config(&url, &config.transport)?;
+    config.transport.validate(&url)?;
 
     let queue = DispatchQueue::spawn(AgentBackend::spawn_default(), DEFAULT_QUEUE_CAPACITY);
     let mut attempt = 0_u32;
@@ -131,17 +191,15 @@ async fn connect_once(
         response.status()
     );
 
-    send_frame(
-        &mut socket,
-        &TransportFrame::Hello {
-            host_id: config.host_id.clone(),
-            agent_version: env!("CARGO_PKG_VERSION").to_string(),
-            protocol_version: PROTOCOL_VERSION.to_string(),
-            hostname: hostname(),
-            os: env::consts::OS.to_string(),
-            arch: env::consts::ARCH.to_string(),
-        },
-    )
+    TransportFrame::Hello {
+        host_id: config.host_id.clone(),
+        agent_version: env!("CARGO_PKG_VERSION").to_owned(),
+        protocol_version: PROTOCOL_VERSION.to_owned(),
+        hostname: hostname(),
+        os: env::consts::OS.to_owned(),
+        arch: env::consts::ARCH.to_owned(),
+    }
+    .send(&mut socket)
     .await?;
 
     while let Some(message) = socket.next().await {
@@ -149,114 +207,23 @@ async fn connect_once(
             Message::Text(text) => {
                 let frame: TransportFrame =
                     serde_json::from_str(&text).context("invalid websocket frame JSON")?;
-                handle_frame(&mut socket, queue.clone(), frame).await?;
+                frame.handle(&mut socket, &queue).await?;
             }
             Message::Binary(bytes) => {
                 let frame: TransportFrame =
                     serde_json::from_slice(&bytes).context("invalid websocket frame JSON")?;
-                handle_frame(&mut socket, queue.clone(), frame).await?;
+                frame.handle(&mut socket, &queue).await?;
             }
             // tungstenite handles Ping/Pong at the protocol layer; we just echo.
             Message::Ping(bytes) => socket.send(Message::Pong(bytes)).await?,
-            Message::Pong(_) => {}
+            Message::Pong(_) | Message::Frame(_) => {}
             Message::Close(frame) => {
                 eprintln!("control plane closed websocket: {frame:?}");
                 return Ok(());
             }
-            // Raw frames only appear when the underlying codec is in a state we
-            // don't model; tungstenite normally decodes these for us, so this
-            // is a defensive no-op.
-            Message::Frame(_) => {}
         }
     }
 
-    Ok(())
-}
-
-/// Dispatch one received frame. `Command` frames go to the backend actor and
-/// the response is sent back as a `Response` frame; `Ping` is echoed as a
-/// `Pong`; anything else (including `Hello`, `Response`, `Pong`, `Error`) is
-/// rejected with an `Error` frame — the control plane should never send those
-/// to an agent.
-async fn handle_frame<S>(socket: &mut S, queue: DispatchQueue, frame: TransportFrame) -> Result<()>
-where
-    S: SinkExt<Message> + Unpin,
-    <S as futures_util::Sink<Message>>::Error: std::error::Error + Send + Sync + 'static,
-{
-    match frame {
-        TransportFrame::Command { command } => match queue.dispatch(command).await {
-            Ok(response) => send_frame(socket, &TransportFrame::Response { response }).await?,
-            Err(QueueError::Full) => {
-                send_frame(
-                    socket,
-                    &TransportFrame::Error {
-                        error: "Tetra command queue is full; retry after backoff".into(),
-                    },
-                )
-                .await?;
-            }
-            Err(QueueError::Closed) => {
-                send_frame(
-                    socket,
-                    &TransportFrame::Error {
-                        error: "Tetra command queue is unavailable".into(),
-                    },
-                )
-                .await?;
-                bail!("dispatch queue closed")
-            }
-        },
-        TransportFrame::Ping { id, sent_at } => {
-            send_frame(socket, &TransportFrame::Pong { id, sent_at }).await?;
-        }
-        TransportFrame::Hello { .. }
-        | TransportFrame::Response { .. }
-        | TransportFrame::Pong { .. }
-        | TransportFrame::Error { .. } => {
-            send_frame(
-                socket,
-                &TransportFrame::Error {
-                    error: "unsupported frame from control plane".into(),
-                },
-            )
-            .await?;
-        }
-    }
-
-    Ok(())
-}
-
-/// Serialize and send one frame as a text message. We always send text (not
-/// binary) so the frames are easy to inspect in a proxy or log.
-async fn send_frame<S>(socket: &mut S, frame: &TransportFrame) -> Result<()>
-where
-    S: SinkExt<Message> + Unpin,
-    <S as futures_util::Sink<Message>>::Error: std::error::Error + Send + Sync + 'static,
-{
-    let text = serde_json::to_string(frame).context("failed to serialize websocket frame")?;
-    socket
-        .send(Message::Text(text.into()))
-        .await
-        .context("failed to send websocket frame")
-}
-
-/// Reject production WSS configurations until the transport has enough TLS
-/// material for explicit mutual authentication. The current connector still
-/// needs a custom rustls client setup to consume these files; failing closed is
-/// safer than silently using platform roots and ignoring the configured mTLS
-/// paths.
-fn validate_tls_config(url: &str, config: &TransportConfig) -> Result<()> {
-    if url.starts_with("ws://") {
-        bail!("outbound production transport requires wss://; ws:// is development-only")
-    }
-    if config.client_cert_path.is_none()
-        || config.client_key_path.is_none()
-        || config.server_ca_path.is_none()
-    {
-        bail!(
-            "wss control-plane transport requires client_cert_path, client_key_path, and server_ca_path"
-        )
-    }
     Ok(())
 }
 
@@ -268,7 +235,7 @@ fn reconnect_delay(attempt: u32) -> Duration {
     let base = Duration::from_secs(2_u64.saturating_pow(exponent));
     let capped = base.min(MAX_RECONNECT_DELAY);
     let jitter_ms = rand::rng().random_range(0..=1000);
-    capped + Duration::from_millis(jitter_ms)
+    capped.saturating_add(Duration::from_millis(jitter_ms))
 }
 
 /// Best-effort hostname for the `Hello` frame. `HOSTNAME` is what systemd
@@ -285,6 +252,7 @@ fn hostname() -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::Value;
 
     #[test]
     fn reconnect_delay_is_capped() {
@@ -295,11 +263,9 @@ mod tests {
     fn rejects_incomplete_or_plaintext_outbound_tls_configuration() {
         let incomplete = TransportConfig {
             control_plane_url: "wss://dashboard.example.test/tetra".into(),
-            client_cert_path: None,
-            client_key_path: None,
-            server_ca_path: None,
+            ..Default::default()
         };
-        assert!(validate_tls_config(&incomplete.control_plane_url, &incomplete).is_err());
+        (incomplete.validate(&incomplete.control_plane_url)).unwrap_err();
 
         let plaintext = TransportConfig {
             control_plane_url: "ws://127.0.0.1:7780".into(),
@@ -307,7 +273,7 @@ mod tests {
             client_key_path: Some("client.key".into()),
             server_ca_path: Some("ca.crt".into()),
         };
-        assert!(validate_tls_config(&plaintext.control_plane_url, &plaintext).is_err());
+        (plaintext.validate(&plaintext.control_plane_url)).unwrap_err();
     }
 
     #[test]
@@ -317,9 +283,7 @@ mod tests {
                 id: "cmd-1".into(),
                 module: "settings".into(),
                 action: "get_system".into(),
-                payload: json!({}),
-                signature: None,
-                user: None,
+                ..Default::default()
             },
         };
 

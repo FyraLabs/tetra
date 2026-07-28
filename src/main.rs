@@ -12,11 +12,11 @@ use tetra::{
     agent::{
         AgentCommand, backend,
         transport::TransportConfig,
-        vsock::{self, VsockAgentConfig},
+        vsock::VsockAgentConfig,
         websocket::{self, WebSocketAgentConfig},
         websocket_server::{self, WebSocketServerConfig},
     },
-    catalog::{self, RenderOptions},
+    catalog::{RenderOptions, RenderedResource},
 };
 
 /// Tetra CLI entry point.
@@ -51,7 +51,7 @@ enum Commands {
     AgentDispatch(AgentDispatchCli),
 
     /// Serve the local agent backend over a Linux virtio-vsock listener.
-    AgentVsockServe(AgentVsockServeCli),
+    AgentVsockServe(VsockAgentConfig),
 
     /// Connect the local agent backend to an outbound WSS control plane.
     AgentConnect(AgentConnectCli),
@@ -89,17 +89,6 @@ struct AgentDispatchCli {
 }
 
 #[derive(Debug, Parser)]
-struct AgentVsockServeCli {
-    /// Vsock port to listen on inside the VM guest.
-    #[arg(long, default_value_t = 2048)]
-    port: u32,
-
-    /// Maximum accepted command JSON body size in bytes.
-    #[arg(long, default_value_t = 1024 * 1024)]
-    max_command_bytes: usize,
-}
-
-#[derive(Debug, Parser)]
 struct AgentWsServeCli {
     /// Loopback address for the WebSocket listener.
     #[arg(long, default_value = "127.0.0.1:7780")]
@@ -128,7 +117,7 @@ struct AgentWsServeCli {
 
 #[derive(Debug, Parser)]
 struct AgentConnectCli {
-    /// JSON transport config containing control_plane_url and optional TLS paths.
+    /// JSON transport config containing `control_plane_url` and optional TLS paths.
     #[arg(short, long, value_name = "FILE")]
     config: PathBuf,
 
@@ -148,14 +137,14 @@ async fn main() -> Result<()> {
     match cli.command {
         Commands::Render(cli) => render(cli),
         Commands::AgentDispatch(cli) => agent_dispatch(cli).await,
-        Commands::AgentVsockServe(cli) => agent_vsock_serve(cli),
+        Commands::AgentVsockServe(cli) => cli.serve(),
         Commands::AgentConnect(cli) => agent_connect(cli).await,
         Commands::AgentWsServe(cli) => agent_ws_serve(cli).await,
     }
 }
 
 fn render(cli: RenderCli) -> Result<()> {
-    let resources = catalog::render_from_files(&RenderOptions {
+    let resources = RenderedResource::from_files(&RenderOptions {
         recipe_path: cli.recipe,
         values_path: cli.values,
         templates_dir: cli.templates_dir,
@@ -182,16 +171,15 @@ fn render(cli: RenderCli) -> Result<()> {
 async fn agent_dispatch(cli: AgentDispatchCli) -> Result<()> {
     // Read the command envelope from either a path arg or stdin. Stdin lets
     // the agent be driven from a shell pipeline without a temp file.
-    let text = match cli.command {
-        Some(path) => fs::read_to_string(&path)
-            .with_context(|| format!("failed to read command `{}`", path.display()))?,
-        None => {
-            let mut text = String::new();
-            io::stdin()
-                .read_to_string(&mut text)
-                .context("failed to read command from stdin")?;
-            text
-        }
+    let text = if let Some(path) = cli.command {
+        fs::read_to_string(&path)
+            .with_context(|| format!("failed to read command `{}`", path.display()))?
+    } else {
+        let mut text = String::new();
+        io::stdin()
+            .read_to_string(&mut text)
+            .context("failed to read command from stdin")?;
+        text
     };
 
     let command: AgentCommand =
@@ -204,23 +192,28 @@ async fn agent_dispatch(cli: AgentDispatchCli) -> Result<()> {
     Ok(())
 }
 
-async fn agent_ws_serve(cli: AgentWsServeCli) -> Result<()> {
-    websocket_server::serve(WebSocketServerConfig {
-        listen: cli.listen,
-        controller_public_key: cli.controller_public_key,
-        enrollment_token: cli.enrollment_token,
-        identity_dir: cli.identity_dir,
-        tls_cert_path: cli.tls_cert,
-        tls_key_path: cli.tls_key,
+async fn agent_ws_serve(
+    AgentWsServeCli {
+        listen,
+        controller_public_key,
+        enrollment_token,
+        identity_dir,
+        tls_cert,
+        tls_key,
+    }: AgentWsServeCli,
+) -> Result<()> {
+    anyhow::ensure!(
+        tls_cert.as_ref().xor(tls_key.as_ref()).is_none(),
+        "--tls-cert and --tls-key must be supplied together"
+    );
+    websocket_server::WebSocketServerConfig::serve(WebSocketServerConfig {
+        listen,
+        controller_public_key,
+        enrollment_token,
+        identity_dir,
+        tls_cert_key_path: tls_cert.zip(tls_key),
     })
     .await
-}
-
-fn agent_vsock_serve(cli: AgentVsockServeCli) -> Result<()> {
-    vsock::serve(VsockAgentConfig {
-        port: cli.port,
-        max_command_bytes: cli.max_command_bytes,
-    })
 }
 
 async fn agent_connect(cli: AgentConnectCli) -> Result<()> {
