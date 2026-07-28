@@ -221,7 +221,9 @@ pub fn unix_timestamp() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("system clock is before Unix epoch")
-        .as_secs() as i64
+        .as_secs()
+        .try_into()
+        .expect("unix_timestamp overflow when casting u64 → i64")
 }
 
 #[derive(Serialize)]

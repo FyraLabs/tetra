@@ -47,7 +47,6 @@ impl VsockAgentConfig {
 
     #[cfg(target_os = "linux")]
     fn serve_with_dispatcher(&self, dispatcher: &Arc<Dispatcher>) -> Result<()> {
-        let dispatcher: &Arc<Dispatcher> = &dispatcher;
         use socket2::{Domain, SockAddr, Socket, Type};
 
         // VMADDR_CID_ANY (-1 / u32::MAX) tells the host kernel to accept
@@ -70,7 +69,7 @@ impl VsockAgentConfig {
             let (stream, peer) = listener
                 .accept()
                 .context("failed to accept vsock connection")?;
-            let dispatcher = Arc::clone(&dispatcher);
+            let dispatcher = Arc::clone(dispatcher);
             let max_command_bytes = self.max_command_bytes;
             let peer = peer.as_vsock_address().map_or_else(
                 || "cid=- port=-".into(),
