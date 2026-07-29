@@ -30,6 +30,8 @@ fn dispatcher_reports_enabled_modules() {
         .collect::<Vec<_>>();
 
     assert!(names.contains(&"settings"));
+    #[cfg(feature = "apps")]
+    assert!(names.contains(&"apps"));
     #[cfg(feature = "files")]
     assert!(names.contains(&"files"));
     #[cfg(feature = "recipes")]
@@ -272,6 +274,135 @@ fn quadlets_module_supports_dry_run_and_system_scope() {
         system_scope.payload.unwrap()["base_dir"],
         "/etc/containers/systemd"
     );
+}
+
+#[cfg(feature = "apps")]
+#[test]
+fn apps_module_cooks_lists_and_removes_apps() {
+    let dir = tempdir().unwrap();
+    let files_dir = tempdir().unwrap();
+    let base_dir = dir.path();
+    let files_base_dir = files_dir.path();
+
+    let create = dispatch(
+        "apps",
+        "create",
+        json!({
+            "name": "demo",
+            "base_dir": base_dir,
+            "files_base_dir": files_base_dir,
+            "converge": false,
+            "recipe": r#"
+recipe_id: nginx-site
+name: Nginx static site
+version: 0.1.0
+parameters:
+  - key: app_id
+    label: App ID
+    type: string
+    default: demo-web
+resources:
+  - type: container
+    filename: "{{ app_id }}.container"
+    template: containers/nginx.container.tera
+  - type: file
+    filename: site/index.html
+    template: files/index.html.tera
+"#,
+            "templates": {
+                "containers/nginx.container.tera": "[Container]\nContainerName={{ app_id }}\nImage=docker.io/library/nginx:alpine\n",
+                "files/index.html.tera": "<h1>{{ app_id }}</h1>\n",
+            },
+            "values": { "app_id": "demo-web" },
+        }),
+    );
+    assert!(create.ok, "{create:?}");
+    let payload = create.payload.unwrap();
+    assert_eq!(payload["units"], json!(["demo-web.container"]));
+    assert_eq!(payload["files"], json!(["site/index.html"]));
+    assert!(base_dir.join("demo-web.container").exists());
+    assert!(files_base_dir.join("demo/app.json").exists());
+
+    let list = dispatch(
+        "apps",
+        "list",
+        json!({ "base_dir": base_dir, "files_base_dir": files_base_dir }),
+    );
+    assert!(list.ok, "{list:?}");
+    let apps = list.payload.unwrap()["apps"].as_array().unwrap().clone();
+    assert_eq!(apps.len(), 1);
+    assert_eq!(apps[0]["name"], "demo");
+    assert_eq!(apps[0]["recipe_id"], "nginx-site");
+
+    let get = dispatch(
+        "apps",
+        "get",
+        json!({
+            "name": "demo",
+            "base_dir": base_dir,
+            "files_base_dir": files_base_dir,
+        }),
+    );
+    assert!(get.ok, "{get:?}");
+    let payload = get.payload.unwrap();
+    assert_eq!(payload["app"]["values"]["app_id"], "demo-web");
+    assert_eq!(payload["services"], json!(["demo-web.service"]));
+
+    let remove = dispatch(
+        "apps",
+        "remove",
+        json!({
+            "name": "demo",
+            "base_dir": base_dir,
+            "files_base_dir": files_base_dir,
+            "converge": false,
+        }),
+    );
+    assert!(remove.ok, "{remove:?}");
+    assert!(!base_dir.join("demo-web.container").exists());
+    assert!(!files_base_dir.join("demo").exists());
+}
+
+#[cfg(feature = "apps")]
+#[test]
+fn apps_create_dry_run_previews_systemd_commands() {
+    let dir = tempdir().unwrap();
+    let files_dir = tempdir().unwrap();
+
+    let create = dispatch(
+        "apps",
+        "create",
+        json!({
+            "name": "demo",
+            "base_dir": dir.path(),
+            "files_base_dir": files_dir.path(),
+            "dry_run": true,
+            "recipe": "recipe_id: nginx-site\nname: Nginx static site\nversion: 0.1.0\nparameters:\n  - key: app_id\n    label: App ID\n    type: string\n    default: demo-web\nresources:\n  - type: container\n    filename: \"{{ app_id }}.container\"\n    template: containers/nginx.container.tera\n",
+            "templates": {
+                "containers/nginx.container.tera": "[Container]\nContainerName={{ app_id }}\n",
+            },
+            "values": { "app_id": "demo-web" },
+        }),
+    );
+    assert!(create.ok, "{create:?}");
+    let payload = create.payload.unwrap();
+    assert_eq!(payload["dry_run"], true);
+    assert_eq!(payload["written"], false);
+    let commands = payload["systemd"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|op| op["command"].as_str().unwrap().to_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        commands,
+        [
+            "systemctl daemon-reload",
+            "systemctl enable demo-web.service",
+            "systemctl start demo-web.service",
+        ]
+    );
+    assert!(!dir.path().join("demo-web.container").exists());
 }
 
 #[cfg(feature = "services")]

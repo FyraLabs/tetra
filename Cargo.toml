@@ -7,6 +7,7 @@ description = "A modular host agent for Ultramarine Server and cloud hosts"
 
 [features]
 default = [
+    "apps",
     "files",
     "recipes",
     "selinux",
@@ -20,6 +21,7 @@ default = [
     "storage",
     "network",
 ]
+apps = ["quadlets", "services"]
 files = []
 recipes = []
 selinux = []

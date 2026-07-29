@@ -2,7 +2,7 @@
 
 Tetra is a modular host agent and recipe renderer for the [Ultramarine Server Dashboard](https://github.com/Ultramarine-Linux/dashboard).
 It is organized around a single dispatcher with independent,
-feature-gated modules for files, recipes, SELinux, services, Quadlets,
+feature-gated modules for apps, files, recipes, SELinux, services, Quadlets,
 reverse-proxy, Podman, Samba, NFS, users, and virtual machines. The `settings`
 module is always compiled so the control plane can discover basic host facts.
 
@@ -34,6 +34,7 @@ to render.
 
 Default build features:
 
+- `apps`
 - `files`
 - `recipes`
 - `selinux`
@@ -110,6 +111,9 @@ Run it:
 ```sh
 cargo run -- agent-dispatch examples/settings.command.json
 ```
+
+`examples/apps.command.json` shows a dry-run `apps.create` that cooks an
+inline recipe into an installed app bundle.
 
 ### Inbound WebSocket server (development)
 

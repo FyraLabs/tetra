@@ -1,5 +1,7 @@
 //! Shared domain types used by Tetra's agent modules
 
+use serde_yaml::Value as YamlValue;
+
 use crate::agent::module_support::SelinuxOptions;
 use crate::prelude::*;
 
@@ -195,6 +197,158 @@ pub struct ServiceRequest {
     pub scope: ServiceScope,
     #[serde(default)]
     pub dry_run: bool,
+}
+
+const fn default_true() -> bool {
+    true
+}
+
+/// Target of an `apps.remove` action.
+///
+/// Identifies which installed app to remove, in which scope, and whether to
+/// converge systemd (stop/disable + daemon-reload) while removing it. The
+/// directory overrides exist so tests and custom deployments can redirect the
+/// Quadlet scan dir and the companion data root.
+#[derive(Debug, Deserialize)]
+pub struct AppRequest {
+    pub name: String,
+    #[serde(default)]
+    pub scope: ServiceScope,
+    pub base_dir: Option<PathBuf>,
+    pub files_base_dir: Option<PathBuf>,
+    #[serde(default = "default_true")]
+    pub converge: bool,
+    #[serde(default)]
+    pub dry_run: bool,
+}
+
+/// Where an app's recipe comes from.
+///
+/// A recipe is either shipped inline (`recipe` + `templates`) or referenced
+/// on disk (`recipe_path` + `templates_dir`); exactly one form must be given.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "source", rename_all = "snake_case")]
+pub enum AppRecipeSource {
+    Inline {
+        recipe: String,
+        #[serde(default)]
+        templates: BTreeMap<String, String>,
+    },
+    File {
+        recipe_path: PathBuf,
+        templates_dir: PathBuf,
+    },
+}
+
+/// Payload for `apps.create`: cook a recipe into an installed app bundle.
+///
+/// `values` are merged over `values_path` (inline wins), so a dashboard can
+/// ship a defaults file plus per-instance overrides. `converge` controls the
+/// systemd phase; when `false` only files are written and systemd is left
+/// untouched (no daemon-reload, no enable/start), letting a controller run
+/// that phase itself through the `services` module.
+#[derive(Debug, Deserialize)]
+pub struct AppCreateRequest {
+    pub name: String,
+    #[serde(default)]
+    pub scope: ServiceScope,
+    pub base_dir: Option<PathBuf>,
+    pub files_base_dir: Option<PathBuf>,
+    pub recipe: Option<String>,
+    #[serde(default)]
+    pub templates: BTreeMap<String, String>,
+    pub recipe_path: Option<PathBuf>,
+    pub templates_dir: Option<PathBuf>,
+    pub values_path: Option<PathBuf>,
+    #[serde(default)]
+    pub values: BTreeMap<String, YamlValue>,
+    #[serde(default)]
+    pub selinux: Option<SelinuxOptions>,
+    #[serde(default = "default_true")]
+    pub converge: bool,
+    #[serde(default)]
+    pub dry_run: bool,
+}
+
+/// Payload for `apps.update`: re-cook an installed app.
+///
+/// `values` are merged per-key over the stored values from `create` (or the
+/// last `update`), so secrets do not have to be re-sent on every edit.
+/// Passing a new `recipe` / `recipe_path` swaps the recipe source (e.g. a
+/// recipe upgrade).
+#[derive(Debug, Deserialize)]
+pub struct AppUpdateRequest {
+    pub name: String,
+    #[serde(default)]
+    pub scope: ServiceScope,
+    pub base_dir: Option<PathBuf>,
+    pub files_base_dir: Option<PathBuf>,
+    pub recipe: Option<String>,
+    pub templates: Option<BTreeMap<String, String>>,
+    pub recipe_path: Option<PathBuf>,
+    pub templates_dir: Option<PathBuf>,
+    #[serde(default)]
+    pub values: BTreeMap<String, YamlValue>,
+    #[serde(default)]
+    pub selinux: Option<SelinuxOptions>,
+    #[serde(default = "default_true")]
+    pub converge: bool,
+    #[serde(default)]
+    pub dry_run: bool,
+}
+
+/// Payload for `apps.get`: read one installed app's manifest and on-disk
+/// state. Read-only, so there is no `dry_run`.
+#[derive(Debug, Deserialize)]
+pub struct AppGetRequest {
+    pub name: String,
+    #[serde(default)]
+    pub scope: ServiceScope,
+    pub base_dir: Option<PathBuf>,
+    pub files_base_dir: Option<PathBuf>,
+}
+
+/// Payload for `apps.list`: enumerate installed app bundles under the
+/// companion data root. Read-only.
+#[derive(Debug, Deserialize)]
+pub struct AppListRequest {
+    #[serde(default)]
+    pub scope: ServiceScope,
+    pub base_dir: Option<PathBuf>,
+    pub files_base_dir: Option<PathBuf>,
+}
+
+/// The on-disk record of one installed app.
+///
+/// Serialized as `<bundle>/app.json` under the companion data root (e.g.
+/// `/var/lib/tetra/quadlets/<name>/app.json` in system scope), tying the app
+/// to the recipe and values it was cooked from.
+///
+/// The manifest is what makes the bundle self-contained: `update` re-renders
+/// from the stored recipe source and merged values, `remove` derives the
+/// units/services to tear down, and config backups can snapshot one directory
+/// per app. `values` may contain secrets, so the manifest is root-owned data
+/// and is excluded from secret-free backups.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppManifest {
+    /// Manifest schema version; currently 1.
+    pub version: u32,
+    pub name: String,
+    pub scope: ServiceScope,
+    pub recipe_id: String,
+    pub recipe_version: String,
+    pub recipe: AppRecipeSource,
+    #[serde(default)]
+    pub values: BTreeMap<String, YamlValue>,
+    /// Quadlet unit filenames installed into the scan directory.
+    #[serde(default)]
+    pub units: Vec<String>,
+    /// Companion file paths, relative to the bundle directory.
+    #[serde(default)]
+    pub files: Vec<String>,
+    /// Seconds since the Unix epoch.
+    pub created_at: u64,
+    pub updated_at: u64,
 }
 
 #[derive(Debug, Deserialize)]
