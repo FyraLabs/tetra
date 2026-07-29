@@ -14,7 +14,7 @@
         "check": {
           "command": "clippy",
           "allTargets": true,
-          "extraArgs": ["--", "-D", "warnings"],
+          "extraArgs": ["--"],
         },
         "diagnostics": {
           "disabled": ["macro-error"],
