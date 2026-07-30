@@ -3,6 +3,7 @@
 use serde_yaml::Value as YamlValue;
 
 use crate::agent::module_support::SelinuxOptions;
+use crate::catalog::{AppRecipe, RenderedResource};
 use crate::prelude::*;
 
 #[derive(Debug, Deserialize)]
@@ -248,6 +249,31 @@ pub enum AppRecipeSource {
     },
 }
 
+impl AppRecipeSource {
+    /// Render the recipe with `values`, returning the parsed recipe alongside
+    /// the rendered resources so callers can record `recipe_id`/`version`.
+    pub fn render(
+        &self,
+        values: &BTreeMap<String, YamlValue>,
+    ) -> Result<(AppRecipe, Vec<RenderedResource>)> {
+        match self {
+            Self::Inline { recipe, templates } => {
+                let recipe = AppRecipe::load_str(recipe)?;
+                let resources = recipe.render_with_templates(values, templates)?;
+                Ok((recipe, resources))
+            }
+            Self::File {
+                recipe_path,
+                templates_dir,
+            } => {
+                let recipe = AppRecipe::load(recipe_path)?;
+                let resources = recipe.render(values, templates_dir)?;
+                Ok((recipe, resources))
+            }
+        }
+    }
+}
+
 /// Payload for `apps.create`: cook a recipe into an installed app bundle.
 ///
 /// `values` are merged over `values_path` (inline wins), so a dashboard can
@@ -278,6 +304,30 @@ pub struct AppCreateRequest {
     pub dry_run: bool,
 }
 
+impl AppCreateRequest {
+    /// Build the recipe source for a `create`: exactly one of the inline
+    /// bundle or the on-disk paths must be given.
+    pub fn recipe_source(&self) -> Result<AppRecipeSource> {
+        match (&self.recipe, &self.recipe_path) {
+            (Some(recipe), None) => Ok(AppRecipeSource::Inline {
+                recipe: recipe.clone(),
+                templates: self.templates.clone(),
+            }),
+            (None, Some(recipe_path)) => Ok(AppRecipeSource::File {
+                recipe_path: recipe_path.clone(),
+                templates_dir: self
+                    .templates_dir
+                    .clone()
+                    .context("`templates_dir` is required with `recipe_path`")?,
+            }),
+            (Some(_), Some(_)) => bail!("pass either `recipe` or `recipe_path`, not both"),
+            (None, None) => {
+                bail!("`create` requires either `recipe` (inline) or `recipe_path` (file)")
+            }
+        }
+    }
+}
+
 /// Payload for `apps.update`: re-cook an installed app.
 ///
 /// `values` are merged per-key over the stored values from `create` (or the
@@ -303,6 +353,30 @@ pub struct AppUpdateRequest {
     pub converge: bool,
     #[serde(default)]
     pub dry_run: bool,
+}
+
+impl AppUpdateRequest {
+    /// Build the replacement recipe source for an `update`, or `None` to keep
+    /// the stored one. An inline recipe with no `templates` replaces the
+    /// template bundle with an empty one; callers keeping the same templates
+    /// can omit the field only when the stored source is reused unchanged.
+    pub fn recipe_source(&self) -> Result<Option<AppRecipeSource>> {
+        match (&self.recipe, &self.recipe_path) {
+            (Some(recipe), None) => Ok(Some(AppRecipeSource::Inline {
+                recipe: recipe.clone(),
+                templates: self.templates.clone().unwrap_or_default(),
+            })),
+            (None, Some(recipe_path)) => Ok(Some(AppRecipeSource::File {
+                recipe_path: recipe_path.clone(),
+                templates_dir: self
+                    .templates_dir
+                    .clone()
+                    .context("`templates_dir` is required with `recipe_path`")?,
+            })),
+            (Some(_), Some(_)) => bail!("pass either `recipe` or `recipe_path`, not both"),
+            (None, None) => Ok(None),
+        }
+    }
 }
 
 /// Payload for `apps.get`: read one installed app's manifest and on-disk
@@ -357,6 +431,32 @@ pub struct AppManifest {
     /// Seconds since the Unix epoch.
     pub created_at: u64,
     pub updated_at: u64,
+}
+
+impl AppManifest {
+    /// The systemd services Quadlet generates for the app's units.
+    /// `.network`/`.volume` units have no service of their own — Podman pulls
+    /// them in as dependencies of the containers that use them.
+    #[must_use]
+    pub fn services(&self) -> Vec<String> {
+        self.units
+            .iter()
+            .filter_map(|unit| unit_service_name(unit))
+            .collect()
+    }
+}
+
+/// Derive the systemd service Quadlet generates for a unit filename, or
+/// `None` for units that are not directly started (`.network`, `.volume`).
+/// `.container`/`.kube` produce `<stem>.service`; `.pod` produces
+/// `<stem>-pod.service`.
+fn unit_service_name(filename: &str) -> Option<String> {
+    let (stem, extension) = filename.rsplit_once('.')?;
+    match extension {
+        "container" | "kube" => Some(format!("{stem}.service")),
+        "pod" => Some(format!("{stem}-pod.service")),
+        _ => None,
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -504,5 +604,39 @@ mod tests {
     fn virtual_machine_log_request_defaults_to_one_hundred_lines() {
         let logs: VirtualMachineLogsRequest = serde_json::from_value(json!({})).unwrap();
         assert_eq!(logs.lines, 100);
+    }
+
+    #[test]
+    fn manifest_derives_service_names_from_unit_filenames() {
+        let manifest = AppManifest {
+            version: 1,
+            name: "demo".into(),
+            scope: ServiceScope::System,
+            recipe_id: "demo-web".into(),
+            recipe_version: "0.1.0".into(),
+            recipe: AppRecipeSource::Inline {
+                recipe: String::new(),
+                templates: BTreeMap::new(),
+            },
+            values: BTreeMap::new(),
+            units: [
+                "demo-web.container",
+                "site.kube",
+                "pair.pod",
+                "demo-net.network",
+                "demo-data.volume",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .collect(),
+            files: Vec::new(),
+            created_at: 0,
+            updated_at: 0,
+        };
+
+        assert_eq!(
+            manifest.services(),
+            ["demo-web.service", "site.service", "pair-pod.service"]
+        );
     }
 }

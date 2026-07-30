@@ -57,11 +57,11 @@ use crate::agent::module_support::{apply_selinux, safe_join};
 use crate::agent::modules::quadlets::{
     QuadletScope, list_companion_files, quadlet_base_dir, quadlet_files_base_dir, validate_quadlet,
 };
-use crate::catalog::{AppRecipe, RenderedResource, ResourceKind, load_values};
+use crate::catalog::{RenderedResource, ResourceKind, load_values};
 use crate::prelude::*;
 use crate::types::{
-    AppCreateRequest, AppGetRequest, AppListRequest, AppManifest, AppRecipeSource, AppRequest,
-    AppUpdateRequest, ServiceScope,
+    AppCreateRequest, AppGetRequest, AppListRequest, AppManifest, AppRequest, AppUpdateRequest,
+    ServiceScope,
 };
 
 use super::ServicesModule;
@@ -114,77 +114,79 @@ impl Mod for AppsModule {
 
 actions!(Action [payload user] => {
     List: AppListRequest => {
-        let (_base_dir, files_root) = app_dirs(payload.base_dir, payload.files_base_dir, payload.scope)?;
+        let dirs = AppDirs::resolve(payload.base_dir, payload.files_base_dir, payload.scope)?;
         let mut apps = Vec::new();
         // Directories under the data root whose `app.json` cannot be read are
         // reported by name rather than failing the whole listing — they are
         // either corrupted bundles or stray unmanaged directories, both of
         // which the dashboard should surface.
         let mut invalid = Vec::new();
-        if files_root.exists() {
-            for entry in fs::read_dir(&files_root)
-                .with_context(|| format!("failed to read `{}`", files_root.display()))?
+        if dirs.files_root.exists() {
+            for entry in fs::read_dir(&dirs.files_root)
+                .with_context(|| format!("failed to read `{}`", dirs.files_root.display()))?
             {
                 let entry = entry?;
                 if !entry.file_type()?.is_dir() {
                     continue;
                 }
-                let bundle_dir = entry.path();
-                match load_manifest(&bundle_dir) {
-                    Ok(manifest) => apps.push(app_summary(&bundle_dir, &manifest)),
-                    Err(_) => invalid.push(entry.file_name().to_string_lossy().into_owned()),
+                let name = entry.file_name().to_string_lossy().into_owned();
+                let bundle = dirs.bundle(&name)?;
+                match bundle.manifest() {
+                    Ok(manifest) => apps.push(bundle.summary(&manifest)),
+                    Err(_) => invalid.push(name),
                 }
             }
         }
         apps.sort_by(|left, right| left["name"].as_str().cmp(&right["name"].as_str()));
         invalid.sort();
-        Ok(jsonf! { "files_base_dir": files_root, apps, invalid })
+        Ok(jsonf! { "files_base_dir": dirs.files_root, apps, invalid })
     },
     Get: AppGetRequest => {
         validate_app_name(&payload.name)?;
-        let (base_dir, files_root) = app_dirs(payload.base_dir, payload.files_base_dir, payload.scope)?;
-        let bundle_dir = safe_join(&files_root, &payload.name)?;
-        let manifest = load_manifest(&bundle_dir)?;
+        let dirs = AppDirs::resolve(payload.base_dir, payload.files_base_dir, payload.scope)?;
+        let bundle = dirs.bundle(&payload.name)?;
+        let manifest = bundle.manifest()?;
         // Report the on-disk state alongside the manifest so drift (a unit
         // deleted behind the agent's back) is visible to the dashboard.
         let units = manifest
             .units
             .iter()
             .map(|filename| {
-                let path = base_dir.join(filename);
+                let path = dirs.base_dir.join(filename);
                 jsonf! { filename, path, "exists": path.exists() }
             })
             .collect::<Vec<_>>();
-        let files = list_companion_files(&bundle_dir)?
+        let files = list_companion_files(&bundle.dir)?
             .into_iter()
             .filter(|file| file.filename() != APP_MANIFEST)
             .collect::<Vec<_>>();
-        let services = manifest
-            .units
-            .iter()
-            .filter_map(|unit| unit_service_name(unit))
-            .collect::<Vec<_>>();
-        Ok(jsonf! { "app": manifest, base_dir, bundle_dir, units, files, services })
+        let services = manifest.services();
+        Ok(jsonf! {
+            "app": manifest,
+            "base_dir": dirs.base_dir,
+            "bundle_dir": bundle.dir,
+            units, files, services,
+        })
     },
     Create: AppCreateRequest => {
         validate_app_name(&payload.name)?;
-        let (base_dir, files_root) = app_dirs(payload.base_dir.clone(), payload.files_base_dir.clone(), payload.scope)?;
-        let bundle_dir = safe_join(&files_root, &payload.name)?;
+        let dirs = AppDirs::resolve(payload.base_dir.clone(), payload.files_base_dir.clone(), payload.scope)?;
+        let bundle = dirs.bundle(&payload.name)?;
         ensure!(
-            !bundle_dir.exists(),
+            !bundle.exists(),
             "app `{}` already exists; use `update` to modify it",
             payload.name
         );
 
-        let source = create_source(&payload)?;
+        let source = payload.recipe_source()?;
         // Inline values win over the optional values file, so a dashboard can
         // ship recipe defaults plus per-instance overrides in one call.
         let mut values = load_values(payload.values_path.as_ref())?;
         values.extend(payload.values);
-        inject_bundle_dir(&mut values, &bundle_dir);
-        let (recipe, resources) = render_recipe(&source, &values)?;
+        bundle.inject_dir(&mut values);
+        let (recipe, resources) = source.render(&values)?;
 
-        let outcome = install_bundle(&base_dir, &bundle_dir, &resources, None, payload.dry_run)?;
+        let outcome = bundle.install(&resources, None, payload.dry_run)?;
         let now = epoch_secs();
         let manifest = AppManifest {
             version: MANIFEST_VERSION,
@@ -199,21 +201,19 @@ actions!(Action [payload user] => {
             created_at: now,
             updated_at: now,
         };
-        let manifest_path = write_manifest(&bundle_dir, &manifest, payload.dry_run)?;
-        let selinux = apply_selinux(payload.selinux.as_ref(), Some(&bundle_dir), payload.dry_run)?;
-        let services = outcome
-            .units
-            .iter()
-            .filter_map(|unit| unit_service_name(unit))
-            .collect::<Vec<_>>();
+        let manifest_path = bundle.write_manifest(&manifest, payload.dry_run)?;
+        let selinux = apply_selinux(payload.selinux.as_ref(), Some(&bundle.dir), payload.dry_run)?;
+        let services = manifest.services();
         let systemd = if payload.converge {
-            systemd_converge(&services, payload.scope, "start", payload.dry_run, user)?
+            Systemd::new(payload.scope, payload.dry_run, user).converge(&services, "start")?
         } else {
             Vec::new()
         };
         Ok(jsonf! {
             "app": manifest,
-            base_dir, bundle_dir, manifest_path,
+            "base_dir": dirs.base_dir,
+            "bundle_dir": bundle.dir,
+            manifest_path,
             outcome.units, outcome.files,
             services, systemd, selinux,
             "written": !payload.dry_run,
@@ -222,40 +222,38 @@ actions!(Action [payload user] => {
     },
     Update: AppUpdateRequest => {
         validate_app_name(&payload.name)?;
-        let (base_dir, files_root) = app_dirs(payload.base_dir.clone(), payload.files_base_dir.clone(), payload.scope)?;
-        let bundle_dir = safe_join(&files_root, &payload.name)?;
-        let mut manifest = load_manifest(&bundle_dir)?;
+        let dirs = AppDirs::resolve(payload.base_dir.clone(), payload.files_base_dir.clone(), payload.scope)?;
+        let bundle = dirs.bundle(&payload.name)?;
+        let mut manifest = bundle.manifest()?;
 
         // A new recipe source replaces the stored one (recipe upgrade);
         // values merge per-key so secrets collected earlier are not resent.
-        if let Some(source) = update_source(&payload)? {
+        if let Some(source) = payload.recipe_source()? {
             manifest.recipe = source;
         }
         manifest.values.extend(payload.values);
-        inject_bundle_dir(&mut manifest.values, &bundle_dir);
-        let (recipe, resources) = render_recipe(&manifest.recipe, &manifest.values)?;
+        bundle.inject_dir(&mut manifest.values);
+        let (recipe, resources) = manifest.recipe.render(&manifest.values)?;
         manifest.recipe_id = recipe.recipe_id;
         manifest.recipe_version = recipe.version;
 
-        let outcome = install_bundle(&base_dir, &bundle_dir, &resources, Some(&manifest), payload.dry_run)?;
+        let outcome = bundle.install(&resources, Some(&manifest), payload.dry_run)?;
         manifest.units.clone_from(&outcome.units);
         manifest.files.clone_from(&outcome.files);
         manifest.updated_at = epoch_secs();
-        let manifest_path = write_manifest(&bundle_dir, &manifest, payload.dry_run)?;
-        let selinux = apply_selinux(payload.selinux.as_ref(), Some(&bundle_dir), payload.dry_run)?;
-        let services = outcome
-            .units
-            .iter()
-            .filter_map(|unit| unit_service_name(unit))
-            .collect::<Vec<_>>();
+        let manifest_path = bundle.write_manifest(&manifest, payload.dry_run)?;
+        let selinux = apply_selinux(payload.selinux.as_ref(), Some(&bundle.dir), payload.dry_run)?;
+        let services = manifest.services();
         let systemd = if payload.converge {
-            systemd_converge(&services, payload.scope, "restart", payload.dry_run, user)?
+            Systemd::new(payload.scope, payload.dry_run, user).converge(&services, "restart")?
         } else {
             Vec::new()
         };
         Ok(jsonf! {
             "app": manifest,
-            base_dir, bundle_dir, manifest_path,
+            "base_dir": dirs.base_dir,
+            "bundle_dir": bundle.dir,
+            manifest_path,
             outcome.units, outcome.files,
             outcome.removed_units, outcome.removed_files,
             services, systemd, selinux,
@@ -265,49 +263,28 @@ actions!(Action [payload user] => {
     },
     Remove: AppRequest => {
         validate_app_name(&payload.name)?;
-        let (base_dir, files_root) = app_dirs(payload.base_dir, payload.files_base_dir, payload.scope)?;
-        let bundle_dir = safe_join(&files_root, &payload.name)?;
-        let manifest = load_manifest(&bundle_dir)?;
-        let services = manifest
-            .units
-            .iter()
-            .filter_map(|unit| unit_service_name(unit))
-            .collect::<Vec<_>>();
+        let dirs = AppDirs::resolve(payload.base_dir, payload.files_base_dir, payload.scope)?;
+        let bundle = dirs.bundle(&payload.name)?;
+        let manifest = bundle.manifest()?;
+        let services = manifest.services();
 
         // Stop/disable before deleting anything so systemd can still resolve
-        // the units. Failures are reported but tolerated: the unit may
-        // already be gone, and removal should still clean up the bundle.
-        let mut systemd = Vec::new();
+        // the units.
+        let phase = Systemd::new(payload.scope, payload.dry_run, user);
+        let mut systemd = if payload.converge {
+            phase.teardown(&services)
+        } else {
+            Vec::new()
+        };
+        let deleted_units = bundle.delete_units(&manifest.units, payload.dry_run)?;
         if payload.converge {
-            for service in &services {
-                for action in ["stop", "disable"] {
-                    match services_action(action, service, payload.scope, payload.dry_run, user) {
-                        Ok(op) => systemd.push(op),
-                        Err(error) => systemd.push(jsonf! {
-                            action, service, "error": error.to_string(),
-                        }),
-                    }
-                }
-            }
+            systemd.push(phase.daemon_reload()?);
         }
-        let mut deleted_units = Vec::new();
-        for unit in &manifest.units {
-            let path = safe_join(&base_dir, unit)?;
-            if !payload.dry_run && path.exists() {
-                fs::remove_file(&path)
-                    .with_context(|| format!("failed to delete `{}`", path.display()))?;
-            }
-            deleted_units.push(path);
-        }
-        if payload.converge {
-            systemd.push(daemon_reload(payload.scope, payload.dry_run, user)?);
-        }
-        if !payload.dry_run {
-            fs::remove_dir_all(&bundle_dir)
-                .with_context(|| format!("failed to remove `{}`", bundle_dir.display()))?;
-        }
+        bundle.remove(payload.dry_run)?;
         Ok(jsonf! {
-            payload.name, bundle_dir, deleted_units, services, systemd,
+            payload.name,
+            "bundle_dir": bundle.dir,
+            deleted_units, services, systemd,
             "bundle_removed": !payload.dry_run,
             payload.dry_run,
         })
@@ -329,21 +306,42 @@ struct InstallOutcome {
     removed_files: Vec<String>,
 }
 
-/// Resolve the Quadlet scan directory and the companion data root for an
-/// apps request. Apps default to system scope (the agent normally runs as a
-/// root system service); the overrides keep the protocol testable.
-fn app_dirs(
-    base_dir: Option<PathBuf>,
-    files_base_dir: Option<PathBuf>,
-    scope: ServiceScope,
-) -> Result<(PathBuf, PathBuf)> {
-    let scope = match scope {
-        ServiceScope::System => QuadletScope::System,
-        ServiceScope::User => QuadletScope::User,
-    };
-    let base_dir = quadlet_base_dir(base_dir, scope)?;
-    let files_root = quadlet_files_base_dir(files_base_dir, scope, None)?;
-    Ok((base_dir, files_root))
+/// The two directory trees an app spans: the Quadlet scan directory its units
+/// install into, and the companion-file data root its bundle lives under.
+/// Apps default to system scope (the agent normally runs as a root system
+/// service); the request-level overrides keep the protocol testable without
+/// touching real system paths.
+#[derive(Debug)]
+struct AppDirs {
+    base_dir: PathBuf,
+    files_root: PathBuf,
+}
+
+impl AppDirs {
+    /// Resolve both roots for a request, honoring its directory overrides.
+    fn resolve(
+        base_dir: Option<PathBuf>,
+        files_base_dir: Option<PathBuf>,
+        scope: ServiceScope,
+    ) -> Result<Self> {
+        let scope = match scope {
+            ServiceScope::System => QuadletScope::System,
+            ServiceScope::User => QuadletScope::User,
+        };
+        Ok(Self {
+            base_dir: quadlet_base_dir(base_dir, scope)?,
+            files_root: quadlet_files_base_dir(files_base_dir, scope, None)?,
+        })
+    }
+
+    /// Address an app's bundle directory inside the data root. `safe_join`
+    /// keeps names with traversal components from escaping the root.
+    fn bundle(&self, name: &str) -> Result<AppBundle> {
+        Ok(AppBundle {
+            base_dir: self.base_dir.clone(),
+            dir: safe_join(&self.files_root, name)?,
+        })
+    }
 }
 
 /// App names become directory and file names, so keep them to a single safe
@@ -362,119 +360,174 @@ fn validate_app_name(name: &str) -> Result<()> {
     Ok(())
 }
 
-/// Recipes that declare a `bundle_dir` parameter (typically for bind mounts)
-/// receive the real per-app bundle directory unless the caller supplied one.
-/// Values for undeclared parameters are dropped by the renderer, so injecting
-/// unconditionally is safe for recipes without the parameter.
-fn inject_bundle_dir(values: &mut BTreeMap<String, YamlValue>, bundle_dir: &Path) {
-    values
-        .entry("bundle_dir".to_owned())
-        .or_insert_with(|| YamlValue::String(bundle_dir.display().to_string()));
+/// The on-disk footprint of one installed app: rendered Quadlet units in the
+/// scan directory plus a bundle directory holding companion files and the
+/// `app.json` manifest. All bundle-level filesystem behavior hangs off this
+/// type so the action handlers stay declarative.
+#[derive(Debug)]
+struct AppBundle {
+    /// Scan directory the app's Quadlet units are installed into.
+    base_dir: PathBuf,
+    /// Per-app bundle directory under the companion-file data root.
+    dir: PathBuf,
 }
 
-/// Derive the systemd service Quadlet generates for a unit filename, or
-/// `None` for units that are not directly started (`.network`, `.volume` —
-/// Podman pulls those in as dependencies of the containers that use them).
-/// `.container`/`.kube` produce `<stem>.service`; `.pod` produces
-/// `<stem>-pod.service`.
-fn unit_service_name(filename: &str) -> Option<String> {
-    let (stem, extension) = filename.rsplit_once('.')?;
-    match extension {
-        "container" | "kube" => Some(format!("{stem}.service")),
-        "pod" => Some(format!("{stem}-pod.service")),
-        _ => None,
+impl AppBundle {
+    fn exists(&self) -> bool {
+        self.dir.exists()
     }
-}
 
-/// Build the recipe source for a `create`: exactly one of the inline bundle
-/// or the on-disk paths must be given.
-fn create_source(payload: &AppCreateRequest) -> Result<AppRecipeSource> {
-    match (&payload.recipe, &payload.recipe_path) {
-        (Some(recipe), None) => Ok(AppRecipeSource::Inline {
-            recipe: recipe.clone(),
-            templates: payload.templates.clone(),
-        }),
-        (None, Some(recipe_path)) => Ok(AppRecipeSource::File {
-            recipe_path: recipe_path.clone(),
-            templates_dir: payload
-                .templates_dir
-                .clone()
-                .context("`templates_dir` is required with `recipe_path`")?,
-        }),
-        (Some(_), Some(_)) => bail!("pass either `recipe` or `recipe_path`, not both"),
-        (None, None) => bail!("`create` requires either `recipe` (inline) or `recipe_path` (file)"),
+    /// Recipes that declare a `bundle_dir` parameter (typically for bind
+    /// mounts) receive the real bundle directory unless the caller supplied
+    /// one. Values for undeclared parameters are dropped by the renderer, so
+    /// injecting unconditionally is safe for recipes without the parameter.
+    fn inject_dir(&self, values: &mut BTreeMap<String, YamlValue>) {
+        values
+            .entry("bundle_dir".to_owned())
+            .or_insert_with(|| YamlValue::String(self.dir.display().to_string()));
     }
-}
 
-/// Build the replacement recipe source for an `update`, or `None` to keep the
-/// stored one. An inline recipe with no `templates` replaces the template
-/// bundle with an empty one; callers keeping the same templates can omit the
-/// field only when the stored source is reused unchanged.
-fn update_source(payload: &AppUpdateRequest) -> Result<Option<AppRecipeSource>> {
-    match (&payload.recipe, &payload.recipe_path) {
-        (Some(recipe), None) => Ok(Some(AppRecipeSource::Inline {
-            recipe: recipe.clone(),
-            templates: payload.templates.clone().unwrap_or_default(),
-        })),
-        (None, Some(recipe_path)) => Ok(Some(AppRecipeSource::File {
-            recipe_path: recipe_path.clone(),
-            templates_dir: payload
-                .templates_dir
-                .clone()
-                .context("`templates_dir` is required with `recipe_path`")?,
-        })),
-        (Some(_), Some(_)) => bail!("pass either `recipe` or `recipe_path`, not both"),
-        (None, None) => Ok(None),
+    /// Read and parse `<dir>/app.json`.
+    fn manifest(&self) -> Result<AppManifest> {
+        let path = self.dir.join(APP_MANIFEST);
+        let text = fs::read_to_string(&path)
+            .with_context(|| format!("failed to read app manifest `{}`", path.display()))?;
+        serde_json::from_str(&text)
+            .with_context(|| format!("failed to parse app manifest `{}`", path.display()))
     }
-}
 
-/// Render a recipe from either source kind, returning the parsed recipe
-/// alongside the resources so callers can record `recipe_id`/`version`.
-fn render_recipe(
-    source: &AppRecipeSource,
-    values: &BTreeMap<String, YamlValue>,
-) -> Result<(AppRecipe, Vec<RenderedResource>)> {
-    match source {
-        AppRecipeSource::Inline { recipe, templates } => {
-            let recipe = AppRecipe::load_str(recipe)?;
-            let resources = recipe.render_with_templates(values, templates)?;
-            Ok((recipe, resources))
+    /// Serialize the manifest into the bundle. Skipped on dry runs; returns
+    /// the target path either way so previews show where it would land.
+    fn write_manifest(&self, manifest: &AppManifest, dry_run: bool) -> Result<PathBuf> {
+        let path = self.dir.join(APP_MANIFEST);
+        if !dry_run {
+            let contents = serde_json::to_string_pretty(manifest)
+                .context("failed to serialize app manifest")?;
+            fs::write(&path, contents)
+                .with_context(|| format!("failed to write `{}`", path.display()))?;
         }
-        AppRecipeSource::File {
-            recipe_path,
-            templates_dir,
-        } => {
-            let recipe = AppRecipe::load(recipe_path)?;
-            let resources = recipe.render(values, templates_dir)?;
-            Ok((recipe, resources))
+        Ok(path)
+    }
+
+    /// Install a render: Quadlet resources into the scan directory, `file`
+    /// resources into the bundle directory. When `previous` is given
+    /// (update), units and companions the new render no longer produces are
+    /// deleted. Directories are created up front so permission/disk failures
+    /// surface before any file is written; Quadlet validation likewise
+    /// happens before the first write.
+    fn install(
+        &self,
+        resources: &[RenderedResource],
+        previous: Option<&AppManifest>,
+        dry_run: bool,
+    ) -> Result<InstallOutcome> {
+        let (units, companions): (Vec<&RenderedResource>, Vec<&RenderedResource>) = resources
+            .iter()
+            .partition(|resource| resource.kind != ResourceKind::File);
+        for unit in &units {
+            validate_quadlet(&unit.filename, &unit.contents)?;
+        }
+
+        if !dry_run {
+            fs::create_dir_all(&self.base_dir)
+                .with_context(|| format!("failed to create `{}`", self.base_dir.display()))?;
+            fs::create_dir_all(&self.dir)
+                .with_context(|| format!("failed to create `{}`", self.dir.display()))?;
+        }
+
+        let mut outcome = InstallOutcome::default();
+        if let Some(previous) = previous {
+            let desired_units: HashSet<&str> =
+                units.iter().map(|unit| unit.filename.as_str()).collect();
+            for unit in &previous.units {
+                if desired_units.contains(unit.as_str()) {
+                    continue;
+                }
+                let path = safe_join(&self.base_dir, unit)?;
+                if !dry_run && path.exists() {
+                    fs::remove_file(&path)
+                        .with_context(|| format!("failed to delete `{}`", path.display()))?;
+                }
+                outcome.removed_units.push(unit.clone());
+            }
+            let desired_files: HashSet<&str> = companions
+                .iter()
+                .map(|file| file.filename.as_str())
+                .collect();
+            for file in &previous.files {
+                if desired_files.contains(file.as_str()) {
+                    continue;
+                }
+                let path = safe_join(&self.dir, file)?;
+                if !dry_run && path.exists() {
+                    fs::remove_file(&path)
+                        .with_context(|| format!("failed to delete `{}`", path.display()))?;
+                }
+                outcome.removed_files.push(file.clone());
+            }
+        }
+
+        for unit in units {
+            write_file(&self.base_dir, &unit.filename, &unit.contents, dry_run)?;
+            outcome.units.push(unit.filename.clone());
+        }
+        for companion in companions {
+            write_file(&self.dir, &companion.filename, &companion.contents, dry_run)?;
+            outcome.files.push(companion.filename.clone());
+        }
+        Ok(outcome)
+    }
+
+    /// Delete the app's Quadlet units from the scan directory, returning the
+    /// affected paths (deleted, or that would be on a dry run).
+    fn delete_units(&self, units: &[String], dry_run: bool) -> Result<Vec<PathBuf>> {
+        let mut deleted = Vec::new();
+        for unit in units {
+            let path = safe_join(&self.base_dir, unit)?;
+            if !dry_run && path.exists() {
+                fs::remove_file(&path)
+                    .with_context(|| format!("failed to delete `{}`", path.display()))?;
+            }
+            deleted.push(path);
+        }
+        Ok(deleted)
+    }
+
+    /// Remove the bundle directory and everything in it.
+    fn remove(&self, dry_run: bool) -> Result<()> {
+        if !dry_run {
+            fs::remove_dir_all(&self.dir)
+                .with_context(|| format!("failed to remove `{}`", self.dir.display()))?;
+        }
+        Ok(())
+    }
+
+    /// One-line summary of the installed app for the `list` action. Built
+    /// from a borrow of the manifest; the manifest itself stays available
+    /// for `get`.
+    fn summary(&self, manifest: &AppManifest) -> Value {
+        let AppManifest {
+            name,
+            recipe_id,
+            recipe_version,
+            scope,
+            units,
+            created_at,
+            updated_at,
+            ..
+        } = manifest;
+        jsonf! {
+            name, recipe_id, recipe_version, scope, units,
+            "services": manifest.services(),
+            created_at, updated_at,
+            "bundle_dir": self.dir,
         }
     }
-}
-
-/// Read and parse `<bundle_dir>/app.json`.
-fn load_manifest(bundle_dir: &Path) -> Result<AppManifest> {
-    let path = bundle_dir.join(APP_MANIFEST);
-    let text = fs::read_to_string(&path)
-        .with_context(|| format!("failed to read app manifest `{}`", path.display()))?;
-    serde_json::from_str(&text)
-        .with_context(|| format!("failed to parse app manifest `{}`", path.display()))
-}
-
-/// Serialize the manifest into the bundle. Skipped on dry runs; returns the
-/// target path either way so previews show where it would land.
-fn write_manifest(bundle_dir: &Path, manifest: &AppManifest, dry_run: bool) -> Result<PathBuf> {
-    let path = bundle_dir.join(APP_MANIFEST);
-    if !dry_run {
-        let contents =
-            serde_json::to_string_pretty(manifest).context("failed to serialize app manifest")?;
-        fs::write(&path, contents)
-            .with_context(|| format!("failed to write `{}`", path.display()))?;
-    }
-    Ok(path)
 }
 
 /// Write one file under `base_dir`, creating parent directories for nested
 /// companion paths. `safe_join` keeps rendered filenames inside the base.
+/// Serves [`AppBundle::install`].
 fn write_file(base_dir: &Path, filename: &str, contents: &str, dry_run: bool) -> Result<PathBuf> {
     let path = safe_join(base_dir, filename)?;
     if !dry_run {
@@ -488,143 +541,77 @@ fn write_file(base_dir: &Path, filename: &str, contents: &str, dry_run: bool) ->
     Ok(path)
 }
 
-/// Install a render: Quadlet resources into the scan directory, `file`
-/// resources into the bundle directory. When `previous` is given (update),
-/// units and companions the new render no longer produces are deleted.
-/// Directories are created up front so permission/disk failures surface
-/// before any file is written; Quadlet validation likewise happens before
-/// the first write.
-fn install_bundle(
-    base_dir: &Path,
-    bundle_dir: &Path,
-    resources: &[RenderedResource],
-    previous: Option<&AppManifest>,
-    dry_run: bool,
-) -> Result<InstallOutcome> {
-    let (units, companions): (Vec<&RenderedResource>, Vec<&RenderedResource>) = resources
-        .iter()
-        .partition(|resource| resource.kind != ResourceKind::File);
-    for unit in &units {
-        validate_quadlet(&unit.filename, &unit.contents)?;
-    }
-
-    if !dry_run {
-        fs::create_dir_all(base_dir)
-            .with_context(|| format!("failed to create `{}`", base_dir.display()))?;
-        fs::create_dir_all(bundle_dir)
-            .with_context(|| format!("failed to create `{}`", bundle_dir.display()))?;
-    }
-
-    let mut outcome = InstallOutcome::default();
-    if let Some(previous) = previous {
-        let desired_units: HashSet<&str> =
-            units.iter().map(|unit| unit.filename.as_str()).collect();
-        for unit in &previous.units {
-            if desired_units.contains(unit.as_str()) {
-                continue;
-            }
-            let path = safe_join(base_dir, unit)?;
-            if !dry_run && path.exists() {
-                fs::remove_file(&path)
-                    .with_context(|| format!("failed to delete `{}`", path.display()))?;
-            }
-            outcome.removed_units.push(unit.clone());
-        }
-        let desired_files: HashSet<&str> = companions
-            .iter()
-            .map(|file| file.filename.as_str())
-            .collect();
-        for file in &previous.files {
-            if desired_files.contains(file.as_str()) {
-                continue;
-            }
-            let path = safe_join(bundle_dir, file)?;
-            if !dry_run && path.exists() {
-                fs::remove_file(&path)
-                    .with_context(|| format!("failed to delete `{}`", path.display()))?;
-            }
-            outcome.removed_files.push(file.clone());
-        }
-    }
-
-    for unit in units {
-        write_file(base_dir, &unit.filename, &unit.contents, dry_run)?;
-        outcome.units.push(unit.filename.clone());
-    }
-    for companion in companions {
-        write_file(
-            bundle_dir,
-            &companion.filename,
-            &companion.contents,
-            dry_run,
-        )?;
-        outcome.files.push(companion.filename.clone());
-    }
-    Ok(outcome)
-}
-
-/// One-line summary of an installed app for the `list` action. Built from a
-/// borrow of the manifest; the manifest itself stays available for `get`.
-fn app_summary(bundle_dir: &Path, manifest: &AppManifest) -> Value {
-    let AppManifest {
-        name,
-        recipe_id,
-        recipe_version,
-        scope,
-        units,
-        created_at,
-        updated_at,
-        ..
-    } = manifest;
-    let services = units
-        .iter()
-        .filter_map(|unit| unit_service_name(unit))
-        .collect::<Vec<_>>();
-    jsonf! { name, recipe_id, recipe_version, scope, units, services, created_at, updated_at, bundle_dir }
-}
-
-/// Run `systemctl daemon-reload` through the services module so the command
-/// shape, scope handling, and dry-run behavior stay consistent with the rest
-/// of the agent.
-fn daemon_reload(scope: ServiceScope, dry_run: bool, user: Option<&str>) -> Result<Value> {
-    ServicesModule.handle("daemon_reload", jsonf! { scope, dry_run }, user)
-}
-
-/// Run one single-service `systemctl` action (`start`/`stop`/`restart`/
-/// `enable`/`disable`) through the services module.
-fn services_action(
-    action: &str,
-    service: &str,
+/// Adapter that drives the systemd phase of the app lifecycle through the
+/// services module, so the command shape, scope handling, and dry-run
+/// behavior stay consistent with the rest of the agent. The per-action
+/// results are returned so the dashboard can show exactly what ran.
+#[derive(Clone, Copy, Debug)]
+struct Systemd<'a> {
     scope: ServiceScope,
     dry_run: bool,
-    user: Option<&str>,
-) -> Result<Value> {
-    ServicesModule.handle(action, jsonf! { service, scope, dry_run }, user)
+    user: Option<&'a str>,
 }
 
-/// The create/update systemd phase: reload so Quadlet picks up the new unit
-/// set, then enable and start (or restart, on update) each app service. The
-/// per-action results are returned so the dashboard can show exactly what
-/// ran.
-fn systemd_converge(
-    services: &[String],
-    scope: ServiceScope,
-    service_action: &str,
-    dry_run: bool,
-    user: Option<&str>,
-) -> Result<Vec<Value>> {
-    let mut ops = vec![daemon_reload(scope, dry_run, user)?];
-    for service in services {
-        ops.push(services_action("enable", service, scope, dry_run, user)?);
-        ops.push(services_action(
-            service_action,
-            service,
+impl<'a> Systemd<'a> {
+    const fn new(scope: ServiceScope, dry_run: bool, user: Option<&'a str>) -> Self {
+        Self {
             scope,
             dry_run,
             user,
-        )?);
+        }
     }
-    Ok(ops)
+
+    /// `systemctl daemon-reload` so Quadlet picks up the new unit set.
+    fn daemon_reload(self) -> Result<Value> {
+        ServicesModule.handle(
+            "daemon_reload",
+            jsonf! { "scope": self.scope, "dry_run": self.dry_run },
+            self.user,
+        )
+    }
+
+    /// One single-service `systemctl` action (`start`/`stop`/`restart`/
+    /// `enable`/`disable`).
+    fn service_action(self, action: &str, service: &str) -> Result<Value> {
+        ServicesModule.handle(
+            action,
+            jsonf! {
+                "service": service,
+                "scope": self.scope,
+                "dry_run": self.dry_run,
+            },
+            self.user,
+        )
+    }
+
+    /// The create/update phase: reload, then enable and start (or restart,
+    /// on update) each app service.
+    fn converge(self, services: &[String], service_action: &str) -> Result<Vec<Value>> {
+        let mut ops = vec![self.daemon_reload()?];
+        for service in services {
+            ops.push(self.service_action("enable", service)?);
+            ops.push(self.service_action(service_action, service)?);
+        }
+        Ok(ops)
+    }
+
+    /// The remove phase: stop and disable each service before its unit is
+    /// deleted. Failures are reported inline but tolerated: the unit may
+    /// already be gone, and removal should still clean up the bundle.
+    fn teardown(self, services: &[String]) -> Vec<Value> {
+        let mut ops = Vec::new();
+        for service in services {
+            for action in ["stop", "disable"] {
+                match self.service_action(action, service) {
+                    Ok(op) => ops.push(op),
+                    Err(error) => ops.push(jsonf! {
+                        action, service, "error": error.to_string(),
+                    }),
+                }
+            }
+        }
+        ops
+    }
 }
 
 /// Seconds since the Unix epoch for manifest timestamps. Falls back to 0 if
@@ -699,24 +686,6 @@ resources:
         for name in ["demo", "demo-web", "web_1", "my.app"] {
             assert!(validate_app_name(name).is_ok(), "rejected `{name}`");
         }
-    }
-
-    #[test]
-    fn derives_service_names_from_unit_filenames() {
-        assert_eq!(
-            unit_service_name("demo-web.container"),
-            Some("demo-web.service".to_owned())
-        );
-        assert_eq!(
-            unit_service_name("site.kube"),
-            Some("site.service".to_owned())
-        );
-        assert_eq!(
-            unit_service_name("pair.pod"),
-            Some("pair-pod.service".to_owned())
-        );
-        assert_eq!(unit_service_name("demo-net.network"), None);
-        assert_eq!(unit_service_name("demo-data.volume"), None);
     }
 
     #[test]
