@@ -167,7 +167,7 @@ impl SambaWriteConfigRequest {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ServiceScope {
     #[default]
@@ -197,6 +197,14 @@ pub struct ServiceRequest {
     pub scope: ServiceScope,
     #[serde(default)]
     pub dry_run: bool,
+}
+
+/// Payload for `services.list`; all fields are optional so `{}` lists system
+/// services as before.
+#[derive(Debug, Deserialize)]
+pub struct ServiceListRequest {
+    #[serde(default)]
+    pub scope: ServiceScope,
 }
 
 const fn default_true() -> bool {

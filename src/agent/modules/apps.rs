@@ -181,6 +181,7 @@ actions!(Action [payload user] => {
         // ship recipe defaults plus per-instance overrides in one call.
         let mut values = load_values(payload.values_path.as_ref())?;
         values.extend(payload.values);
+        inject_bundle_dir(&mut values, &bundle_dir);
         let (recipe, resources) = render_recipe(&source, &values)?;
 
         let outcome = install_bundle(&base_dir, &bundle_dir, &resources, None, payload.dry_run)?;
@@ -231,6 +232,7 @@ actions!(Action [payload user] => {
             manifest.recipe = source;
         }
         manifest.values.extend(payload.values);
+        inject_bundle_dir(&mut manifest.values, &bundle_dir);
         let (recipe, resources) = render_recipe(&manifest.recipe, &manifest.values)?;
         manifest.recipe_id = recipe.recipe_id;
         manifest.recipe_version = recipe.version;
@@ -358,6 +360,16 @@ fn validate_app_name(name: &str) -> Result<()> {
         "app name `{name}` must start with an alphanumeric and contain only alphanumerics, `.`, `_`, `-`"
     );
     Ok(())
+}
+
+/// Recipes that declare a `bundle_dir` parameter (typically for bind mounts)
+/// receive the real per-app bundle directory unless the caller supplied one.
+/// Values for undeclared parameters are dropped by the renderer, so injecting
+/// unconditionally is safe for recipes without the parameter.
+fn inject_bundle_dir(values: &mut BTreeMap<String, YamlValue>, bundle_dir: &Path) {
+    values
+        .entry("bundle_dir".to_owned())
+        .or_insert_with(|| YamlValue::String(bundle_dir.display().to_string()));
 }
 
 /// Derive the systemd service Quadlet generates for a unit filename, or
@@ -792,6 +804,127 @@ resources:
         assert_eq!(list["apps"][0]["name"], "demo");
         assert_eq!(list["apps"][0]["services"], json!(["demo-web.service"]));
         assert!(list["invalid"].as_array().unwrap().is_empty());
+    }
+
+    /// Recipe that declares `bundle_dir`, so the agent can point templates at
+    /// the real (agent-managed) bundle directory even when the caller leaves
+    /// the value blank.
+    const SITE_RECIPE: &str = "
+recipe_id: static-site
+name: Static Site
+version: 1.0.0
+parameters:
+  - key: http_port
+    label: HTTP port
+    type: integer
+    default: 8080
+  - key: bundle_dir
+    label: Bundle directory
+    type: string
+    required: false
+resources:
+  - type: container
+    filename: site.container
+    template: site.container.tera
+";
+
+    fn site_templates() -> serde_json::Value {
+        json!({
+            "site.container.tera": "[Container]\nImage=docker.io/library/nginx:stable-alpine\nPublishPort={{ http_port }}:80\nVolume={{ bundle_dir }}/html:/usr/share/nginx/html:ro\n",
+        })
+    }
+
+    fn site_payload(base_dir: &Path, files_base_dir: &Path, values: &serde_json::Value) -> Value {
+        json!({
+            "name": "site",
+            "base_dir": base_dir,
+            "files_base_dir": files_base_dir,
+            "recipe": SITE_RECIPE,
+            "templates": site_templates(),
+            "values": values,
+            "converge": false,
+        })
+    }
+
+    #[test]
+    fn create_injects_bundle_dir_for_recipes_that_declare_it() {
+        let base = tempfile::tempdir().unwrap();
+        let files = tempfile::tempdir().unwrap();
+        let bundle_dir = files.path().join("site");
+        let expected_volume = format!(
+            "Volume={}/html:/usr/share/nginx/html:ro",
+            bundle_dir.display()
+        );
+
+        let response = dispatch(
+            "create",
+            site_payload(base.path(), files.path(), &json!({ "http_port": 8080 })),
+        )
+        .unwrap();
+
+        let rendered = fs::read_to_string(base.path().join("site.container")).unwrap();
+        assert!(
+            rendered.contains(&expected_volume),
+            "rendered unit should bind the agent-managed bundle dir:\n{rendered}"
+        );
+        assert_eq!(
+            response["app"]["values"]["bundle_dir"],
+            json!(bundle_dir.display().to_string())
+        );
+
+        // An update on a bundle whose manifest predates the injection (no
+        // `bundle_dir` in stored values) re-adds it, so old installs keep
+        // rendering the right path. No recipe is resent: the stored one is used.
+        let manifest_path = bundle_dir.join(APP_MANIFEST);
+        let mut manifest: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&manifest_path).unwrap()).unwrap();
+        manifest["values"]
+            .as_object_mut()
+            .unwrap()
+            .remove("bundle_dir");
+        fs::write(
+            &manifest_path,
+            serde_json::to_string_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+
+        dispatch(
+            "update",
+            json!({
+                "name": "site",
+                "base_dir": base.path(),
+                "files_base_dir": files.path(),
+                "values": { "http_port": 8081 },
+                "converge": false,
+            }),
+        )
+        .unwrap();
+
+        let rendered = fs::read_to_string(base.path().join("site.container")).unwrap();
+        assert!(rendered.contains(&expected_volume), "{rendered}");
+        assert!(rendered.contains("PublishPort=8081:80"), "{rendered}");
+    }
+
+    #[test]
+    fn caller_supplied_bundle_dir_wins_over_injection() {
+        let base = tempfile::tempdir().unwrap();
+        let files = tempfile::tempdir().unwrap();
+
+        dispatch(
+            "create",
+            site_payload(
+                base.path(),
+                files.path(),
+                &json!({ "bundle_dir": "/opt/sites" }),
+            ),
+        )
+        .unwrap();
+
+        let rendered = fs::read_to_string(base.path().join("site.container")).unwrap();
+        assert!(
+            rendered.contains("Volume=/opt/sites/html:/usr/share/nginx/html:ro"),
+            "{rendered}"
+        );
     }
 
     #[test]

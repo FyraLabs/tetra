@@ -793,6 +793,14 @@ A recipe can also be loaded from disk instead:
 Inline `values` are merged over the optional `values_path` file, so recipe
 defaults and per-instance overrides can ship in one call.
 
+If the recipe declares a `bundle_dir` parameter and the caller does not
+supply a value for it, `create` and `update` inject the app's bundle
+directory path (e.g. `/var/lib/tetra/quadlets/my-site`) so templates can
+bind-mount companion files with `Volume={{ bundle_dir }}/...` without the
+caller knowing the agent's layout. An explicitly supplied `bundle_dir`
+always wins, and recipes that do not declare the parameter are unaffected
+(undeclared values never reach the render context).
+
 `create` renders the recipe, writes the Quadlet units and companion files,
 writes `<bundle>/app.json`, optionally applies SELinux contexts to the bundle,
 and — unless `converge` is `false` — runs `systemctl daemon-reload`, then
@@ -924,10 +932,10 @@ Actions:
 - `enable`
 - `disable`
 
-`list` payload:
+`list` payload (`scope` is optional and defaults to `system`):
 
 ```json
-{}
+{ "scope": "user" }
 ```
 
 Response payload includes raw command output and parsed `services`:
