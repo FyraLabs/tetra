@@ -1,5 +1,5 @@
 use crate::prelude::*;
-use serde_json::json; // TODO: convert to jsonf
+
 use std::collections::BTreeMap;
 
 use super::{AgentCommand, AgentResponse};
@@ -74,7 +74,7 @@ impl Dispatcher {
         // living in a fake `agent` module, so it always reports the *actually
         // registered* module set even if a custom dispatcher was built.
         if command.requests_capabilities() {
-            return Ok(json!({ "modules": self.capabilities() }));
+            return Ok(jsonf! { "modules": self.capabilities() });
         }
 
         let Some(module) = self.modules.get(&command.module) else {

@@ -85,7 +85,28 @@ pub trait Act: Deserialize<'static> {
     fn handle(self, user: Option<&str>) -> Result<Value>;
 }
 
-// TODO: document this
+/// Declares the typed actions supported by a module.
+///
+/// The macro generates one `Deserialize` payload struct for each action and an
+/// enum named by `$Action` that dispatches the decoded payload to its action
+/// handler. Action bodies return `anyhow::Result<serde_json::Value>` and may
+/// access the payload through `$payload` and the authenticated user through
+/// `$user`.
+///
+/// # Syntax
+///
+/// ```text
+/// actions!(Action [payload user] => {
+///     List => { /* return a Result<Value> */ },
+///     Read: Request => { /* use payload.path */ },
+///     Remove { name: String } => { /* use payload.name */ },
+/// });
+/// ```
+///
+/// An action without a payload uses a unit struct. A typed action may use a
+/// named struct, tuple payload, or any type that implements `Deserialize`.
+/// The generated action enum is deserialized from an object whose key is the
+/// action name in snake case, matching the wire protocol.
 #[macro_export]
 macro_rules! actions {
     ($Action:ident [$payload:ident $user:ident] => {$($inner:tt)*}) => {
