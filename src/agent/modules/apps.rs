@@ -126,14 +126,24 @@ actions!(Action [payload user] => {
                 .with_context(|| format!("failed to read `{}`", dirs.files_root.display()))?
             {
                 let entry = entry?;
-                if !entry.file_type()?.is_dir() {
+                let entry_type = entry.file_type()?;
+                let name = entry.file_name().to_string_lossy().into_owned();
+                if entry_type.is_symlink() {
+                    invalid.push(name);
                     continue;
                 }
-                let name = entry.file_name().to_string_lossy().into_owned();
-                let bundle = dirs.bundle(&name)?;
+                if !entry_type.is_dir() {
+                    continue;
+                }
+                let Ok(bundle) = dirs.bundle(&name) else {
+                    invalid.push(name);
+                    continue;
+                };
                 match bundle.manifest() {
-                    Ok(manifest) => apps.push(bundle.summary(&manifest)),
-                    Err(_) => invalid.push(name),
+                    Ok(manifest) if manifest.name == name && manifest.scope == payload.scope => {
+                        apps.push(bundle.summary(&manifest));
+                    }
+                    Ok(_) | Err(_) => invalid.push(name),
                 }
             }
         }
@@ -146,6 +156,11 @@ actions!(Action [payload user] => {
         let dirs = AppDirs::resolve(payload.base_dir, payload.files_base_dir, payload.scope)?;
         let bundle = dirs.bundle(&payload.name)?;
         let manifest = bundle.manifest()?;
+        ensure!(
+            manifest.name == payload.name && manifest.scope == payload.scope,
+            "app manifest does not match requested app `{}` and scope",
+            payload.name
+        );
         // Report the on-disk state alongside the manifest so drift (a unit
         // deleted behind the agent's back) is visible to the dashboard.
         let units = manifest
@@ -225,6 +240,11 @@ actions!(Action [payload user] => {
         let dirs = AppDirs::resolve(payload.base_dir.clone(), payload.files_base_dir.clone(), payload.scope)?;
         let bundle = dirs.bundle(&payload.name)?;
         let mut manifest = bundle.manifest()?;
+        ensure!(
+            manifest.name == payload.name && manifest.scope == payload.scope,
+            "app manifest does not match requested app `{}` and scope",
+            payload.name
+        );
 
         // A new recipe source replaces the stored one (recipe upgrade);
         // values merge per-key so secrets collected earlier are not resent.
@@ -266,6 +286,11 @@ actions!(Action [payload user] => {
         let dirs = AppDirs::resolve(payload.base_dir, payload.files_base_dir, payload.scope)?;
         let bundle = dirs.bundle(&payload.name)?;
         let manifest = bundle.manifest()?;
+        ensure!(
+            manifest.name == payload.name && manifest.scope == payload.scope,
+            "app manifest does not match requested app `{}` and scope",
+            payload.name
+        );
         let services = manifest.services();
 
         // Stop/disable before deleting anything so systemd can still resolve
@@ -337,9 +362,11 @@ impl AppDirs {
     /// Address an app's bundle directory inside the data root. `safe_join`
     /// keeps names with traversal components from escaping the root.
     fn bundle(&self, name: &str) -> Result<AppBundle> {
+        let dir = safe_join(&self.files_root, name)?;
+        reject_symlink_path(&self.files_root, name)?;
         Ok(AppBundle {
             base_dir: self.base_dir.clone(),
-            dir: safe_join(&self.files_root, name)?,
+            dir,
         })
     }
 }
@@ -347,6 +374,91 @@ impl AppDirs {
 /// App names become directory and file names, so keep them to a single safe
 /// path component. This is stricter than `safe_join` (which only rejects
 /// traversal) because the name also shows up in systemd unit names.
+fn validate_app_unit_filename(filename: &str) -> Result<()> {
+    let path = Path::new(filename);
+    ensure!(
+        path.is_relative()
+            && path.components().count() == 1
+            && path.file_name().is_some_and(|name| name == filename),
+        "Quadlet unit filename `{filename}` must be a single file name without directories"
+    );
+    Ok(())
+}
+
+fn reject_symlink_path(base: &Path, relative: &str) -> Result<()> {
+    let path = Path::new(relative);
+    ensure!(
+        path.is_relative()
+            && !path.components().any(|component| {
+                matches!(
+                    component,
+                    std::path::Component::ParentDir | std::path::Component::Prefix(_)
+                )
+            }),
+        "managed path `{relative}` must be relative and stay within its base"
+    );
+
+    let mut current = base.to_path_buf();
+    for component in path.components() {
+        if let std::path::Component::Normal(component) = component {
+            current.push(component);
+            if let Ok(metadata) = fs::symlink_metadata(&current) {
+                ensure!(
+                    !metadata.file_type().is_symlink(),
+                    "managed path `{relative}` contains a symlink"
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_companion_filename(filename: &str) -> Result<()> {
+    let path = Path::new(filename);
+    ensure!(
+        !filename.is_empty()
+            && filename != "."
+            && !filename.ends_with('/')
+            && !filename.ends_with("/.")
+            && path.is_relative()
+            && path.file_name().is_some()
+            && !path.components().any(|component| {
+                matches!(
+                    component,
+                    std::path::Component::ParentDir | std::path::Component::Prefix(_)
+                )
+            }),
+        "companion filename `{filename}` must identify a relative file path"
+    );
+    Ok(())
+}
+
+fn validate_manifest_paths(manifest: &AppManifest) -> Result<()> {
+    let mut units = HashSet::new();
+    for unit in &manifest.units {
+        validate_app_unit_filename(unit)?;
+        ensure!(
+            units.insert(unit.as_str()),
+            "duplicate unit `{unit}` in app manifest"
+        );
+    }
+
+    let mut files = HashSet::new();
+    for file in &manifest.files {
+        ensure!(
+            file != APP_MANIFEST,
+            "app manifest cannot own reserved file `{APP_MANIFEST}`"
+        );
+        validate_companion_filename(file)?;
+        safe_join(Path::new("."), file)?;
+        ensure!(
+            files.insert(file.as_str()),
+            "duplicate file `{file}` in app manifest"
+        );
+    }
+    Ok(())
+}
+
 fn validate_app_name(name: &str) -> Result<()> {
     ensure!(!name.is_empty(), "app name cannot be empty");
     ensure!(
@@ -389,16 +501,26 @@ impl AppBundle {
 
     /// Read and parse `<dir>/app.json`.
     fn manifest(&self) -> Result<AppManifest> {
+        reject_symlink_path(&self.dir, APP_MANIFEST)?;
         let path = self.dir.join(APP_MANIFEST);
         let text = fs::read_to_string(&path)
             .with_context(|| format!("failed to read app manifest `{}`", path.display()))?;
-        serde_json::from_str(&text)
-            .with_context(|| format!("failed to parse app manifest `{}`", path.display()))
+        let manifest: AppManifest = serde_json::from_str(&text)
+            .with_context(|| format!("failed to parse app manifest `{}`", path.display()))?;
+        ensure!(
+            manifest.version == MANIFEST_VERSION,
+            "unsupported app manifest version {}; expected {}",
+            manifest.version,
+            MANIFEST_VERSION
+        );
+        validate_manifest_paths(&manifest)?;
+        Ok(manifest)
     }
 
     /// Serialize the manifest into the bundle. Skipped on dry runs; returns
     /// the target path either way so previews show where it would land.
     fn write_manifest(&self, manifest: &AppManifest, dry_run: bool) -> Result<PathBuf> {
+        reject_symlink_path(&self.dir, APP_MANIFEST)?;
         let path = self.dir.join(APP_MANIFEST);
         if !dry_run {
             let contents = serde_json::to_string_pretty(manifest)
@@ -424,8 +546,47 @@ impl AppBundle {
         let (units, companions): (Vec<&RenderedResource>, Vec<&RenderedResource>) = resources
             .iter()
             .partition(|resource| resource.kind != ResourceKind::File);
+        let mut unit_names = HashSet::new();
         for unit in &units {
+            ensure!(
+                unit_names.insert(unit.filename.as_str()),
+                "duplicate Quadlet unit filename `{}` in rendered app",
+                unit.filename
+            );
+            validate_app_unit_filename(&unit.filename)?;
             validate_quadlet(&unit.filename, &unit.contents)?;
+        }
+
+        // App units live in a shared Quadlet scan directory. Never overwrite a
+        // unit that is not recorded in this app's manifest; otherwise one app
+        // could silently take ownership of another app's service.
+        let mut companion_names = HashSet::new();
+        for companion in &companions {
+            ensure!(
+                companion.filename != APP_MANIFEST,
+                "companion filename `{APP_MANIFEST}` is reserved for the app manifest"
+            );
+            validate_companion_filename(&companion.filename)?;
+            ensure!(
+                companion_names.insert(companion.filename.as_str()),
+                "duplicate companion filename `{}` in rendered app",
+                companion.filename
+            );
+            safe_join(&self.dir, &companion.filename)?;
+        }
+
+        let previous_units: HashSet<&str> = previous
+            .map(|manifest| manifest.units.iter().map(String::as_str).collect())
+            .unwrap_or_default();
+        for unit in &units {
+            reject_symlink_path(&self.base_dir, &unit.filename)?;
+            let path = safe_join(&self.base_dir, &unit.filename)?;
+            if path.exists() && !previous_units.contains(unit.filename.as_str()) {
+                bail!(
+                    "Quadlet unit `{}` already exists and is not owned by this app",
+                    unit.filename
+                );
+            }
         }
 
         if !dry_run {
@@ -443,6 +604,7 @@ impl AppBundle {
                 if desired_units.contains(unit.as_str()) {
                     continue;
                 }
+                reject_symlink_path(&self.base_dir, unit)?;
                 let path = safe_join(&self.base_dir, unit)?;
                 if !dry_run && path.exists() {
                     fs::remove_file(&path)
@@ -458,6 +620,7 @@ impl AppBundle {
                 if desired_files.contains(file.as_str()) {
                     continue;
                 }
+                reject_symlink_path(&self.dir, file)?;
                 let path = safe_join(&self.dir, file)?;
                 if !dry_run && path.exists() {
                     fs::remove_file(&path)
@@ -468,10 +631,12 @@ impl AppBundle {
         }
 
         for unit in units {
+            reject_symlink_path(&self.base_dir, &unit.filename)?;
             write_file(&self.base_dir, &unit.filename, &unit.contents, dry_run)?;
             outcome.units.push(unit.filename.clone());
         }
         for companion in companions {
+            reject_symlink_path(&self.dir, &companion.filename)?;
             write_file(&self.dir, &companion.filename, &companion.contents, dry_run)?;
             outcome.files.push(companion.filename.clone());
         }
@@ -483,6 +648,7 @@ impl AppBundle {
     fn delete_units(&self, units: &[String], dry_run: bool) -> Result<Vec<PathBuf>> {
         let mut deleted = Vec::new();
         for unit in units {
+            reject_symlink_path(&self.base_dir, unit)?;
             let path = safe_join(&self.base_dir, unit)?;
             if !dry_run && path.exists() {
                 fs::remove_file(&path)
@@ -668,6 +834,186 @@ resources:
 
     fn dispatch(action: &str, payload: Value) -> Result<Value> {
         AppsModule.handle(action, payload, None)
+    }
+
+    #[test]
+    fn rejects_nested_app_unit_filenames() {
+        for filename in [
+            "nested/demo.container",
+            "../demo.container",
+            "/demo.container",
+        ] {
+            assert!(
+                validate_app_unit_filename(filename).is_err(),
+                "accepted `{filename}`"
+            );
+        }
+        validate_app_unit_filename("demo.container").unwrap();
+    }
+
+    #[test]
+    fn rejects_invalid_companion_filenames() {
+        for filename in ["", ".", "site/.", "site/"] {
+            assert!(
+                validate_companion_filename(filename).is_err(),
+                "accepted `{filename}`"
+            );
+        }
+        validate_companion_filename("site/index.html").unwrap();
+    }
+
+    #[test]
+    fn lists_mismatched_manifests_as_invalid() {
+        let base = tempfile::tempdir().unwrap();
+        let files = tempfile::tempdir().unwrap();
+        dispatch("create", create_payload(base.path(), files.path())).unwrap();
+        let manifest_path = files.path().join("demo").join(APP_MANIFEST);
+        let mut manifest: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&manifest_path).unwrap()).unwrap();
+        manifest["name"] = json!("other");
+        fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+
+        let response = dispatch(
+            "list",
+            json!({ "base_dir": base.path(), "files_base_dir": files.path() }),
+        )
+        .unwrap();
+        assert!(response["apps"].as_array().unwrap().is_empty());
+        assert_eq!(response["invalid"], json!(["demo"]));
+    }
+
+    #[test]
+    fn rejects_unsupported_manifest_versions() {
+        let base = tempfile::tempdir().unwrap();
+        let files = tempfile::tempdir().unwrap();
+        dispatch("create", create_payload(base.path(), files.path())).unwrap();
+        let manifest_path = files.path().join("demo").join(APP_MANIFEST);
+        let mut manifest: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&manifest_path).unwrap()).unwrap();
+        manifest["version"] = json!(999);
+        fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+
+        let error = dispatch(
+            "remove",
+            json!({
+                "name": "demo",
+                "base_dir": base.path(),
+                "files_base_dir": files.path(),
+                "converge": false,
+            }),
+        )
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("unsupported app manifest version")
+        );
+    }
+
+    #[test]
+    fn lists_symlinked_bundles_as_invalid() {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::symlink;
+
+            let files = tempfile::tempdir().unwrap();
+            symlink("/tmp", files.path().join("linked")).unwrap();
+            let response = dispatch(
+                "list",
+                json!({ "base_dir": files.path(), "files_base_dir": files.path() }),
+            )
+            .unwrap();
+            assert_eq!(response["apps"].as_array().unwrap().len(), 0);
+            assert_eq!(response["invalid"], json!(["linked"]));
+        }
+    }
+
+    #[test]
+    fn rejects_duplicate_rendered_resources() {
+        let base = tempfile::tempdir().unwrap();
+        let files = tempfile::tempdir().unwrap();
+        let duplicate_recipe = DEMO_RECIPE.replace(
+            "  - type: file\n    filename: site/index.html\n    template: files/index.html.tera\n",
+            "  - type: file\n    filename: site/index.html\n    template: files/index.html.tera\n  - type: file\n    filename: site/index.html\n    template: files/index.html.tera\n",
+        );
+        let mut payload = create_payload(base.path(), files.path());
+        payload["recipe"] = json!(duplicate_recipe);
+        let error = dispatch("create", payload).unwrap_err();
+        assert!(error.to_string().contains("duplicate companion filename"));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn rejects_symlinked_companion_path() {
+        use std::os::unix::fs::symlink;
+
+        let base = tempfile::tempdir().unwrap();
+        let files = tempfile::tempdir().unwrap();
+        dispatch("create", create_payload(base.path(), files.path())).unwrap();
+        let bundle = files.path().join("demo");
+        fs::remove_dir_all(bundle.join("site")).unwrap();
+        symlink("/tmp", bundle.join("site")).unwrap();
+
+        let error = dispatch(
+            "update",
+            json!({
+                "name": "demo",
+                "base_dir": base.path(),
+                "files_base_dir": files.path(),
+                "converge": false,
+            }),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("contains a symlink"));
+    }
+
+    #[test]
+    fn rejects_manifest_reserved_companion() {
+        let base = tempfile::tempdir().unwrap();
+        let files = tempfile::tempdir().unwrap();
+        let reserved_recipe = DEMO_RECIPE.replace("site/index.html", "app.json");
+        let mut payload = create_payload(base.path(), files.path());
+        payload["recipe"] = json!(reserved_recipe);
+        let error = dispatch("create", payload).unwrap_err();
+        assert!(error.to_string().contains("reserved for the app manifest"));
+    }
+
+    #[test]
+    fn rejects_unit_collisions_between_apps() {
+        let base = tempfile::tempdir().unwrap();
+        let files = tempfile::tempdir().unwrap();
+        dispatch("create", create_payload(base.path(), files.path())).unwrap();
+
+        let mut second = create_payload(base.path(), files.path());
+        second["name"] = json!("other");
+        let error = dispatch("create", second).unwrap_err();
+        assert!(error.to_string().contains("already exists"));
+    }
+
+    #[test]
+    fn rejects_update_overwriting_another_apps_unit() {
+        let base = tempfile::tempdir().unwrap();
+        let files = tempfile::tempdir().unwrap();
+        dispatch("create", create_payload(base.path(), files.path())).unwrap();
+
+        let mut other = create_payload(base.path(), files.path());
+        other["name"] = json!("other");
+        other["recipe"] = json!(DEMO_RECIPE.replace("{{ app_id }}.container", "other.container"));
+        dispatch("create", other).unwrap();
+
+        let error = dispatch(
+            "update",
+            json!({
+                "name": "demo",
+                "base_dir": base.path(),
+                "files_base_dir": files.path(),
+                "recipe": DEMO_RECIPE.replace("{{ app_id }}.container", "other.container"),
+                "templates": demo_templates(),
+                "converge": false,
+            }),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("already exists"));
     }
 
     #[test]
