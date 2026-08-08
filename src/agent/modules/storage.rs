@@ -10,6 +10,7 @@
 use crate::prelude::*;
 
 use crate::agent::module_support::{SelinuxOptions, apply_selinux};
+use std::process::Command;
 
 /// Storage module entry point registered under feature `storage`.
 #[derive(Clone, Copy, Debug)]
@@ -26,6 +27,7 @@ const INFO: ModuleInfo = ModuleInfo {
         "plan",
         "list",
         "status",
+        "zfs",
         "mount",
         "unmount",
         "configure",
@@ -39,6 +41,13 @@ impl Mod for StorageModule {
     }
 
     fn handle(&self, action: &str, payload: Value, user: Option<&str>) -> Result<Value> {
+        if matches!(action, "capabilities" | "plan") {
+            let mut response = INFO
+                .metadata_response(action, &payload)
+                .expect("metadata action matched");
+            response["zfs"] = discover_zfs();
+            return Ok(response);
+        }
         Action::from_payload(action, payload)?.handle(user)
     }
 }
@@ -57,8 +66,9 @@ actions!(Action [payload user] => {
         dry_run: bool,
     } => {
         let result = crate::cmd!({ &INFO, "status", user } "df" ["-h", payload.path.to_string_lossy().as_ref()] json)?;
-        Ok(jsonf! { result, payload.dry_run })
+        Ok(jsonf! { result, payload.dry_run, "zfs": discover_zfs() })
     },
+    Zfs => Ok(discover_zfs()),
     Mount {
         source: String,
         target: String,
@@ -107,6 +117,76 @@ actions!(Action [payload user] => {
         })
     },
 });
+
+/// Discover ZFS without making its absence an error. Distributions may expose
+/// the tools in different locations, so invoking by PATH is preferable to
+/// assuming `/usr/sbin` or `/sbin`. Both commands are read-only.
+fn discover_zfs() -> Value {
+    let kernel_module = Path::new("/sys/module/zfs").exists()
+        || fs::read_to_string("/proc/modules")
+            .is_ok_and(|modules| modules.lines().any(|line| line.starts_with("zfs ")));
+    let (tooling, pools) = run_zfs_list(
+        "zpool",
+        &[
+            "list",
+            "-H",
+            "-p",
+            "-o",
+            "name,size,alloc,free,frag,cap,dedup,health,altroot",
+        ],
+        &[
+            "name",
+            "size",
+            "allocated",
+            "free",
+            "fragmentation",
+            "capacity",
+            "deduplication",
+            "health",
+            "altroot",
+        ],
+    );
+    let (zfs_tooling, datasets) = run_zfs_list(
+        "zfs",
+        &[
+            "list",
+            "-H",
+            "-p",
+            "-o",
+            "name,used,available,refer,mountpoint",
+        ],
+        &["name", "used", "available", "referenced", "mountpoint"],
+    );
+    jsonf! {
+        "available": kernel_module || tooling || zfs_tooling,
+        kernel_module,
+        "tools": tooling || zfs_tooling,
+        pools,
+        datasets,
+    }
+}
+
+fn run_zfs_list(program: &str, args: &[&str], fields: &[&str]) -> (bool, Vec<Value>) {
+    let output = match Command::new(program).args(args).output() {
+        Ok(output) if output.status.success() => output,
+        _ => return (false, Vec::new()),
+    };
+    let rows = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| {
+            let values: Vec<_> = line.split('\t').collect();
+            (values.len() == fields.len()).then(|| {
+                fields
+                    .iter()
+                    .zip(values)
+                    .map(|(field, value)| ((*field).to_owned(), Value::String(value.to_owned())))
+                    .collect::<serde_json::Map<String, Value>>()
+            })
+        })
+        .map(Value::Object)
+        .collect();
+    (true, rows)
+}
 
 /// Default fstab location used when `configure` is invoked without an
 /// explicit `fstab_path`.
@@ -189,6 +269,13 @@ fn append_fstab_entry(path: &PathBuf, entry: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn absent_zfs_is_reported_without_failing() {
+        let discovery = discover_zfs();
+        assert!(discovery["pools"].is_array());
+        assert!(discovery["datasets"].is_array());
+    }
 
     #[test]
     fn parses_mounts_file() {

@@ -37,6 +37,8 @@ const INFO: ModuleInfo = ModuleInfo {
         "plan",
         "interfaces",
         "status",
+        "dns",
+        "routes",
         "get_config",
         "set_config",
         "reload",
@@ -67,6 +69,8 @@ actions!(Action [payload user] => {
         let args = payload.ip_args();
         crate::cmd!({ &INFO, "status", user } "ip" => &args ; JSON)
     },
+    Dns => Ok(jsonf! { "resolv_conf": read_optional("/etc/resolv.conf") }),
+    Routes => crate::cmd!({ &INFO, "routes", user } "ip" ["-json", "route", "show"] JSON),
     GetConfig: NetworkConfigRequest => {
         Ok(jsonf! { payload.path, "contents": payload.read()? })
     },
@@ -98,6 +102,12 @@ actions!(Action [payload user] => {
 /// virtual or bond devices may not report an operstate), so a single unreadable
 /// file does not fail the whole snapshot. Results are sorted by name for stable
 /// output to the control plane.
+fn read_optional(path: &str) -> Option<String> {
+    fs::read_to_string(path)
+        .ok()
+        .map(|contents| contents.trim().to_owned())
+}
+
 fn read_interfaces() -> Result<Vec<Value>> {
     let mut interfaces = Vec::new();
     for entry in fs::read_dir("/sys/class/net").context("failed to read /sys/class/net")? {
@@ -121,6 +131,12 @@ fn read_interfaces() -> Result<Vec<Value>> {
 mod tests {
     use super::*;
     use crate::agent::module_support::SelinuxOptions;
+
+    #[test]
+    fn dns_read_returns_a_stable_shape() {
+        let response = Dns.handle(None).unwrap();
+        assert!(response.get("resolv_conf").is_some());
+    }
 
     #[test]
     fn dry_run_set_config_does_not_write() {
