@@ -191,9 +191,15 @@ async fn establish_connection(
     let mut socket = accept_async(stream)
         .await
         .context("WebSocket handshake failed")?;
-    let controller_key = match controller_key {
-        Some(key) => key,
-        None => request_enroll_pubkey(&identity, enrollment_token, &mut socket).await?,
+    // Enrollment updates the identity store while the server is running. Reload
+    // the persisted key per connection instead of relying only on the startup
+    // snapshot, so the next Dashboard request can authenticate immediately.
+    let controller_key = if let Some(key) = controller_key {
+        key
+    } else if let Some(key) = identity.load_controller_key()? {
+        parse_verifying_key(&key).context("invalid persisted controller public key")?
+    } else {
+        request_enroll_pubkey(&identity, enrollment_token, &mut socket).await?
     };
     let session = auth(
         identity,
