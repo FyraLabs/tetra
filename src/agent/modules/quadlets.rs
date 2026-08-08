@@ -78,7 +78,7 @@ const QUADLET_EXTENSIONS: &[&str] = &["container", "kube", "network", "pod", "vo
 /// runs under the owner's account rather than as root.
 #[derive(Debug, Default, Clone, Copy, Deserialize)]
 #[serde(rename_all = "snake_case")]
-enum QuadletScope {
+pub(crate) enum QuadletScope {
     #[default]
     User,
     System,
@@ -109,10 +109,18 @@ struct QuadletFile {
 /// companion files. `quadlet` flags which entries are Quadlet units so the
 /// dashboard can route edits to the right surface without a second round-trip.
 #[derive(Debug, Serialize)]
-struct ManagedFile {
+pub(crate) struct ManagedFile {
     filename: String,
     path: PathBuf,
     quadlet: bool,
+}
+
+impl ManagedFile {
+    /// Filename relative to the scanned root (e.g. `app/index.html` for a
+    /// companion inside a bundle directory).
+    pub(crate) fn filename(&self) -> &str {
+        &self.filename
+    }
 }
 
 impl Mod for QuadletsModule {
@@ -396,7 +404,7 @@ impl ManagedFile {
 /// Resolve the Quadlet scan directory for a request. An explicit `base_dir`
 /// always wins — tests and custom deployments rely on this — otherwise the
 /// scope picks the default Podman scan path.
-fn quadlet_base_dir(base_dir: Option<PathBuf>, scope: QuadletScope) -> Result<PathBuf> {
+pub(crate) fn quadlet_base_dir(base_dir: Option<PathBuf>, scope: QuadletScope) -> Result<PathBuf> {
     if let Some(base_dir) = base_dir {
         return Ok(base_dir);
     }
@@ -416,7 +424,7 @@ fn quadlet_base_dir(base_dir: Option<PathBuf>, scope: QuadletScope) -> Result<Pa
 /// different mutability and labeling needs (see the module docs). The
 /// `bundle_name` is joined via `safe_join` so a derived bundle path can
 /// never escape the data root.
-fn quadlet_files_base_dir(
+pub(crate) fn quadlet_files_base_dir(
     files_base_dir: Option<PathBuf>,
     scope: QuadletScope,
     bundle_name: Option<&str>,
@@ -487,7 +495,7 @@ fn quadlet_bundle_name(pathstr: &str) -> Result<String> {
 /// Recursively list companion files under the data root. Recursive because,
 /// unlike the Quadlet scan dir, the companion tree is ours to organize and
 /// may hold nested paths like `app/nginx/default.conf`.
-fn list_companion_files(base_dir: &Path) -> Result<Vec<ManagedFile>> {
+pub(crate) fn list_companion_files(base_dir: &Path) -> Result<Vec<ManagedFile>> {
     if !base_dir.exists() {
         return Ok(Vec::new());
     }
@@ -556,7 +564,7 @@ fn write_resource(base_dir: &Path, resource: &InstallResource, dry_run: bool) ->
 /// -dryrun` lint — it just rejects obvious junk before anything is written
 /// to a system directory. The section-header check is what stops a stray
 /// `.service` or generic INI file from being installed as a Quadlet.
-fn validate_quadlet(filename: &str, contents: &str) -> Result<()> {
+pub(crate) fn validate_quadlet(filename: &str, contents: &str) -> Result<()> {
     if !is_quadlet_filename(filename) {
         bail!("`{filename}` is not a supported Quadlet filename");
     }
@@ -576,7 +584,7 @@ fn validate_quadlet(filename: &str, contents: &str) -> Result<()> {
 
 /// True if `filename` ends with a supported Quadlet extension. Used both to
 /// reject non-Quadlet writes and to tag listed files as Quadlet vs companion.
-fn is_quadlet_filename(filename: &str) -> bool {
+pub(crate) fn is_quadlet_filename(filename: &str) -> bool {
     QUADLET_EXTENSIONS
         .iter()
         .any(|extension| filename.ends_with(&format!(".{extension}")))

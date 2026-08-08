@@ -13,6 +13,7 @@ tetra/
 │   ├── main.rs          # CLI entry point (subcommands, argument parsing)
 │   ├── lib.rs           # Public API: agent + catalog + prelude
 │   ├── catalog.rs       # Recipe engine (YAML → Tera → Quadlet units)
+│   ├── types.rs          # Shared module payload types (serde)
 │   └── agent/
 │       ├── mod.rs              # Re-exports and module-level docs
 │       ├── dispatcher.rs       # Command routing registry
@@ -32,6 +33,7 @@ tetra/
 │       └── modules/            # One module per host-management surface
 │           ├── mod.rs          # Default dispatcher builder
 │           ├── settings.rs     # Always compiled; host facts
+│           ├── apps.rs
 │           ├── files.rs
 │           ├── recipes.rs
 │           ├── quadlets.rs
@@ -178,6 +180,11 @@ default = ["...", "my-module"]
 my-module = []
 ```
 
+When a payload type is shared with callers or reused across modules — like
+`ServiceRequest` or the `apps` module's `AppCreateRequest`/`AppManifest` —
+define it in `src/types.rs` so both the agent and external consumers can
+depend on one serde schema.
+
 ### Shared helpers (`module_support`)
 
 - `handle_metadata` — automatically serves the shared `capabilities` and `plan` actions for every module.
@@ -196,6 +203,7 @@ Production transport. Tetra dials out to the dashboard/control plane over WSS
 using mTLS. This avoids firewall/NAT issues because the connection is outbound.
 
 Key files:
+
 - `websocket.rs` — outbound WSS client with reconnection.
 - `transport.rs` — shared config parsing (`control_plane_url`, client cert/key paths, CA path).
 
@@ -248,11 +256,11 @@ after a configurable TTL (default 30 minutes).
 
 Default mutable paths (bootc-friendly):
 
-| Path | Purpose |
-|------|---------|
+| Path                       | Purpose                                     |
+| -------------------------- | ------------------------------------------- |
 | `/var/lib/tetra/identity/` | Host Ed25519 keypair and mTLS certificates. |
-| `/run/tetra/` | Runtime/session data. |
-| `/var/lib/tetra/config/` | Optional configuration overrides. |
+| `/run/tetra/`              | Runtime/session data.                       |
+| `/var/lib/tetra/config/`   | Optional configuration overrides.           |
 
 Generated identities, enrollment state, and rotation metadata must live in
 mutable paths. Installed policy/unit files may live in immutable deployment
@@ -274,7 +282,7 @@ content.
 - A single queue worker serializes commands before they reach the actor.
 - Kameo serializes actor message handling, but long-running module actions do
   not block other transports because each `ask` is awaited independently by its
-caller.
+  caller.
 
 ## Testing
 

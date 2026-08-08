@@ -13,7 +13,7 @@
 use crate::agent::module_support::parse_payload;
 use crate::prelude::*;
 
-use crate::types::{DaemonReloadRequest, ServiceLogsRequest, ServiceRequest};
+use crate::types::{DaemonReloadRequest, ServiceListRequest, ServiceLogsRequest, ServiceRequest};
 
 /// Marker type for the services module. Stateless; all behavior lives in the
 /// [`Mod`] impl and the static [`INFO`] descriptor.
@@ -75,21 +75,22 @@ impl Mod for ServicesModule {
 }
 
 actions!(Action [payload user] => {
-    List => {
+    List: ServiceListRequest => {
         // `list-units` is a read, so it is never dry-run. The flags below
         // ask systemctl for machine-friendly output: `--plain` disables
         // column alignment/headers, `--legend=false` drops the summary
         // footer, and `--no-pager` avoids interactive pagers. We still
         // return the raw stdout alongside the parsed `services` array so a
         // controller can fall back to the verbatim table if needed.
-        let result = crate::cmd!({ &INFO, "list", user } "systemctl" [
+        let args = payload.scope.command_args([
             "--no-pager",
             "--plain",
             "--legend=false",
             "list-units",
             "--type=service",
             "--all",
-        ])?;
+        ]);
+        let result = crate::cmd!({ &INFO, "list", user } "systemctl" => &args)?;
         Ok(jsonf! {
             "command": result.command,
             "status": result.status,
@@ -218,5 +219,17 @@ mod tests {
             response["command"],
             "systemctl --user start tetra-demo.service"
         );
+    }
+
+    #[test]
+    fn list_action_defaults_to_system_scope() {
+        let payload: ServiceListRequest = serde_json::from_str("{}").unwrap();
+        assert_eq!(payload.scope, ServiceScope::System);
+    }
+
+    #[test]
+    fn list_action_accepts_user_scope() {
+        let payload: ServiceListRequest = serde_json::from_str(r#"{"scope": "user"}"#).unwrap();
+        assert_eq!(payload.scope, ServiceScope::User);
     }
 }

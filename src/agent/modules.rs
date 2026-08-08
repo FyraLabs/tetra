@@ -32,6 +32,7 @@ macro_rules! modules {
 }
 
 modules![
+    apps,
     files,
     network,
     nfs,

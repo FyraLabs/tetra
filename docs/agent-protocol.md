@@ -384,6 +384,8 @@ Fields:
 
 Actions that support this shared object include:
 
+- `apps.create`
+- `apps.update`
 - `files.write`
 - `quadlets.write`
 - `quadlets.install`
@@ -416,7 +418,11 @@ Some read actions also parse `stdout` into a stable JSON field, such as `data`,
 ## Modules
 
 The enabled module set depends on build features. Default features currently
-include `files`, `recipes`, `selinux`, `services`, and `quadlets`.
+include `apps`, `files`, `recipes`, `selinux`, `services`, and `quadlets`.
+
+Request payloads are plain JSON objects. Payload types shared across modules —
+such as `SelinuxOptions`, `ServiceScope`, and the `apps` module's `App*`
+requests — are defined in `src/types.rs` and deserialized with `serde`.
 
 ### settings
 
@@ -721,6 +727,194 @@ To read a companion file from the companion-file directory, include
 }
 ```
 
+### apps
+
+Feature: `apps`
+
+Cooks recipes into installed Quadlet-backed apps and manages their lifecycle.
+An app is a named bundle: rendered Quadlet units land in the Quadlet scan
+directory, while companion files and a manifest (`app.json`) live under a
+per-app directory inside the companion-file data root (the same roots used by
+the `quadlets` module). The manifest records the recipe source, parameter
+values, installed unit filenames, and companion files so `update` can
+re-render and `remove` can clean up without the caller resending the recipe.
+
+Request payloads deserialize into the `App*` types in `src/types.rs`
+(`AppCreateRequest`, `AppUpdateRequest`, `AppGetRequest`, `AppListRequest`,
+`AppRequest` for `remove`), and the manifest is the serialized `AppManifest`
+type. The recipe source is `AppRecipeSource`: exactly one of an inline recipe
+(`recipe` plus optional `templates`) or an on-disk recipe (`recipe_path` plus
+optional `templates_dir`).
+
+Actions:
+
+- `list`
+- `get`
+- `create`
+- `update`
+- `remove`
+
+App names may contain letters, digits, `.`, `_`, and `-`, and must not start
+with `.` or `-`.
+
+`create` payload (inline recipe):
+
+```json
+{
+  "name": "my-site",
+  "scope": "user",
+  "recipe": "id: nginx-site\n...",
+  "templates": {
+    "app.container": "[Container]\nImage=docker.io/nginx:alpine\n"
+  },
+  "values": {
+    "app_id": "my-site"
+  },
+  "selinux": {
+    "context_type": "container_unit_file_t",
+    "recursive": true
+  },
+  "converge": false,
+  "dry_run": true
+}
+```
+
+A recipe can also be loaded from disk instead:
+
+```json
+{
+  "name": "my-site",
+  "recipe_path": "/srv/recipes/site.yaml",
+  "templates_dir": "/srv/recipes/templates",
+  "values_path": "/srv/recipes/values.yaml"
+}
+```
+
+Inline `values` are merged over the optional `values_path` file, so recipe
+defaults and per-instance overrides can ship in one call.
+
+If the recipe declares a `bundle_dir` parameter and the caller does not
+supply a value for it, `create` and `update` inject the app's bundle
+directory path (e.g. `/var/lib/tetra/quadlets/my-site`) so templates can
+bind-mount companion files with `Volume={{ bundle_dir }}/...` without the
+caller knowing the agent's layout. An explicitly supplied `bundle_dir`
+always wins, and recipes that do not declare the parameter are unaffected
+(undeclared values never reach the render context).
+
+`create` renders the recipe, writes the Quadlet units and companion files,
+writes `<bundle>/app.json`, optionally applies SELinux contexts to the bundle,
+and — unless `converge` is `false` — runs `systemctl daemon-reload`, then
+enables and starts the derived services. Service names are derived from unit
+filenames: `.container` and `.kube` units map to `<stem>.service`, `.pod`
+units to `<stem>-pod.service`; network and volume units have no service.
+
+Response:
+
+```json
+{
+  "app": {
+    "version": 1,
+    "name": "my-site",
+    "scope": "user",
+    "recipe_id": "nginx-site",
+    "recipe_version": "0.1.0",
+    "recipe": { "source": "inline", "recipe": "...", "templates": {} },
+    "values": { "app_id": "my-site" },
+    "units": ["my-site.container"],
+    "files": ["index.html"],
+    "created_at": 1750000000,
+    "updated_at": 1750000000
+  },
+  "base_dir": "/home/example/.config/containers/systemd",
+  "bundle_dir": "/home/example/.local/share/tetra/quadlets/my-site",
+  "manifest_path": "/home/example/.local/share/tetra/quadlets/my-site/app.json",
+  "units": ["my-site.container"],
+  "files": ["index.html"],
+  "services": ["my-site.service"],
+  "systemd": [],
+  "selinux": [],
+  "written": true,
+  "dry_run": false
+}
+```
+
+`list` payload:
+
+```json
+{ "scope": "user" }
+```
+
+Returns one summary per app plus an `invalid` array naming bundle directories
+whose manifest could not be read (corrupted bundles or stray unmanaged
+directories):
+
+```json
+{
+  "files_base_dir": "/home/example/.local/share/tetra/quadlets",
+  "apps": [
+    {
+      "name": "my-site",
+      "recipe_id": "nginx-site",
+      "recipe_version": "0.1.0",
+      "scope": "user",
+      "units": ["my-site.container"],
+      "services": ["my-site.service"],
+      "created_at": 1750000000,
+      "updated_at": 1750000000,
+      "bundle_dir": "/home/example/.local/share/tetra/quadlets/my-site"
+    }
+  ],
+  "invalid": []
+}
+```
+
+`get` payload:
+
+```json
+{ "name": "my-site", "scope": "user" }
+```
+
+Returns the full manifest plus the unit and companion-file listings (each with
+its absolute path and an `exists` flag) and the derived services.
+
+`update` payload:
+
+```json
+{
+  "name": "my-site",
+  "values": { "app_id": "my-site" },
+  "dry_run": true
+}
+```
+
+Loads the stored manifest, optionally replaces the recipe source (same fields
+as `create`, for recipe upgrades), merges `values` per key over the stored
+values so previously collected secrets do not need to be resent, re-renders,
+installs the new bundle, deletes units and companion files that are no longer
+rendered, rewrites the manifest, and restarts the derived services when
+`converge` is enabled.
+
+`remove` payload:
+
+```json
+{
+  "name": "my-site",
+  "scope": "user",
+  "converge": true,
+  "dry_run": true
+}
+```
+
+Stops and disables the derived services (failures are reported inline in the
+`systemd` array and tolerated), deletes the Quadlet units, runs
+`daemon-reload`, and removes the bundle directory. Volumes created by Podman
+for the app's `.volume` units are intentionally preserved.
+
+`create`, `update`, and `remove` all honor `dry_run`, which previews the file
+writes and the exact `systemctl` commands without changing the host. Setting
+`converge: false` skips systemd interaction entirely, which is useful for
+staging files on hosts without systemd.
+
 ### services
 
 Feature: `services`
@@ -738,10 +932,10 @@ Actions:
 - `enable`
 - `disable`
 
-`list` payload:
+`list` payload (`scope` is optional and defaults to `system`):
 
 ```json
-{}
+{ "scope": "user" }
 ```
 
 Response payload includes raw command output and parsed `services`:
