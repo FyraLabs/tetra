@@ -132,7 +132,7 @@ fn discover_zfs() -> Value {
             "-H",
             "-p",
             "-o",
-            "name,size,alloc,free,frag,cap,dedup,health,altroot",
+            "name,size,alloc,free,frag,cap,dedupratio,health,altroot",
         ],
         &[
             "name",
