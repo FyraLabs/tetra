@@ -1066,11 +1066,19 @@ Actions:
 
 - `list`
 - `status`
+- `zfs`
 - `mount`
 - `unmount`
 - `configure`
 
 `list` returns parsed `/proc/mounts` and `/proc/partitions` data.
+
+`zfs` is a read-only discovery action. It reports whether the ZFS kernel
+module or command-line tools are present and, when available, returns `pools`
+and `datasets` from `zpool list` and `zfs list`. Missing ZFS support returns
+`available: false` with empty arrays rather than an error.
+
+`status` also includes the same `zfs` discovery object.
 
 `status` payload:
 
@@ -1211,12 +1219,18 @@ Actions:
 
 - `interfaces`
 - `status`
+- `dns`
+- `routes`
 - `get_config`
 - `set_config`
 - `reload`
 
 `interfaces` returns interface names, MAC addresses, and operstate from
 `/sys/class/net`.
+
+`dns` returns the current `/etc/resolv.conf` contents in `resolv_conf` (or
+`null` when unavailable). `routes` returns parsed JSON output from
+`ip -json route show`. Both actions are read-only.
 
 `status` payload:
 
