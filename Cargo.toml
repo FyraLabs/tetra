@@ -2,7 +2,7 @@
 name = "tetra"
 version = "0.2.0"
 edition = "2024"
-license = "LGPL-2.1-or-later"
+license = "AGPL-3.0-or-later"
 description = "A modular host agent for Ultramarine Server and cloud hosts"
 repository = "https://github.com/Ultramarine-Linux/tetra"
 homepage = "https://github.com/Ultramarine-Linux/tetra"
