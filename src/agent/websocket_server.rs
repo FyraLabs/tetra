@@ -272,11 +272,24 @@ async fn handle_connection(connection: ConnectionHandler) -> Result<()> {
                     continue;
                 }
                 pending_prompt = None;
-                // Verify against root (or the configured admin user). On most
-                // server installs root is the privileged account; a future
-                // revision can read the admin user from transport config.
-                let username =
-                    std::env::var("TETRA_ELEVATION_USER").unwrap_or_else(|_| "root".into());
+                // Verify the password against the host account selected during
+                // authentication. Dashboard supplies this from its explicit
+                // Dashboard-user to host-user mapping; never silently fall back
+                // to root for a per-user elevation request.
+                let Some(username) = session.user().map(str::to_owned) else {
+                    send(
+                        &mut socket,
+                        &AuthFrame::ElevationStatus {
+                            state: super::protocol::ElevationState::Unavailable,
+                            expires_at: None,
+                            message: Some(
+                                "A mapped host user is required before elevation.".into(),
+                            ),
+                        },
+                    )
+                    .await?;
+                    continue;
+                };
                 match verify_password(&username, &password) {
                     Ok(true) => {
                         let grant = HeadlessElevationGrant::new(ELEVATION_TTL);

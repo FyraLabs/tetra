@@ -262,11 +262,15 @@ where
     }
 
     let output = match default_user {
-        Some(user) if DEFAULT_USER_SUPPORT => Command::new("runuser")
+        Some(user) if DEFAULT_USER_SUPPORT && current_uid_is_root() => Command::new("runuser")
             .args(["-u", user, "--", program])
             .args(args)
             .output()
             .with_context(|| format!("failed to run `{program}` as `{user}`")),
+        Some(user) => Command::new(program)
+            .args(args)
+            .output()
+            .with_context(|| format!("failed to run `{program}` as current user `{user}`")),
         _ => Command::new(program)
             .args(args)
             .output()
@@ -288,6 +292,17 @@ where
         stderr,
         dry_run: false,
     })
+}
+
+#[cfg(target_os = "linux")]
+fn current_uid_is_root() -> bool {
+    // SAFETY: `geteuid` has no preconditions and only reads process credentials.
+    unsafe { libc::geteuid() == 0 }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn current_uid_is_root() -> bool {
+    false
 }
 
 /// Compute the effective OS user for a module action.
