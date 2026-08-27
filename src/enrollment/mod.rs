@@ -51,6 +51,7 @@ struct PollResponse {
     controller_public_key: Option<String>,
 }
 
+#[allow(clippy::too_many_lines)]
 pub async fn run(mut options: Options) -> Result<()> {
     let dashboard_url = options
         .dashboard_url
@@ -140,17 +141,16 @@ pub async fn run(mut options: Options) -> Result<()> {
 
     println!();
     println!(
-        "Open {}",
-        format!(
-            "{}/tetra/device?code={}",
-            verification_url.trim_end_matches('/'),
-            device.user_code
-        )
+        "Open {}/tetra/device?code={}",
+        verification_url.trim_end_matches('/'),
+        device.user_code
     );
     println!("Enter enrollment code: {}", device.user_code);
     println!("Waiting for Dashboard approval...");
 
-    let deadline = std::time::Instant::now() + Duration::from_secs(device.expires_in);
+    let deadline = std::time::Instant::now()
+        .checked_add(Duration::from_secs(device.expires_in))
+        .context("enrollment expiry is outside the supported time range")?;
     loop {
         let response = client
             .put(format!("{dashboard_url}/api/tetra/device"))
